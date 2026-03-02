@@ -637,7 +637,7 @@ export function OutlinePage() {
                   value={genForm.chapter_count}
                   onChange={(e) => setGenForm((v) => ({ ...v, chapter_count: Number(e.target.value) }))}
                 />
-                <div className="text-[11px] text-subtext">建议 8-20；后续可在大纲/写作中增删。</div>
+                <div className="text-[11px] text-subtext">可填写长篇目标（如 100/200）；系统会自动压缩每章粒度以尽量覆盖目标章节数。</div>
               </label>
               <label className="grid gap-1 sm:col-span-2">
                 <span className="text-xs text-subtext">基调</span>

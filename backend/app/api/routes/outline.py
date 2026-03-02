@@ -11,6 +11,7 @@ from app.api.deps import DbDep, UserIdDep, require_project_editor, require_proje
 from app.core.errors import AppError, ok_payload
 from app.core.logging import log_event
 from app.db.session import SessionLocal
+from app.llm.capabilities import max_output_tokens_limit
 from app.llm.client import call_llm_stream_messages
 from app.models.character import Character
 from app.models.llm_preset import LLMPreset
@@ -49,6 +50,75 @@ def _mark_vector_index_dirty(db: DbDep, *, project_id: str) -> None:
         db.add(row)
         db.flush()
     row.vector_index_dirty = True
+
+
+def _extract_target_chapter_count(requirements: dict[str, object] | None) -> int | None:
+    if not isinstance(requirements, dict):
+        return None
+    raw = requirements.get("chapter_count")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return None
+            value = int(text)
+        else:
+            value = int(raw)
+    except Exception:
+        return None
+    if value <= 0:
+        return None
+    # Keep a sanity cap for prompt safety.
+    return min(value, 2000)
+
+
+def _build_outline_generation_guidance(target_chapter_count: int | None) -> dict[str, str]:
+    if not target_chapter_count:
+        return {
+            "chapter_count_rule": "",
+            "chapter_detail_rule": "beats 每章 5~9 条，按发生顺序；每条用短句，明确“发生了什么/造成什么后果”。",
+        }
+    if target_chapter_count <= 20:
+        detail = "beats 每章 5~9 条，按发生顺序；每条用短句，明确“发生了什么/造成什么后果”。"
+    elif target_chapter_count <= 60:
+        detail = "beats 每章 3~5 条，保持因果推进；每条保持短句，避免冗长。"
+    elif target_chapter_count <= 120:
+        detail = "beats 每章 2~3 条，只保留主冲突与关键转折，保证节奏连续。"
+    else:
+        detail = "beats 每章 1~2 条，极简表达关键推进；若长度受限，优先保留章节覆盖与编号完整。"
+    return {
+        "chapter_count_rule": (
+            f"chapters 必须输出 {target_chapter_count} 章，number 需完整覆盖 1..{target_chapter_count} 且不缺号。"
+        ),
+        "chapter_detail_rule": detail,
+    }
+
+
+def _recommend_outline_max_tokens(
+    *,
+    target_chapter_count: int | None,
+    provider: str,
+    model: str | None,
+    current_max_tokens: int | None,
+) -> int | None:
+    if not target_chapter_count or target_chapter_count <= 20:
+        return None
+    if target_chapter_count <= 60:
+        wanted = 4096
+    elif target_chapter_count <= 120:
+        wanted = 8192
+    else:
+        wanted = 12000
+
+    limit = max_output_tokens_limit(provider, model)
+    if isinstance(limit, int) and limit > 0:
+        wanted = min(wanted, int(limit))
+
+    if isinstance(current_max_tokens, int) and current_max_tokens >= wanted:
+        return None
+    return wanted if wanted > 0 else None
 
 
 @router.get("/projects/{project_id}/outline")
@@ -172,6 +242,8 @@ def generate_outline(
         if body.context.include_characters:
             chars = db.execute(select(Character).where(Character.project_id == project_id)).scalars().all()
         characters_text = format_characters(chars)
+        target_chapter_count = _extract_target_chapter_count(body.requirements)
+        guidance = _build_outline_generation_guidance(target_chapter_count)
 
         requirements_text = json.dumps(body.requirements or {}, ensure_ascii=False, indent=2)
 
@@ -190,6 +262,9 @@ def generate_outline(
             "requirements": requirements_text,
             "instruction": "",
             "previous_chapter": "",
+            "target_chapter_count": target_chapter_count or "",
+            "chapter_count_rule": guidance.get("chapter_count_rule", ""),
+            "chapter_detail_rule": guidance.get("chapter_detail_rule", ""),
         }
 
         prompt_system, prompt_user, prompt_messages, _, _, _, render_log = render_preset_for_task(
@@ -203,6 +278,21 @@ def generate_outline(
         prompt_render_log_json = json.dumps(render_log, ensure_ascii=False)
 
         llm_call = prepare_llm_call(preset)
+        current_max_tokens = llm_call.params.get("max_tokens")
+        current_max_tokens_int = int(current_max_tokens) if isinstance(current_max_tokens, int) else None
+        wanted_max_tokens = _recommend_outline_max_tokens(
+            target_chapter_count=target_chapter_count,
+            provider=llm_call.provider,
+            model=llm_call.model,
+            current_max_tokens=current_max_tokens_int,
+        )
+        if isinstance(wanted_max_tokens, int) and wanted_max_tokens > 0:
+            llm_call = with_param_overrides(llm_call, {"max_tokens": wanted_max_tokens})
+            run_params_extra_json["outline_auto_max_tokens"] = {
+                "target_chapter_count": target_chapter_count,
+                "from": current_max_tokens_int,
+                "to": wanted_max_tokens,
+            }
     finally:
         db.close()
 
@@ -339,6 +429,8 @@ def generate_outline_stream(
             if body.context.include_characters:
                 chars = db.execute(select(Character).where(Character.project_id == project_id)).scalars().all()
             characters_text = format_characters(chars)
+            target_chapter_count = _extract_target_chapter_count(body.requirements)
+            guidance = _build_outline_generation_guidance(target_chapter_count)
 
             requirements_text = json.dumps(body.requirements or {}, ensure_ascii=False, indent=2)
             values = {
@@ -356,6 +448,9 @@ def generate_outline_stream(
                 "requirements": requirements_text,
                 "instruction": "",
                 "previous_chapter": "",
+                "target_chapter_count": target_chapter_count or "",
+                "chapter_count_rule": guidance.get("chapter_count_rule", ""),
+                "chapter_detail_rule": guidance.get("chapter_detail_rule", ""),
             }
 
             prompt_system, prompt_user, prompt_messages, _, _, _, render_log = render_preset_for_task(
@@ -368,6 +463,21 @@ def generate_outline_stream(
             )
             prompt_render_log_json = json.dumps(render_log, ensure_ascii=False)
             llm_call = prepare_llm_call(preset)
+            current_max_tokens = llm_call.params.get("max_tokens")
+            current_max_tokens_int = int(current_max_tokens) if isinstance(current_max_tokens, int) else None
+            wanted_max_tokens = _recommend_outline_max_tokens(
+                target_chapter_count=target_chapter_count,
+                provider=llm_call.provider,
+                model=llm_call.model,
+                current_max_tokens=current_max_tokens_int,
+            )
+            if isinstance(wanted_max_tokens, int) and wanted_max_tokens > 0:
+                llm_call = with_param_overrides(llm_call, {"max_tokens": wanted_max_tokens})
+                run_params_extra_json["outline_auto_max_tokens"] = {
+                    "target_chapter_count": target_chapter_count,
+                    "from": current_max_tokens_int,
+                    "to": wanted_max_tokens,
+                }
             run_params_json = build_run_params_json(
                 params_json=llm_call.params_json,
                 memory_retrieval_log_json=None,
