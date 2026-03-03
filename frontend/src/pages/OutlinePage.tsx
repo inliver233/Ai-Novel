@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { MarkdownEditor } from "../components/atelier/MarkdownEditor";
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { Modal } from "../components/ui/Modal";
+import { ProgressBar } from "../components/ui/ProgressBar";
 import { useConfirm } from "../components/ui/confirm";
 import { useToast } from "../components/ui/toast";
 import { useProjectData } from "../hooks/useProjectData";
@@ -777,12 +778,7 @@ export function OutlinePage() {
                   <span className="truncate">{genStreamProgress.message}</span>
                   <span className="shrink-0">{genStreamProgress.progress}%</span>
                 </div>
-                <div className="h-2 w-full rounded bg-border">
-                  <div
-                    className="h-2 rounded bg-accent motion-safe:transition-[width] motion-safe:duration-atelier motion-safe:ease-atelier"
-                    style={{ width: `${Math.max(0, Math.min(100, genStreamProgress.progress))}%` }}
-                  />
-                </div>
+                <ProgressBar ariaLabel="大纲流式生成进度" value={genStreamProgress.progress} />
               </div>
             ) : null}
 

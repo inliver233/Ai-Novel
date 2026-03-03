@@ -6,6 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { GhostwriterIndicator } from "../components/atelier/GhostwriterIndicator";
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
+import { ProgressBar } from "../components/ui/ProgressBar";
 import { useConfirm } from "../components/ui/confirm";
 import { useToast } from "../components/ui/toast";
 import { useProjects } from "../contexts/projects";
@@ -268,12 +269,7 @@ export function ProjectWizardPage() {
         </div>
 
         <div className="mt-4">
-          <div className="h-2 w-full rounded-full bg-border/60">
-            <div
-              className="h-2 rounded-full bg-accent motion-safe:transition-[width] motion-safe:duration-atelier motion-safe:ease-atelier"
-              style={{ width: `${progress.percent}%` }}
-            />
-          </div>
+          <ProgressBar ariaLabel="项目开工向导完成度" value={progress.percent} />
           <div className="mt-2 text-xs text-subtext">完成度：{progress.percent}%</div>
         </div>
       </section>

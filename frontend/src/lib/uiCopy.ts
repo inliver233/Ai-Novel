@@ -38,6 +38,9 @@ export const UI_COPY = {
     styles: "风格",
     prompts: "模型配置",
     promptStudio: "提示词工作室",
+    promptTemplates: "提示词模板",
+    foreshadows: "伏笔",
+    dataImport: "导入",
     adminUsers: "用户管理",
     help: "术语/帮助",
 

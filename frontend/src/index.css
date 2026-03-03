@@ -15,6 +15,8 @@
     --color-warning: var(--theme-warning);
     --color-danger: var(--theme-danger);
     --color-info: var(--theme-info);
+    --color-on-accent: var(--theme-on-accent);
+    --color-on-danger: var(--theme-on-danger);
 
     /* Migration: prefer bg/text-(warning|danger|info) over hard-coded amber/red/sky. */
 
@@ -47,6 +49,8 @@
     --theme-warning: 171 120 52;
     --theme-danger: 169 74 67;
     --theme-info: 76 122 156;
+    --theme-on-accent: 255 255 255;
+    --theme-on-danger: 255 255 255;
     --theme-font-ui: "Inter", "Geist Sans", ui-sans-serif, system-ui, sans-serif;
     --theme-font-content: "Merriweather", "Source Serif 4", ui-serif, serif;
     --theme-font-mono:
@@ -67,6 +71,8 @@
     --theme-warning: 214 166 96;
     --theme-danger: 224 129 121;
     --theme-info: 142 187 218;
+    --theme-on-accent: 26 25 24;
+    --theme-on-danger: 26 25 24;
     --shadow-panel-hover: 0 14px 40px -16px rgb(0 0 0 / 0.6);
   }
 
@@ -182,7 +188,8 @@
   }
 
   .btn-primary {
-    @apply bg-accent text-white hover:brightness-95 disabled:opacity-60 disabled:cursor-not-allowed;
+    @apply bg-accent hover:brightness-95 disabled:opacity-60 disabled:cursor-not-allowed;
+    color: rgb(var(--color-on-accent));
   }
 
   .btn-ghost {
@@ -190,7 +197,8 @@
   }
 
   .btn-danger {
-    @apply bg-danger text-white hover:brightness-95 disabled:opacity-60 disabled:cursor-not-allowed;
+    @apply bg-danger hover:brightness-95 disabled:opacity-60 disabled:cursor-not-allowed;
+    color: rgb(var(--color-on-danger));
   }
 
   .btn-icon {

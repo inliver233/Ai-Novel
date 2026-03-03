@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="accent" x1="8" x2="56" y1="8" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F1C29B" />
+      <stop offset="1" stop-color="#BC5D43" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#1A1918" />
+  <path
+    d="M13 44.5V19.5C13 18.12 14.12 17 15.5 17H20.65C21.54 17 22.36 17.48 22.81 18.26L33.18 36.23C34.35 38.25 37.46 37.42 37.46 35.09V19.5C37.46 18.12 38.58 17 39.96 17H49C50.38 17 51.5 18.12 51.5 19.5V44.5C51.5 45.88 50.38 47 49 47H43.63C42.73 47 41.91 46.52 41.46 45.74L31.07 27.76C29.9 25.74 26.79 26.57 26.79 28.91V44.5C26.79 45.88 25.67 47 24.29 47H15.5C14.12 47 13 45.88 13 44.5Z"
+    fill="url(#accent)"
+  />
+  <path d="M23 24L41 40" stroke="#F8F4EE" stroke-linecap="round" stroke-width="2.5" opacity="0.9" />
+</svg>

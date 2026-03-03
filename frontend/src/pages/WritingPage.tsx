@@ -6,6 +6,7 @@ import { MarkdownEditor } from "../components/atelier/MarkdownEditor";
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { ToolContent } from "../components/layout/AppShell";
 import { Drawer } from "../components/ui/Drawer";
+import { ProgressBar } from "../components/ui/ProgressBar";
 import { AiGenerateDrawer } from "../components/writing/AiGenerateDrawer";
 import { BatchGenerationModal } from "../components/writing/BatchGenerationModal";
 import { ChapterListPanel } from "../components/writing/ChapterListPanel";
@@ -768,12 +769,7 @@ export function WritingPage() {
                 </div>
               ) : null}
             </div>
-            <div className="mt-2 h-2 w-full rounded bg-border">
-              <div
-                className="h-2 rounded bg-accent motion-safe:transition-[width] motion-safe:duration-atelier motion-safe:ease-atelier"
-                style={{ width: `${Math.max(0, Math.min(100, genStreamProgress?.progress ?? 0))}%` }}
-              />
-            </div>
+            <ProgressBar ariaLabel="写作页流式生成进度" className="mt-2" value={genStreamProgress?.progress ?? 0} />
             <div className="mt-3 flex justify-end gap-2">
               <button className="btn btn-secondary" onClick={() => setAiOpen(true)} type="button">
                 展开

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { Modal } from "../components/ui/Modal";
+import { ProgressBar } from "../components/ui/ProgressBar";
 import { useConfirm } from "../components/ui/confirm";
 import { useToast } from "../components/ui/toast";
 import { useProjects } from "../contexts/projects";
@@ -247,12 +248,7 @@ export function DashboardPage() {
                       {recommendedWizard.nextTitle ? `下一步：${recommendedWizard.nextTitle}` : "已完成"}
                     </div>
                   </div>
-                  <div className="mt-2 h-2 w-full rounded-full bg-border/60">
-                    <div
-                      className="h-2 rounded-full bg-accent motion-safe:transition-[width] motion-safe:duration-atelier motion-safe:ease-atelier"
-                      style={{ width: `${recommendedWizard.percent}%` }}
-                    />
-                  </div>
+                  <ProgressBar ariaLabel="推荐流程完成度" className="mt-2" value={recommendedWizard.percent} />
                   {recommendedWizard.nextHref ? (
                     <button
                       className="btn btn-primary mt-3 w-full"
@@ -407,12 +403,7 @@ export function DashboardPage() {
                       <div>完成度：{wizard.percent}%</div>
                       <div className="truncate">{wizard.nextTitle ? `下一步：${wizard.nextTitle}` : "已完成"}</div>
                     </div>
-                    <div className="mt-2 h-2 w-full rounded-full bg-border/60">
-                      <div
-                        className="h-2 rounded-full bg-accent motion-safe:transition-[width] motion-safe:duration-atelier motion-safe:ease-atelier"
-                        style={{ width: `${wizard.percent}%` }}
-                      />
-                    </div>
+                    <ProgressBar ariaLabel={`${p.name} 完成度`} className="mt-2" value={wizard.percent} />
                   </>
                 ) : null}
               </div>

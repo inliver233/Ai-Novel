@@ -3,6 +3,7 @@ import { ArrowRight, CheckCircle2, ChevronDown, ChevronUp, Circle, CircleSlash2,
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { ProgressBar } from "../ui/ProgressBar";
 import { getCurrentUserId } from "../../services/currentUser";
 import { wizardBarCollapsedStorageKey } from "../../services/uiState";
 import type { WizardProgress, WizardStepKey } from "../../services/wizard";
@@ -185,12 +186,7 @@ export function WizardNextBar(props: {
                     ) : null}
                   </div>
 
-                  <div className="mt-2 h-2 w-full rounded-full bg-border/60">
-                    <div
-                      className="h-2 rounded-full bg-accent motion-safe:transition-[width] motion-safe:duration-atelier motion-safe:ease-atelier"
-                      style={{ width: `${progress.percent}%` }}
-                    />
-                  </div>
+                  <ProgressBar ariaLabel="开工向导进度" className="mt-2" value={progress.percent} />
 
                   <div className="mt-3 flex flex-wrap gap-2">
                     {progress.steps.map((s) => {

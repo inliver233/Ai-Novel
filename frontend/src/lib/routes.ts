@@ -18,6 +18,7 @@ const ROUTE_META: RouteMeta[] = [
   { suffix: "/tasks", title: UI_COPY.nav.tasks, layout: "tool" },
   { suffix: "/structured-memory", title: UI_COPY.nav.structuredMemory, layout: "tool" },
   { suffix: "/numeric-tables", title: UI_COPY.nav.numericTables, layout: "tool" },
+  { suffix: "/foreshadows", title: UI_COPY.nav.foreshadows, layout: "tool" },
   { suffix: "/chapter-analysis", title: UI_COPY.nav.chapterAnalysis, layout: "tool" },
   { suffix: "/preview", title: UI_COPY.nav.preview, layout: "paper" },
   { suffix: "/reader", title: UI_COPY.nav.reader, layout: "tool" },
@@ -30,6 +31,8 @@ const ROUTE_META: RouteMeta[] = [
   { suffix: "/styles", title: UI_COPY.nav.styles, layout: "tool" },
   { suffix: "/prompts", title: UI_COPY.nav.prompts, layout: "tool" },
   { suffix: "/prompt-studio", title: UI_COPY.nav.promptStudio, layout: "tool" },
+  { suffix: "/prompt-templates", title: UI_COPY.nav.promptTemplates, layout: "tool" },
+  { suffix: "/import", title: UI_COPY.nav.dataImport, layout: "tool" },
 ];
 
 export function resolveRouteMeta(pathname: string): { title: string; layout: RouteLayout } {

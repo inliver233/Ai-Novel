@@ -1,6 +1,7 @@
 import { useId } from "react";
 
 import { Modal } from "../ui/Modal";
+import { ProgressBar } from "../ui/ProgressBar";
 
 import type { BatchGenerationTask, BatchGenerationTaskItem } from "./types";
 
@@ -48,6 +49,9 @@ export function BatchGenerationModal(props: {
   const taskRunning = task && (task.status === "queued" || task.status === "running");
   const taskFailed = task?.status === "failed";
   const requestId = taskFailed ? tryExtractRequestId(task?.error_json) : null;
+  const taskProgressPercent = task
+    ? Math.round((task.total_count > 0 ? task.completed_count / task.total_count : 0) * 100)
+    : 0;
   return (
     <Modal
       open={props.open}
@@ -145,14 +149,7 @@ export function BatchGenerationModal(props: {
               <div className="text-sm text-ink">
                 任务状态：{task.status}（{task.completed_count}/{task.total_count}）
               </div>
-              <div className="h-2 w-full rounded bg-border">
-                <div
-                  className="h-2 rounded bg-accent motion-safe:transition-[width] motion-safe:duration-atelier motion-safe:ease-atelier"
-                  style={{
-                    width: `${Math.round((task.total_count > 0 ? task.completed_count / task.total_count : 0) * 100)}%`,
-                  }}
-                />
-              </div>
+              <ProgressBar ariaLabel="批量生成任务进度" value={taskProgressPercent} />
 
               {taskFailed && task.error_json ? (
                 <div className="rounded-atelier border border-border bg-canvas p-3">

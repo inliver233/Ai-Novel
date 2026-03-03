@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 
 import { useAuth } from "../contexts/auth";
@@ -39,6 +39,23 @@ export function LoginPage() {
     password: "",
   }));
   const [busy, setBusy] = useState(false);
+  const submitDisabled = busy || !form.userId.trim() || !form.password;
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitDisabled) return;
+    setBusy(true);
+    try {
+      await auth.login({ userId: form.userId.trim(), password: form.password });
+      toast.toastSuccess(UI_COPY.auth.loginSuccess);
+      navigate(nextPath, { replace: true });
+    } catch (e) {
+      const err = e as ApiError;
+      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (auth.status === "authenticated") {
     return <Navigate to={nextPath} replace />;
@@ -93,97 +110,82 @@ export function LoginPage() {
               </div>
             ) : null}
 
-            <div className="mt-6 grid gap-3">
-              <label className="grid gap-1">
-                <span className="text-xs text-subtext">{UI_COPY.auth.userIdLabel}</span>
-                <input
-                  className="input"
-                  name="user_id"
-                  value={form.userId}
-                  onChange={(e) => setForm((v) => ({ ...v, userId: e.target.value }))}
-                  autoComplete="username"
-                  placeholder={UI_COPY.auth.userIdPlaceholder}
-                />
-              </label>
-              <label className="grid gap-1">
-                <span className="text-xs text-subtext">{UI_COPY.auth.passwordLabel}</span>
-                <input
-                  className="input"
-                  name="password"
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm((v) => ({ ...v, password: e.target.value }))}
-                  autoComplete="current-password"
-                  placeholder={UI_COPY.auth.passwordPlaceholder}
-                />
-              </label>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-2">
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setForm({ userId: "", password: "" });
-                }}
-                type="button"
-              >
-                {UI_COPY.auth.reset}
-              </button>
-              <button
-                className="btn btn-primary"
-                disabled={busy || !form.userId.trim() || !form.password}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await auth.login({ userId: form.userId.trim(), password: form.password });
-                    toast.toastSuccess(UI_COPY.auth.loginSuccess);
-                    navigate(nextPath, { replace: true });
-                  } catch (e) {
-                    const err = e as ApiError;
-                    toast.toastError(`${err.message} (${err.code})`, err.requestId);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-                type="button"
-              >
-                {busy ? UI_COPY.auth.loggingIn : UI_COPY.auth.login}
-              </button>
-            </div>
-
-            <div className="mt-6">
-              <div className="my-3 flex items-center gap-3 text-xs text-subtext">
-                <div className="h-px flex-1 bg-border" />
-                <div>或</div>
-                <div className="h-px flex-1 bg-border" />
+            <form className="mt-6 grid gap-6" onSubmit={(event) => void handleSubmit(event)}>
+              <div className="grid gap-3">
+                <label className="grid gap-1">
+                  <span className="text-xs text-subtext">{UI_COPY.auth.userIdLabel}</span>
+                  <input
+                    className="input"
+                    name="user_id"
+                    value={form.userId}
+                    onChange={(e) => setForm((v) => ({ ...v, userId: e.target.value }))}
+                    autoComplete="username"
+                    placeholder={UI_COPY.auth.userIdPlaceholder}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  <span className="text-xs text-subtext">{UI_COPY.auth.passwordLabel}</span>
+                  <input
+                    className="input"
+                    name="password"
+                    type="password"
+                    value={form.password}
+                    onChange={(e) => setForm((v) => ({ ...v, password: e.target.value }))}
+                    autoComplete="current-password"
+                    placeholder={UI_COPY.auth.passwordPlaceholder}
+                  />
+                </label>
               </div>
-              <button
-                className="btn btn-secondary w-full"
-                onClick={() => {
-                  void (async () => {
-                    try {
-                      const providers = await fetchAuthProviders();
-                      const enabled = Boolean(providers.linuxdo?.enabled);
-                      if (!enabled) {
-                        toast.toastWarning(UI_COPY.auth.linuxdoNotEnabledHint);
-                        return;
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setForm({ userId: "", password: "" });
+                  }}
+                  type="button"
+                >
+                  {UI_COPY.auth.reset}
+                </button>
+                <button className="btn btn-primary" disabled={submitDisabled} type="submit">
+                  {busy ? UI_COPY.auth.loggingIn : UI_COPY.auth.login}
+                </button>
+              </div>
+
+              <div>
+                <div className="my-3 flex items-center gap-3 text-xs text-subtext">
+                  <div className="h-px flex-1 bg-border" />
+                  <div>或</div>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+                <button
+                  className="btn btn-secondary w-full"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const providers = await fetchAuthProviders();
+                        const enabled = Boolean(providers.linuxdo?.enabled);
+                        if (!enabled) {
+                          toast.toastWarning(UI_COPY.auth.linuxdoNotEnabledHint);
+                          return;
+                        }
+                        const url = `/api/auth/oidc/linuxdo/start?next=${encodeURIComponent(nextPath)}`;
+                        window.location.assign(url);
+                      } catch (e) {
+                        const err = e as ApiError;
+                        toast.toastError(
+                          `${UI_COPY.auth.linuxdoCheckFailedPrefix}${err.message} (${err.code})`,
+                          err.requestId,
+                        );
                       }
-                      const url = `/api/auth/oidc/linuxdo/start?next=${encodeURIComponent(nextPath)}`;
-                      window.location.assign(url);
-                    } catch (e) {
-                      const err = e as ApiError;
-                      toast.toastError(
-                        `${UI_COPY.auth.linuxdoCheckFailedPrefix}${err.message} (${err.code})`,
-                        err.requestId,
-                      );
-                    }
-                  })();
-                }}
-                type="button"
-              >
-                {UI_COPY.auth.linuxdoLogin}
-              </button>
-            </div>
+                    })();
+                  }}
+                  type="button"
+                >
+                  {UI_COPY.auth.linuxdoLogin}
+                </button>
+              </div>
+            </form>
           </div>
           <div className="mt-4 text-center text-xs text-subtext">
             <div className="flex flex-wrap items-center justify-center gap-1">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 
 import { Drawer } from "../ui/Drawer";
+import { ProgressBar } from "../ui/ProgressBar";
 import { UI_COPY } from "../../lib/uiCopy";
 import type { Character, LLMPreset } from "../../types";
 import type { GenerateForm } from "./types";
@@ -416,12 +417,7 @@ export function AiGenerateDrawer(props: Props) {
               <span className="truncate">{props.streamProgress?.message ?? "连接中..."}</span>
               <span className="shrink-0">{props.streamProgress?.progress ?? 0}%</span>
             </div>
-            <div className="h-2 w-full rounded bg-border">
-              <div
-                className="h-2 rounded bg-accent motion-safe:transition-[width] motion-safe:duration-atelier motion-safe:ease-atelier"
-                style={{ width: `${Math.max(0, Math.min(100, props.streamProgress?.progress ?? 0))}%` }}
-              />
-            </div>
+            <ProgressBar ariaLabel="章节流式生成进度" value={props.streamProgress?.progress ?? 0} />
             {props.onCancelGenerate ? (
               <div className="flex justify-end">
                 <button className="btn btn-secondary" onClick={props.onCancelGenerate} type="button">
