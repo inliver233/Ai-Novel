@@ -69,6 +69,21 @@ type PromptsPageBlockingLoadError = {
   requestId?: string;
 };
 
+type PersistedProfileModelCacheItem = {
+  options: Array<{ id: string; display_name: string }>;
+  fetchedAt: string;
+};
+
+type PersistedProfileModelCache = Record<string, PersistedProfileModelCacheItem>;
+
+type ProfileTestState = {
+  ok: boolean;
+  message: string;
+  latencyMs?: number;
+  requestId?: string;
+  testedAt: string;
+};
+
 type PromptsPageState = {
   loading: boolean;
   blockingLoadError: PromptsPageBlockingLoadError | null;
@@ -81,6 +96,62 @@ type PromptsPageState = {
   goToPromptStudio: () => void;
   wizardBarProps: ComponentProps<typeof WizardNextBar>;
 };
+
+const PROFILE_MODEL_CACHE_STORAGE_KEY = "prompts.profile-model-cache.v1";
+
+function readProfileModelCache(): PersistedProfileModelCache {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(PROFILE_MODEL_CACHE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: PersistedProfileModelCache = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const options = Array.isArray((value as { options?: unknown }).options)
+        ? ((value as { options?: unknown[] }).options ?? [])
+            .map((item) => {
+              if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+              const id = String((item as { id?: unknown }).id ?? "").trim();
+              const displayName = String((item as { display_name?: unknown }).display_name ?? id).trim();
+              if (!id) return null;
+              return { id, display_name: displayName || id };
+            })
+            .filter((item): item is { id: string; display_name: string } => Boolean(item))
+        : [];
+      const fetchedAt = String((value as { fetchedAt?: unknown }).fetchedAt ?? "").trim();
+      out[key] = { options, fetchedAt };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeProfileModelCache(cache: PersistedProfileModelCache): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(PROFILE_MODEL_CACHE_STORAGE_KEY, JSON.stringify(cache));
+}
+
+function toModelListState(cacheItem: PersistedProfileModelCacheItem | undefined): LlmModelListState {
+  return {
+    loading: false,
+    options: cacheItem?.options ?? [],
+    warning: null,
+    error: null,
+    requestId: null,
+  };
+}
+
+function mergeConnectionFields(form: LlmForm, source: Pick<LlmForm, "provider" | "base_url" | "model">): LlmForm {
+  return {
+    ...form,
+    provider: source.provider,
+    base_url: source.base_url,
+    model: source.model,
+  };
+}
 
 export function usePromptsPageState(): PromptsPageState {
   const { projectId } = useParams();
@@ -102,7 +173,11 @@ export function usePromptsPageState(): PromptsPageState {
 
   const [project, setProject] = useState<Project | null>(null);
   const [profiles, setProfiles] = useState<LLMProfile[]>([]);
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [profileName, setProfileName] = useState("");
+  const [profileEditorForm, setProfileEditorForm] = useState<LlmForm>({ ...DEFAULT_LLM_FORM });
+  const [profileModelCache, setProfileModelCache] = useState<PersistedProfileModelCache>(() => readProfileModelCache());
+  const [profileTestResults, setProfileTestResults] = useState<Record<string, ProfileTestState>>({});
   const [profileBusy, setProfileBusy] = useState(false);
 
   const [baselinePreset, setBaselinePreset] = useState<LLMPreset | null>(null);
@@ -172,8 +247,8 @@ export function usePromptsPageState(): PromptsPageState {
       ]);
 
       setProject(pRes.data.project);
-      setProfiles(profilesRes.data.profiles ?? []);
-      setProfileName("");
+      const nextProfiles = profilesRes.data.profiles ?? [];
+      setProfiles(nextProfiles);
 
       setBaselinePreset(presetRes.data.llm_preset);
       setCapabilities({
@@ -224,7 +299,18 @@ export function usePromptsPageState(): PromptsPageState {
       setRerankApiKeyClearRequested(false);
 
       setApiKey("");
-      setMainModelList({ ...EMPTY_MODEL_LIST_STATE });
+      const nextEditingProfileId =
+        (editingProfileId && nextProfiles.some((item) => item.id === editingProfileId) ? editingProfileId : null) ??
+        pRes.data.project.llm_profile_id ??
+        nextProfiles[0]?.id ??
+        null;
+      const nextEditingProfile = nextEditingProfileId
+        ? (nextProfiles.find((item) => item.id === nextEditingProfileId) ?? null)
+        : null;
+      setEditingProfileId(nextEditingProfileId);
+      setProfileName(nextEditingProfile?.name ?? "");
+      setProfileEditorForm(nextEditingProfile ? formFromProfile(nextEditingProfile) : { ...DEFAULT_LLM_FORM });
+      setMainModelList(toModelListState(nextEditingProfile ? profileModelCache[nextEditingProfile.id] : undefined));
       setLoadError(null);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -237,7 +323,7 @@ export function usePromptsPageState(): PromptsPageState {
     } finally {
       setLoading(false);
     }
-  }, [projectId, toast]);
+  }, [editingProfileId, profileModelCache, projectId, toast]);
 
   useEffect(() => {
     void reloadAll();
@@ -248,6 +334,10 @@ export function usePromptsPageState(): PromptsPageState {
       if (wizardRefreshTimerRef.current !== null) window.clearTimeout(wizardRefreshTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    writeProfileModelCache(profileModelCache);
+  }, [profileModelCache]);
 
   useEffect(() => {
     const guard = capsGuardRef.current;
@@ -282,7 +372,7 @@ export function usePromptsPageState(): PromptsPageState {
 
   useEffect(() => {
     setApiKey("");
-  }, [llmForm.provider, project?.llm_profile_id]);
+  }, [editingProfileId, profileEditorForm.provider]);
 
   const currentMainPayload = useMemo(() => buildPresetPayload(llmForm), [llmForm]);
   const baselineMainPayload = useMemo(
@@ -300,6 +390,17 @@ export function usePromptsPageState(): PromptsPageState {
   const upsertProfile = useCallback((profile: LLMProfile) => {
     setProfiles((prev) => [profile, ...prev.filter((item) => item.id !== profile.id)]);
   }, []);
+  const editingProfile = editingProfileId ? (profiles.find((item) => item.id === editingProfileId) ?? null) : null;
+  const loadProfileIntoEditor = useCallback(
+    (profile: LLMProfile | null) => {
+      setEditingProfileId(profile?.id ?? null);
+      setProfileName(profile?.name ?? "");
+      setProfileEditorForm(profile ? formFromProfile(profile) : { ...DEFAULT_LLM_FORM });
+      setApiKey("");
+      setMainModelList(toModelListState(profile ? profileModelCache[profile.id] : undefined));
+    },
+    [profileModelCache],
+  );
 
   const taskCatalogByKey = useMemo(() => {
     const map = new Map<string, LLMTaskCatalogItem>();
@@ -382,27 +483,6 @@ export function usePromptsPageState(): PromptsPageState {
       savingPresetRef.current = true;
       setSavingPreset(true);
       try {
-        if (selectedProfileId) {
-          const currentProvider = selectedProfile?.provider ?? null;
-          const currentModel = selectedProfile?.model ?? null;
-          const currentBaseUrl = (selectedProfile?.base_url ?? "").trim();
-          const needsProfileSync =
-            currentProvider !== payload.payload.provider ||
-            currentModel !== payload.payload.model ||
-            currentBaseUrl !== (payload.payload.base_url ?? "");
-          if (needsProfileSync) {
-            const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
-              method: "PUT",
-              body: JSON.stringify({
-                provider: payload.payload.provider,
-                base_url: payload.payload.base_url,
-                model: payload.payload.model,
-              }),
-            });
-            setProfiles((prev) => prev.map((p) => (p.id === res.data.profile.id ? res.data.profile : p)));
-          }
-        }
-
         if (presetDirty) {
           const res = await apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${projectId}/llm_preset`, {
             method: "PUT",
@@ -454,7 +534,7 @@ export function usePromptsPageState(): PromptsPageState {
         }
       }
     },
-    [bumpWizardLocal, llmForm, presetDirty, projectId, refreshWizard, selectedProfile, selectedProfileId, toast],
+    [bumpWizardLocal, llmForm, presetDirty, projectId, refreshWizard, toast],
   );
 
   const updateTaskForm = useCallback((taskKey: string, updater: (prev: LlmForm) => LlmForm) => {
@@ -474,10 +554,20 @@ export function usePromptsPageState(): PromptsPageState {
   const updateTaskProfile = useCallback(
     (taskKey: string, profileId: string | null) => {
       const targetProfile = profileId ? (profiles.find((item) => item.id === profileId) ?? null) : null;
-      const nextForm = targetProfile ? formFromProfile(targetProfile) : { ...llmForm };
       setTaskDrafts((prev) => {
         const current = prev[taskKey];
         if (!current) return prev;
+        const nextForm = targetProfile
+          ? mergeConnectionFields(current.form, {
+              provider: targetProfile.provider,
+              base_url: targetProfile.base_url ?? "",
+              model: targetProfile.model,
+            })
+          : mergeConnectionFields(current.form, {
+              provider: llmForm.provider,
+              base_url: llmForm.base_url,
+              model: llmForm.model,
+            });
         return {
           ...prev,
           [taskKey]: {
@@ -714,6 +804,15 @@ export function usePromptsPageState(): PromptsPageState {
             display_name: String(item.display_name || item.id || "").trim(),
           }))
           .filter((item) => item.id);
+        if (opts.scope === "main" && opts.profileId) {
+          setProfileModelCache((prev) => ({
+            ...prev,
+            [opts.profileId!]: {
+              options,
+              fetchedAt: new Date().toISOString(),
+            },
+          }));
+        }
         setResult({
           loading: false,
           options,
@@ -736,16 +835,20 @@ export function usePromptsPageState(): PromptsPageState {
   );
 
   const reloadMainModels = useCallback(() => {
-    if (mainAccessState.actionReason) {
-      toast.toastError(mainAccessState.actionReason);
+    if (!editingProfileId) {
+      toast.toastError("请先保存 API 配置，再拉取模型列表");
+      return;
+    }
+    if (!editingProfile?.has_api_key) {
+      toast.toastError("请先为当前 API 配置保存 Key，再拉取模型列表");
       return;
     }
     void loadModels({
       scope: "main",
-      form: llmForm,
-      profileId: selectedProfileId,
+      form: profileEditorForm,
+      profileId: editingProfileId,
     });
-  }, [llmForm, loadModels, mainAccessState.actionReason, selectedProfileId, toast]);
+  }, [editingProfile, editingProfileId, loadModels, profileEditorForm, toast]);
 
   const reloadTaskModels = useCallback(
     (taskKey: string) => {
@@ -1058,30 +1161,26 @@ export function usePromptsPageState(): PromptsPageState {
       if (profileBusy) return;
       if (profileId === selectedProfileId) return;
 
-      if (dirty) {
-        const choice = await confirm.choose({
-          title: "当前有未保存修改，是否切换配置？",
-          description: "切换后会刷新表单；建议先保存。",
-          confirmText: "保存并切换",
-          secondaryText: "不保存切换",
-          cancelText: "取消",
-        });
-        if (choice === "cancel") return;
-        if (choice === "confirm") {
-          const ok = await saveAllDirtyModules();
-          if (!ok) return;
-        }
-      }
-
       setProfileBusy(true);
       try {
         await apiJson<{ project: Project }>(`/api/projects/${projectId}`, {
           method: "PUT",
           body: JSON.stringify({ llm_profile_id: profileId }),
         });
-        await reloadAll();
+        setProject((prev) => (prev ? { ...prev, llm_profile_id: profileId } : prev));
+        const nextProfile = profileId ? (profiles.find((item) => item.id === profileId) ?? null) : null;
+        if (nextProfile) {
+          // 绑定主模块时只同步连接字段，保留已有参数，避免温度等行为配置被覆盖。
+          setLlmForm((prev) =>
+            mergeConnectionFields(prev, {
+              provider: nextProfile.provider,
+              base_url: nextProfile.base_url ?? "",
+              model: nextProfile.model,
+            }),
+          );
+        }
         await refreshWizard();
-        toast.toastSuccess("已切换配置");
+        toast.toastSuccess("主模块 API 配置已切换");
       } catch (e) {
         const err = e as ApiError;
         toast.toastError(`${err.message} (${err.code})`, err.requestId);
@@ -1089,18 +1188,17 @@ export function usePromptsPageState(): PromptsPageState {
         setProfileBusy(false);
       }
     },
-    [confirm, dirty, profileBusy, projectId, reloadAll, refreshWizard, saveAllDirtyModules, selectedProfileId, toast],
+    [profileBusy, profiles, projectId, refreshWizard, selectedProfileId, toast],
   );
 
   const createProfile = useCallback(async () => {
-    if (!projectId) return;
     if (profileBusy) return;
     const name = profileName.trim();
     if (!name) {
-      toast.toastError("请先填写“新建配置名”");
+      toast.toastError("请先填写 API 配置名称");
       return;
     }
-    const payload = buildPresetPayload(llmForm);
+    const payload = buildPresetPayload(profileEditorForm);
     if (!payload.ok) {
       toast.toastError(payload.message);
       return;
@@ -1116,84 +1214,96 @@ export function usePromptsPageState(): PromptsPageState {
           provider: payload.payload.provider,
           base_url: payload.payload.base_url,
           model: payload.payload.model,
-          temperature: payload.payload.temperature,
-          top_p: payload.payload.top_p,
-          max_tokens: payload.payload.max_tokens,
-          presence_penalty: payload.payload.presence_penalty,
-          frequency_penalty: payload.payload.frequency_penalty,
-          top_k: payload.payload.top_k,
-          stop: payload.payload.stop,
-          timeout_seconds: payload.payload.timeout_seconds,
-          extra: payload.payload.extra,
           api_key: apiKeyInput ? apiKeyInput : undefined,
         }),
       });
-      await apiJson<{ project: Project }>(`/api/projects/${projectId}`, {
-        method: "PUT",
-        body: JSON.stringify({ llm_profile_id: res.data.profile.id }),
-      });
+      upsertProfile(res.data.profile);
+      setEditingProfileId(res.data.profile.id);
+      setProfileName(res.data.profile.name);
+      setProfileEditorForm(formFromProfile(res.data.profile));
+      setMainModelList(toModelListState(profileModelCache[res.data.profile.id]));
       setApiKey("");
-      await reloadAll();
-      await refreshWizard();
-      toast.toastSuccess("已保存为新配置并应用到项目");
+      toast.toastSuccess("API 配置已创建", res.request_id);
     } catch (e) {
       const err = e as ApiError;
       toast.toastError(`${err.message} (${err.code})`, err.requestId);
     } finally {
       setProfileBusy(false);
     }
-  }, [apiKey, llmForm, profileBusy, profileName, projectId, reloadAll, refreshWizard, toast]);
+  }, [apiKey, profileBusy, profileEditorForm, profileModelCache, profileName, toast, upsertProfile]);
 
   const updateProfile = useCallback(async () => {
-    if (!projectId) return;
     if (profileBusy) return;
-    if (!selectedProfileId) {
-      toast.toastError("请先选择一个后端配置");
+    if (!editingProfileId) {
+      toast.toastError("当前是新建配置草稿，请直接点击“保存配置”");
       return;
     }
-    if (dirty) {
-      const ok = await saveAllDirtyModules();
-      if (!ok) return;
-    }
-    const payload = buildPresetPayload(llmForm);
+    const payload = buildPresetPayload(profileEditorForm);
     if (!payload.ok) {
       toast.toastError(payload.message);
       return;
     }
     const name = profileName.trim();
+    const currentProfile = profiles.find((item) => item.id === editingProfileId) ?? null;
     setProfileBusy(true);
     try {
-      await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
+      const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${editingProfileId}`, {
         method: "PUT",
         body: JSON.stringify({
           name: name ? name : undefined,
           provider: payload.payload.provider,
           base_url: payload.payload.base_url,
           model: payload.payload.model,
-          temperature: payload.payload.temperature,
-          top_p: payload.payload.top_p,
-          max_tokens: payload.payload.max_tokens,
-          presence_penalty: payload.payload.presence_penalty,
-          frequency_penalty: payload.payload.frequency_penalty,
-          top_k: payload.payload.top_k,
-          stop: payload.payload.stop,
-          timeout_seconds: payload.payload.timeout_seconds,
-          extra: payload.payload.extra,
         }),
       });
-      await reloadAll();
-      toast.toastSuccess("已更新配置");
+      upsertProfile(res.data.profile);
+      setProfileName(res.data.profile.name);
+      setProfileEditorForm(formFromProfile(res.data.profile));
+      if (selectedProfileId === res.data.profile.id) {
+        setLlmForm((prev) =>
+          mergeConnectionFields(prev, {
+            provider: res.data.profile.provider,
+            base_url: res.data.profile.base_url ?? "",
+            model: res.data.profile.model,
+          }),
+        );
+      }
+      // 已绑定该 API 配置的任务模块只同步连接字段，保留各自参数。
+      setTaskDrafts((prev) => {
+        const next = { ...prev };
+        for (const [taskKey, draft] of Object.entries(prev)) {
+          if ((draft.llm_profile_id ?? "") !== res.data.profile.id) continue;
+          next[taskKey] = {
+            ...draft,
+            form: mergeConnectionFields(draft.form, {
+              provider: res.data.profile.provider,
+              base_url: res.data.profile.base_url ?? "",
+              model: res.data.profile.model,
+            }),
+          };
+        }
+        return next;
+      });
+      if (
+        currentProfile &&
+        (currentProfile.provider !== res.data.profile.provider ||
+          (currentProfile.base_url ?? "") !== (res.data.profile.base_url ?? ""))
+      ) {
+        toast.toastSuccess("API 配置已更新；已引用该配置的模块连接字段已同步到草稿");
+      } else {
+        toast.toastSuccess("API 配置已更新");
+      }
     } catch (e) {
       const err = e as ApiError;
       toast.toastError(`${err.message} (${err.code})`, err.requestId);
     } finally {
       setProfileBusy(false);
     }
-  }, [dirty, llmForm, profileBusy, profileName, projectId, reloadAll, saveAllDirtyModules, selectedProfileId, toast]);
+  }, [editingProfileId, profileBusy, profileEditorForm, profileName, profiles, selectedProfileId, toast, upsertProfile]);
 
   const deleteProfile = useCallback(async () => {
-    if (!selectedProfileId) {
-      toast.toastError("请先选择一个后端配置");
+    if (!editingProfileId) {
+      toast.toastError("当前没有可删除的 API 配置");
       return;
     }
     if (profileBusy) return;
@@ -1206,22 +1316,43 @@ export function usePromptsPageState(): PromptsPageState {
 
     setProfileBusy(true);
     try {
-      await apiJson<Record<string, never>>(`/api/llm_profiles/${selectedProfileId}`, { method: "DELETE" });
+      await apiJson<Record<string, never>>(`/api/llm_profiles/${editingProfileId}`, { method: "DELETE" });
+      setProfiles((prev) => prev.filter((item) => item.id !== editingProfileId));
+      setProfileModelCache((prev) => {
+        const next = { ...prev };
+        delete next[editingProfileId];
+        return next;
+      });
+      setProfileTestResults((prev) => {
+        const next = { ...prev };
+        delete next[editingProfileId];
+        return next;
+      });
       setApiKey("");
-      await reloadAll();
+      const nextProfiles = profiles.filter((item) => item.id !== editingProfileId);
+      const fallbackProfile =
+        (selectedProfileId && selectedProfileId !== editingProfileId
+          ? (nextProfiles.find((item) => item.id === selectedProfileId) ?? null)
+          : null) ??
+        nextProfiles[0] ??
+        null;
+      loadProfileIntoEditor(fallbackProfile);
+      if (selectedProfileId === editingProfileId) {
+        setProject((prev) => (prev ? { ...prev, llm_profile_id: null } : prev));
+      }
       await refreshWizard();
-      toast.toastSuccess("已删除配置");
+      toast.toastSuccess("API 配置已删除");
     } catch (e) {
       const err = e as ApiError;
       toast.toastError(`${err.message} (${err.code})`, err.requestId);
     } finally {
       setProfileBusy(false);
     }
-  }, [confirm, profileBusy, reloadAll, refreshWizard, selectedProfileId, toast]);
+  }, [confirm, editingProfileId, loadProfileIntoEditor, profileBusy, profiles, refreshWizard, selectedProfileId, toast]);
 
   const saveApiKeyToProfile = useCallback(async (): Promise<boolean> => {
-    if (!selectedProfileId) {
-      toast.toastError("请先选择或新建一个后端配置");
+    if (!editingProfileId) {
+      toast.toastError("请先保存 API 配置，再保存 Key");
       return false;
     }
     const key = apiKey.trim();
@@ -1233,12 +1364,14 @@ export function usePromptsPageState(): PromptsPageState {
 
     setProfileBusy(true);
     try {
-      await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
+      const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${editingProfileId}`, {
         method: "PUT",
-        body: JSON.stringify({ api_key: key }),
+        body: JSON.stringify({
+          api_key: key,
+        }),
       });
+      upsertProfile(res.data.profile);
       setApiKey("");
-      await reloadAll();
       await refreshWizard();
       bumpWizardLocal();
       toast.toastSuccess("已保存 Key");
@@ -1250,11 +1383,11 @@ export function usePromptsPageState(): PromptsPageState {
     } finally {
       setProfileBusy(false);
     }
-  }, [apiKey, bumpWizardLocal, profileBusy, refreshWizard, reloadAll, selectedProfileId, toast]);
+  }, [apiKey, bumpWizardLocal, editingProfileId, profileBusy, refreshWizard, toast, upsertProfile]);
 
   const clearApiKeyInProfile = useCallback(async () => {
-    if (!selectedProfileId) {
-      toast.toastError("请先选择一个后端配置");
+    if (!editingProfileId) {
+      toast.toastError("请先选择一个 API 配置");
       return;
     }
     if (profileBusy) return;
@@ -1267,12 +1400,12 @@ export function usePromptsPageState(): PromptsPageState {
 
     setProfileBusy(true);
     try {
-      await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
+      const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${editingProfileId}`, {
         method: "PUT",
         body: JSON.stringify({ api_key: null }),
       });
+      upsertProfile(res.data.profile);
       setApiKey("");
-      await reloadAll();
       await refreshWizard();
       bumpWizardLocal();
       toast.toastSuccess("已清除 Key");
@@ -1282,7 +1415,7 @@ export function usePromptsPageState(): PromptsPageState {
     } finally {
       setProfileBusy(false);
     }
-  }, [bumpWizardLocal, confirm, profileBusy, refreshWizard, reloadAll, selectedProfileId, toast]);
+  }, [bumpWizardLocal, confirm, editingProfileId, profileBusy, refreshWizard, toast, upsertProfile]);
 
   const saveTaskApiKey = useCallback(
     async (taskKey: string): Promise<boolean> => {
@@ -1471,6 +1604,77 @@ export function usePromptsPageState(): PromptsPageState {
     [profiles, projectId, selectedProfile, taskCatalogByKey, taskDrafts, toast],
   );
 
+  const testProfileConnection = useCallback(async (): Promise<boolean> => {
+    if (!projectId) return false;
+    if (!editingProfileId) {
+      toast.toastError("请先保存 API 配置，再测试连接");
+      return false;
+    }
+    if (!editingProfile?.has_api_key) {
+      toast.toastError("请先为当前 API 配置保存 Key，再测试连接");
+      return false;
+    }
+
+    const payload = buildPresetPayload(profileEditorForm);
+    if (!payload.ok) {
+      toast.toastError(payload.message);
+      return false;
+    }
+
+    setTesting(true);
+    try {
+      const res = await apiJson<{ latency_ms: number; text?: string }>("/api/llm/test", {
+        method: "POST",
+        headers: {
+          "X-LLM-Provider": payload.payload.provider,
+        },
+        body: JSON.stringify({
+          project_id: projectId,
+          profile_id: editingProfileId,
+          provider: payload.payload.provider,
+          base_url: payload.payload.base_url,
+          model: payload.payload.model,
+          timeout_seconds: parseTimeoutSecondsForTest(profileEditorForm.timeout_seconds),
+          extra: payload.payload.extra,
+          params: {
+            temperature: payload.payload.temperature ?? 0,
+            max_tokens: 64,
+          },
+        }),
+      });
+      const preview = (res.data.text ?? "").trim();
+      const summary = `连接成功（延迟 ${res.data.latency_ms}ms${preview ? `，输出：${preview}` : ""}）`;
+      setProfileTestResults((prev) => ({
+        ...prev,
+        [editingProfileId]: {
+          ok: true,
+          message: summary,
+          latencyMs: res.data.latency_ms,
+          requestId: res.request_id,
+          testedAt: new Date().toISOString(),
+        },
+      }));
+      toast.toastSuccess(summary, res.request_id);
+      return true;
+    } catch (e) {
+      const err = e as ApiError;
+      const summary = formatLlmTestApiError(err);
+      setProfileTestResults((prev) => ({
+        ...prev,
+        [editingProfileId]: {
+          ok: false,
+          message: summary,
+          requestId: err.requestId,
+          testedAt: new Date().toISOString(),
+        },
+      }));
+      toast.toastError(summary, err.requestId);
+      return false;
+    } finally {
+      setTesting(false);
+    }
+  }, [editingProfile, editingProfileId, profileEditorForm, projectId, toast]);
+
   const testConnection = useCallback(async (): Promise<boolean> => {
     if (!projectId) return false;
     const payload = buildPresetPayload(llmForm);
@@ -1561,6 +1765,18 @@ export function usePromptsPageState(): PromptsPageState {
     baselineSettings?.vector_embedding_effective_provider ||
     "openai_compatible"
   ).trim();
+  const currentProfileTestResult = editingProfileId ? (profileTestResults[editingProfileId] ?? null) : null;
+  const profileModelCacheMeta = useMemo(() => {
+    const out: Record<string, { count: number; fetchedAt: string | null }> = {};
+    for (const profile of profiles) {
+      const cacheItem = profileModelCache[profile.id];
+      out[profile.id] = {
+        count: cacheItem?.options.length ?? 0,
+        fetchedAt: cacheItem?.fetchedAt ?? null,
+      };
+    }
+    return out;
+  }, [profileModelCache, profiles]);
 
   return {
     loading,
@@ -1583,6 +1799,11 @@ export function usePromptsPageState(): PromptsPageState {
       profiles,
       selectedProfileId,
       onSelectProfile: (id) => void selectProfile(id),
+      editingProfileId,
+      onSelectEditingProfile: (id) => loadProfileIntoEditor(profiles.find((item) => item.id === id) ?? null),
+      onStartCreateProfile: () => loadProfileIntoEditor(null),
+      profileEditorForm,
+      setProfileEditorForm,
       profileName,
       onChangeProfileName: setProfileName,
       profileBusy: profileBusy || testing || savingPreset,
@@ -1593,6 +1814,9 @@ export function usePromptsPageState(): PromptsPageState {
       onChangeApiKey: setApiKey,
       onSaveApiKey: () => void saveApiKeyToProfile(),
       onClearApiKey: () => void clearApiKeyInProfile(),
+      onTestProfileConnection: () => void testProfileConnection(),
+      currentProfileTestResult,
+      profileModelCacheMeta,
       taskModules,
       addableTasks,
       selectedAddTaskKey,

@@ -30,6 +30,7 @@ const ROUTE_META: RouteMeta[] = [
   { suffix: "/fractal", title: UI_COPY.nav.fractal, layout: "tool" },
   { suffix: "/styles", title: UI_COPY.nav.styles, layout: "tool" },
   { suffix: "/prompts", title: UI_COPY.nav.prompts, layout: "tool" },
+  { suffix: "/prompts-backup", title: `${UI_COPY.nav.prompts}（备份）`, layout: "tool" },
   { suffix: "/prompt-studio", title: UI_COPY.nav.promptStudio, layout: "tool" },
   { suffix: "/prompt-templates", title: UI_COPY.nav.promptTemplates, layout: "tool" },
   { suffix: "/import", title: UI_COPY.nav.dataImport, layout: "tool" },

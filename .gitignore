@@ -145,3 +145,4 @@ Desktop.ini
 # Cleanup (repo root):
 #   Remove-Item -LiteralPath ("\\?\{0}\nul" -f (Get-Location)) -Force
 /nul
+.venv311/

@@ -95,6 +95,10 @@ const PromptsPage = lazy(async () => {
   const mod = await importWithChunkRetry(() => import("./pages/PromptsPage"));
   return { default: mod.PromptsPage };
 });
+const PromptsPageBackup = lazy(async () => {
+  const mod = await importWithChunkRetry(() => import("./pages/PromptsPageBackup"));
+  return { default: mod.PromptsPageBackup };
+});
 
 const PromptStudioPage = lazy(async () => {
   const mod = await importWithChunkRetry(() => import("./pages/PromptStudioPage"));
@@ -239,6 +243,10 @@ const router = createBrowserRouter([
               {
                 path: "prompts",
                 element: <PromptsPage />,
+              },
+              {
+                path: "prompts-backup",
+                element: <PromptsPageBackup />,
               },
               {
                 path: "prompt-studio",

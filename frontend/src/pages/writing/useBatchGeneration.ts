@@ -208,7 +208,7 @@ export function useBatchGeneration(args: {
   const startBatchGeneration = useCallback(async () => {
     if (!projectId) return;
     if (!preset) {
-      toast.toastError("Please save an LLM preset on the Prompts page first.");
+      toast.toastError("请先在「模型配置」页面保存 LLM 预设。");
       return;
     }
     setBatchLoading(true);
@@ -251,19 +251,20 @@ export function useBatchGeneration(args: {
       if (res.data.task.project_task_id) {
         void refreshBatchRuntime(res.data.task.project_task_id, { silent: true });
       }
-      toast.toastSuccess("Batch generation started.", res.request_id);
+      toast.toastSuccess("批量生成已启动。", res.request_id);
     } catch (e) {
       const err = e as ApiError;
       const missingNumbers = extractMissingNumbers(err);
       if (missingNumbers.length > 0) {
         const targetNumber = missingNumbers[0]!;
         const target = chapters.find((chapter) => chapter.number === targetNumber);
+        // 当检测到前置章节缺失内容时，直接给出可跳转入口，减少用户定位成本。
         toast.toastError(
-          `Missing prerequisite chapter content: ${missingNumbers.join(", ")}.`,
+          `缺少前置章节内容：${missingNumbers.join("、")}。`,
           err.requestId,
           target
             ? {
-                label: `Open chapter ${targetNumber}`,
+                label: `打开第 ${targetNumber} 章`,
                 onClick: () => void requestSelectChapter(target.id),
               }
             : undefined,
@@ -292,7 +293,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await cancelBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Batch generation canceled.");
+      toast.toastSuccess("批量生成已取消。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -307,7 +308,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await pauseBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Batch generation paused.");
+      toast.toastSuccess("批量生成已暂停。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -322,7 +323,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await resumeBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Batch generation resumed.");
+      toast.toastSuccess("批量生成已继续。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -337,7 +338,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await retryFailedBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Failed chapters queued for retry.");
+      toast.toastSuccess("失败章节已加入重试队列。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
@@ -352,7 +353,7 @@ export function useBatchGeneration(args: {
     setBatchLoading(true);
     try {
       await skipFailedBatchGenerationTask(batchTask.id);
-      toast.toastSuccess("Failed chapters skipped.");
+      toast.toastSuccess("失败章节已跳过。");
       await refreshBatchTask({ silent: true });
     } catch (e) {
       const err = e as ApiError;
