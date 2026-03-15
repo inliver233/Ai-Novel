@@ -84,6 +84,19 @@ test-results/
 backend/.chroma/
 backend/.chroma*/
 
+# Local runtime/state
+.run/
+logs/
+config.toml
+
+# Local project data (do not commit generated/story content)
+backend/data/
+backend/uploads/
+backend/exports/
+novels/
+projects/
+workspace/
+
 # -------------------------
 # Environment / secrets (keep *.example)
 # -------------------------
