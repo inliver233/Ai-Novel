@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Header, Query, Request
 from pydantic import Field
@@ -52,6 +53,10 @@ from app.services.vector_rag_service import schedule_vector_rebuild_task
 
 router = APIRouter()
 logger = logging.getLogger("ainovel")
+
+
+def _compact_json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _resolve_task_llm_for_call(
@@ -134,17 +139,21 @@ StoryMemoryImportSchemaVersion = Literal["story_memory_import_v1"]
 
 
 class StoryMemoryImportV1Item(RequestModel):
+    chapter_id: str | None = Field(default=None, max_length=36)
     memory_type: str = Field(min_length=1, max_length=64)
     title: str | None = Field(default=None, max_length=255)
     content: str = Field(min_length=1, max_length=8000)
     importance_score: float = Field(default=0.0)
     story_timeline: int = Field(default=0)
     is_foreshadow: int = Field(default=0, ge=0, le=1)
+    metadata: dict | None = None
 
 
 class StoryMemoryImportV1Request(RequestModel):
     schema_version: StoryMemoryImportSchemaVersion = "story_memory_import_v1"
-    memories: list[StoryMemoryImportV1Item] = Field(default_factory=list, min_length=1, max_length=50)
+    source_tag: str | None = Field(default=None, max_length=64)
+    replace_existing: bool = False
+    memories: list[StoryMemoryImportV1Item] = Field(default_factory=list, max_length=2000)
 
 
 @router.post("/projects/{project_id}/story_memories/import_all")
@@ -161,17 +170,51 @@ def import_all_story_memories(
     if str(body.schema_version or "").strip() != "story_memory_import_v1":
         raise AppError.validation(details={"reason": "unsupported_schema_version", "schema_version": body.schema_version})
 
+    source_tag = str(body.source_tag or "").strip() or None
+    if source_tag and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", source_tag):
+        raise AppError.validation(message="source_tag 格式无效", details={"source_tag": source_tag})
+    if body.replace_existing and not source_tag:
+        raise AppError.validation(message="replace_existing=true 时必须提供 source_tag")
+
     created_ids: list[str] = []
+    deleted_ids: list[str] = []
     now = utc_now()
+
+    if body.replace_existing and source_tag:
+        existing_rows = (
+            db.execute(
+                select(StoryMemory)
+                .where(StoryMemory.project_id == project_id)
+                .where(StoryMemory.metadata_json.is_not(None))
+                .where(StoryMemory.metadata_json.like(f'%\"source\":\"{source_tag}\"%'))
+            )
+            .scalars()
+            .all()
+        )
+        for row in existing_rows:
+            deleted_ids.append(str(row.id))
+            db.delete(row)
+
     for item in body.memories or []:
+        chapter_id = str(item.chapter_id or "").strip() or None
+        if chapter_id:
+            chapter = db.get(Chapter, chapter_id)
+            if chapter is None or str(getattr(chapter, "project_id", "")) != str(project_id):
+                raise AppError.validation(details={"reason": "invalid_chapter_id", "chapter_id": chapter_id})
+
         title = str(item.title or "").strip() or None
         content = str(item.content or "").strip()
         if not content:
             continue
+        metadata_obj = item.metadata if isinstance(item.metadata, dict) else {}
+        if source_tag:
+            metadata_obj = {"source": source_tag, **metadata_obj}
+        elif not metadata_obj:
+            metadata_obj = {"source": "import_all"}
         row = StoryMemory(
             id=new_id(),
             project_id=project_id,
-            chapter_id=None,
+            chapter_id=chapter_id,
             memory_type=str(item.memory_type or "").strip(),
             title=title,
             content=content,
@@ -183,14 +226,16 @@ def import_all_story_memories(
             text_length=0,
             is_foreshadow=int(item.is_foreshadow or 0),
             foreshadow_resolved_at_chapter_id=None,
-            metadata_json=json.dumps({"source": "import_all"}, ensure_ascii=False),
+            metadata_json=_compact_json_dumps(metadata_obj),
             created_at=now,
             updated_at=now,
         )
         db.add(row)
         created_ids.append(str(row.id))
 
-    if not created_ids:
+    if not created_ids and not deleted_ids:
+        if body.replace_existing and source_tag:
+            return ok_payload(request_id=request_id, data={"created": 0, "ids": [], "deleted": 0, "deleted_ids": []})
         raise AppError.validation(message="未导入任何 story_memories", details={"reason": "empty"})
 
     settings_row = db.get(ProjectSettings, project_id)
@@ -206,7 +251,10 @@ def import_all_story_memories(
     schedule_search_rebuild_task(
         db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_import_all"
     )
-    return ok_payload(request_id=request_id, data={"created": len(created_ids), "ids": created_ids})
+    return ok_payload(
+        request_id=request_id,
+        data={"created": len(created_ids), "ids": created_ids, "deleted": len(deleted_ids), "deleted_ids": deleted_ids},
+    )
 
 
 class StoryMemoryForeshadowResolveRequest(RequestModel):

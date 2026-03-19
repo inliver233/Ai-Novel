@@ -12,9 +12,15 @@ import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
 import { ApiError, apiJson } from "../../services/apiClient";
 import { chapterStore } from "../../services/chapterStore";
+import { importAllStoryMemories } from "../../services/storyMemoryApi";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { LLMPreset, Outline, OutlineListItem, Project } from "../../types";
-import { deriveOutlineFromStoredContent } from "../outlineParsing";
+import {
+  buildChapterPlanFromChapter,
+  deriveOutlineFromStoredContent,
+  parseOutlineMarkdownChapters,
+  type OutlineGenChapter,
+} from "../outlineParsing";
 
 import type {
   OutlineActionsBarProps,
@@ -32,6 +38,8 @@ type OutlineLoaded = {
   outline: Outline;
   preset: LLMPreset;
 };
+
+const OUTLINE_PROMISE_SOURCE = "outline_import_v1";
 
 type SaveOutline = (
   nextContent?: string,
@@ -62,6 +70,7 @@ export function useOutlinePageState(): OutlinePageState {
   const bumpWizardLocal = wizard.bumpLocal;
 
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [outlines, setOutlines] = useState<OutlineListItem[]>([]);
   const [activeOutline, setActiveOutline] = useState<Outline | null>(null);
   const [preset, setPreset] = useState<LLMPreset | null>(null);
@@ -80,6 +89,8 @@ export function useOutlinePageState(): OutlinePageState {
     nextStructure?: unknown;
     opts?: { silent?: boolean; snapshotContent?: string };
   } | null>(null);
+  const queuedSavePromiseRef = useRef<Promise<boolean> | null>(null);
+  const queuedSaveResolveRef = useRef<((ok: boolean) => void) | null>(null);
 
   const outlineQuery = useProjectData<OutlineLoaded>(projectId, async (id) => {
     const [outlineResponse, presetResponse] = await Promise.all([
@@ -130,7 +141,12 @@ export function useOutlinePageState(): OutlinePageState {
       if (!projectId) return false;
       if (savingRef.current) {
         queuedSaveRef.current = { nextContent, nextStructure, opts };
-        return false;
+        if (!queuedSavePromiseRef.current) {
+          queuedSavePromiseRef.current = new Promise<boolean>((resolve) => {
+            queuedSaveResolveRef.current = resolve;
+          });
+        }
+        return queuedSavePromiseRef.current;
       }
 
       const silent = Boolean(opts?.silent);
@@ -186,7 +202,17 @@ export function useOutlinePageState(): OutlinePageState {
         if (queuedSaveRef.current) {
           const queued = queuedSaveRef.current;
           queuedSaveRef.current = null;
-          void save(queued.nextContent, queued.nextStructure, queued.opts);
+          void save(queued.nextContent, queued.nextStructure, queued.opts).then((queuedOk) => {
+            if (queuedSaveResolveRef.current) {
+              queuedSaveResolveRef.current(queuedOk);
+              queuedSaveResolveRef.current = null;
+            }
+            queuedSavePromiseRef.current = null;
+          });
+        } else if (queuedSaveResolveRef.current) {
+          queuedSaveResolveRef.current(true);
+          queuedSaveResolveRef.current = null;
+          queuedSavePromiseRef.current = null;
         }
       }
     },
@@ -322,6 +348,41 @@ export function useOutlinePageState(): OutlinePageState {
   );
   const canCreateChapters = chaptersForSkeleton.length > 0;
 
+  const syncOutlinePromiseStoryMemories = useCallback(
+    async (chapters: OutlineGenChapter[], createdChapters: Array<{ id: string; number: number }>) => {
+      if (!projectId) return;
+      const chapterIdByNumber = new Map(createdChapters.map((chapter) => [chapter.number, chapter.id]));
+      const memories = chapters.flatMap((chapter) =>
+        (chapter.promise_items ?? []).map((item) => {
+          const contentParts = [item.content];
+          if (item.resolution_hint) contentParts.push(`回收：${item.resolution_hint}`);
+          return {
+            chapter_id: chapterIdByNumber.get(chapter.number) ?? null,
+            memory_type: "foreshadow",
+            title: item.title || null,
+            content: contentParts.filter(Boolean).join("\n"),
+            importance_score: item.source_kind === "hook" ? 0.7 : item.source_kind === "both" ? 0.8 : 0.9,
+            story_timeline: chapter.number,
+            is_foreshadow: 1,
+            metadata: {
+              source_kind: item.source_kind,
+              planted_chapter_number: item.planted_chapter_number,
+              planned_chapter_numbers: item.planned_chapter_numbers,
+              resolution_hint: item.resolution_hint,
+              chapter_title: chapter.title,
+            },
+          };
+        }),
+      );
+      await importAllStoryMemories(projectId, {
+        source_tag: OUTLINE_PROMISE_SOURCE,
+        replace_existing: true,
+        memories,
+      });
+    },
+    [projectId],
+  );
+
   const createChaptersFromOutline = useCallback(async () => {
     if (!projectId || chaptersForSkeleton.length === 0) return;
 
@@ -335,12 +396,13 @@ export function useOutlinePageState(): OutlinePageState {
       chapters: chaptersForSkeleton.map((chapter) => ({
         number: chapter.number,
         title: chapter.title,
-        plan: (chapter.beats ?? []).join("；"),
+        plan: buildChapterPlanFromChapter(chapter),
       })),
     };
 
     try {
-      await chapterStore.bulkCreateProjectChapters(projectId, payload);
+      const createdChapters = await chapterStore.bulkCreateProjectChapters(projectId, payload);
+      await syncOutlinePromiseStoryMemories(chaptersForSkeleton, createdChapters);
       toast.toastSuccess(getOutlineCreatedChaptersText(chaptersForSkeleton.length));
       markWizardProjectChanged(projectId);
       bumpWizardLocal();
@@ -351,7 +413,8 @@ export function useOutlinePageState(): OutlinePageState {
         const replaceOk = await confirm.confirm({ ...OUTLINE_COPY.confirms.replaceSkeleton, danger: true });
         if (!replaceOk) return;
         try {
-          await chapterStore.bulkCreateProjectChapters(projectId, payload, { replace: true });
+          const createdChapters = await chapterStore.bulkCreateProjectChapters(projectId, payload, { replace: true });
+          await syncOutlinePromiseStoryMemories(chaptersForSkeleton, createdChapters);
           toast.toastSuccess(getOutlineCreatedChaptersText(chaptersForSkeleton.length, true));
           markWizardProjectChanged(projectId);
           bumpWizardLocal();
@@ -364,7 +427,66 @@ export function useOutlinePageState(): OutlinePageState {
       }
       toast.toastError(`${err.message} (${err.code})`, err.requestId);
     }
-  }, [bumpWizardLocal, chaptersForSkeleton, confirm, navigate, projectId, toast]);
+  }, [bumpWizardLocal, chaptersForSkeleton, confirm, navigate, projectId, syncOutlinePromiseStoryMemories, toast]);
+
+  const importOutlineFile = useCallback(
+    async (file: File) => {
+      if (!projectId) return;
+      const confirmed = await confirm.confirm(OUTLINE_COPY.confirms.importOutline);
+      if (!confirmed) return;
+
+      setImporting(true);
+      try {
+        const raw = await file.text();
+        const parsed = deriveOutlineFromStoredContent(raw, null);
+        const chapters = parsed.chapters.length > 0 ? parsed.chapters : parseOutlineMarkdownChapters(raw);
+        if (chapters.length === 0) {
+          toast.toastError(OUTLINE_COPY.importNoChapters);
+          return;
+        }
+
+        const saved = await save(parsed.normalizedContentMd, { chapters });
+        if (!saved) return;
+        toast.toastSuccess(OUTLINE_COPY.importSaved);
+
+        const payload = {
+          chapters: chapters.map((chapter) => ({
+            number: chapter.number,
+            title: chapter.title,
+            plan: buildChapterPlanFromChapter(chapter),
+          })),
+        };
+
+        try {
+          const createdChapters = await chapterStore.bulkCreateProjectChapters(projectId, payload);
+          await syncOutlinePromiseStoryMemories(chapters, createdChapters);
+          toast.toastSuccess(getOutlineCreatedChaptersText(chapters.length));
+          markWizardProjectChanged(projectId);
+          bumpWizardLocal();
+          navigate(`/projects/${projectId}/writing`);
+        } catch (error) {
+          const err = error as ApiError;
+          if (err.code === "CONFLICT" && err.status === 409) {
+            const replaceOk = await confirm.confirm({ ...OUTLINE_COPY.confirms.replaceSkeleton, danger: true });
+            if (!replaceOk) return;
+            const createdChapters = await chapterStore.bulkCreateProjectChapters(projectId, payload, { replace: true });
+            await syncOutlinePromiseStoryMemories(chapters, createdChapters);
+            toast.toastSuccess(getOutlineCreatedChaptersText(chapters.length, true));
+            markWizardProjectChanged(projectId);
+            bumpWizardLocal();
+            navigate(`/projects/${projectId}/writing`);
+            return;
+          }
+          toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        }
+      } catch {
+        toast.toastError(OUTLINE_COPY.importReadFailed);
+      } finally {
+        setImporting(false);
+      }
+    },
+    [bumpWizardLocal, confirm, navigate, projectId, save, syncOutlinePromiseStoryMemories, toast],
+  );
 
   const openCreateTitleModal = useCallback(() => {
     setTitleModal({
@@ -429,7 +551,9 @@ export function useOutlinePageState(): OutlinePageState {
       createChaptersDisabledReason: canCreateChapters ? undefined : OUTLINE_COPY.createChaptersDisabledReason,
       dirty,
       saving,
+      importing,
       onCreateChapters: () => void createChaptersFromOutline(),
+      onImportOutlineFile: (file) => void importOutlineFile(file),
       onOpenGenerate: () => generation.setOpen(true),
       onSave: () => void save(),
     },

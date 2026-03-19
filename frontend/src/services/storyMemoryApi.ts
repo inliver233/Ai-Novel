@@ -104,3 +104,33 @@ export async function markStoryMemoryDone(
   );
   return res.data.story_memory;
 }
+
+export type StoryMemoryImportItem = {
+  chapter_id?: string | null;
+  memory_type: string;
+  title?: string | null;
+  content: string;
+  importance_score?: number;
+  story_timeline?: number;
+  is_foreshadow?: number;
+  metadata?: Record<string, unknown> | null;
+};
+
+export async function importAllStoryMemories(
+  projectId: string,
+  body: {
+    schema_version?: "story_memory_import_v1";
+    source_tag?: string;
+    replace_existing?: boolean;
+    memories: StoryMemoryImportItem[];
+  },
+): Promise<{ created: number; ids: string[]; deleted: number; deleted_ids: string[] }> {
+  const res = await apiJson<{ created: number; ids: string[]; deleted: number; deleted_ids: string[] }>(
+    `/api/projects/${projectId}/story_memories/import_all`,
+    {
+      method: "POST",
+      body: JSON.stringify({ schema_version: "story_memory_import_v1", ...body }),
+    },
+  );
+  return res.data;
+}

@@ -132,6 +132,7 @@ issues/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.csv
 # Not for open-source (internal workflow / docs)
 # -------------------------
 /.codex/
+/doc/
 /docs/
 /issues/
 /plan/

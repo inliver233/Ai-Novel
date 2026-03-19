@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { MarkdownEditor } from "../../components/atelier/MarkdownEditor";
 import { Modal } from "../../components/ui/Modal";
 import { ProgressBar } from "../../components/ui/ProgressBar";
@@ -76,12 +77,16 @@ export type OutlineActionsBarProps = {
   createChaptersDisabledReason?: string;
   dirty: boolean;
   saving: boolean;
+  importing: boolean;
   onCreateChapters: () => void;
+  onImportOutlineFile: (file: File) => void;
   onOpenGenerate: () => void;
   onSave: () => void;
 };
 
 export function OutlineActionsBar(props: OutlineActionsBarProps) {
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="flex items-center gap-2">
@@ -97,10 +102,29 @@ export function OutlineActionsBar(props: OutlineActionsBarProps) {
         <button className="btn btn-secondary" onClick={props.onOpenGenerate} type="button">
           {OUTLINE_COPY.generate}
         </button>
+        <button
+          className="btn btn-secondary"
+          disabled={props.saving || props.importing}
+          onClick={() => importInputRef.current?.click()}
+          type="button"
+        >
+          {props.importing ? OUTLINE_COPY.importingOutlineFile : OUTLINE_COPY.importOutlineFile}
+        </button>
+        <input
+          ref={importInputRef}
+          accept=".md,.markdown,.txt,text/markdown,text/plain"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) props.onImportOutlineFile(file);
+            event.currentTarget.value = "";
+          }}
+          type="file"
+        />
       </div>
       <button
         className={props.dirty ? "btn btn-primary" : "btn btn-secondary"}
-        disabled={!props.dirty || props.saving}
+        disabled={!props.dirty || props.saving || props.importing}
         onClick={props.onSave}
         type="button"
       >
