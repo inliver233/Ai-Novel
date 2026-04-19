@@ -463,6 +463,15 @@ export function AppShell() {
                     </NavLink>
                   )}
 
+                  <a
+                    className="btn btn-secondary"
+                    href="https://linux.do"
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {UI_COPY.auth.linuxdoFriendLink}
+                  </a>
+
                   <div className="hidden">
                     <ThemeToggle />
                   </div>

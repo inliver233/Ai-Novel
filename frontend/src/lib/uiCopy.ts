@@ -113,6 +113,7 @@ export const UI_COPY = {
     registering: "注册中...",
     registerSuccess: "注册成功",
     logout: "退出登录",
+    linuxdoFriendLink: "LinuxDo友链",
     sessionExpireAtPrefix: "会话到期：",
     devFallbackTag: "本地模式（DEV）",
 
