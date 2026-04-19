@@ -197,7 +197,8 @@ def load_detailed_outline_context(
         characters = current_ch.get("characters")
         if characters:
             if isinstance(characters, list):
-                parts.append(f"\u51fa\u573a\u89d2\u8272\uff1a{'\uff0c'.join(str(c) for c in characters)}")
+                joined_characters = "，".join(str(c) for c in characters)
+                parts.append(f"\u51fa\u573a\u89d2\u8272\uff1a{joined_characters}")
             else:
                 parts.append(f"\u51fa\u573a\u89d2\u8272\uff1a{characters}")
         emotional = current_ch.get("emotional_arc") or current_ch.get("emotion")
