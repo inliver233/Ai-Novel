@@ -49,10 +49,14 @@ class ProjectSettingsOut(BaseModel):
     constraints: str
     context_optimizer_enabled: bool = False
 
+    auto_update_worldbook_enabled: bool = True
     auto_update_characters_enabled: bool = True
     auto_update_story_memory_enabled: bool = True
+    auto_update_graph_enabled: bool = True
     auto_update_vector_enabled: bool = True
     auto_update_search_enabled: bool = True
+    auto_update_fractal_enabled: bool = True
+    auto_update_tables_enabled: bool = True
 
     query_preprocessing: QueryPreprocessingConfig | None
     query_preprocessing_default: QueryPreprocessingConfig
@@ -108,10 +112,14 @@ class ProjectSettingsUpdate(BaseModel):
     constraints: str | None = Field(default=None, max_length=MAX_TEXT_CHARS)
     context_optimizer_enabled: bool | None = None
 
+    auto_update_worldbook_enabled: bool | None = None
     auto_update_characters_enabled: bool | None = None
     auto_update_story_memory_enabled: bool | None = None
+    auto_update_graph_enabled: bool | None = None
     auto_update_vector_enabled: bool | None = None
     auto_update_search_enabled: bool | None = None
+    auto_update_fractal_enabled: bool | None = None
+    auto_update_tables_enabled: bool | None = None
 
     query_preprocessing: QueryPreprocessingConfig | None = None
 

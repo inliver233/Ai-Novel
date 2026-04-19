@@ -44,9 +44,18 @@ class ProjectSettings(Base):
     context_optimizer_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Auto update switches (default ON for normal users).
+    #
+    # Keep this list aligned with Alembic revision e1c65f9a82c6. Production
+    # databases already contain these NOT NULL columns; if the ORM model omits a
+    # column, SQLAlchemy will generate INSERTs that violate the database schema
+    # when project_settings rows are lazily created at runtime.
+    auto_update_worldbook_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     auto_update_characters_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     auto_update_story_memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    auto_update_graph_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     auto_update_vector_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     auto_update_search_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    auto_update_fractal_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    auto_update_tables_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     vector_index_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_vector_build_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)

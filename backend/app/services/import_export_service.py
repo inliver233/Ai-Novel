@@ -340,6 +340,14 @@ def export_project_bundle(db: Session, *, project_id: str) -> dict[str, Any]:
             "world_setting": (settings_row.world_setting if settings_row else "") or "",
             "style_guide": (settings_row.style_guide if settings_row else "") or "",
             "constraints": (settings_row.constraints if settings_row else "") or "",
+            "auto_update_worldbook_enabled": bool(getattr(settings_row, "auto_update_worldbook_enabled", True)) if settings_row else True,
+            "auto_update_characters_enabled": bool(getattr(settings_row, "auto_update_characters_enabled", True)) if settings_row else True,
+            "auto_update_story_memory_enabled": bool(getattr(settings_row, "auto_update_story_memory_enabled", True)) if settings_row else True,
+            "auto_update_graph_enabled": bool(getattr(settings_row, "auto_update_graph_enabled", True)) if settings_row else True,
+            "auto_update_vector_enabled": bool(getattr(settings_row, "auto_update_vector_enabled", True)) if settings_row else True,
+            "auto_update_search_enabled": bool(getattr(settings_row, "auto_update_search_enabled", True)) if settings_row else True,
+            "auto_update_fractal_enabled": bool(getattr(settings_row, "auto_update_fractal_enabled", True)) if settings_row else True,
+            "auto_update_tables_enabled": bool(getattr(settings_row, "auto_update_tables_enabled", True)) if settings_row else True,
             "vector_embedding": {
                 "provider": getattr(settings_row, "vector_embedding_provider", None) if settings_row else None,
                 "base_url": getattr(settings_row, "vector_embedding_base_url", None) if settings_row else None,
@@ -543,6 +551,14 @@ def import_project_bundle(
 
     settings_row.query_preprocessing_json = str(settings_obj.get("query_preprocessing_json") or "") or None
     settings_row.context_optimizer_enabled = bool(settings_obj.get("context_optimizer_enabled", False))
+    settings_row.auto_update_worldbook_enabled = bool(settings_obj.get("auto_update_worldbook_enabled", True))
+    settings_row.auto_update_characters_enabled = bool(settings_obj.get("auto_update_characters_enabled", True))
+    settings_row.auto_update_story_memory_enabled = bool(settings_obj.get("auto_update_story_memory_enabled", True))
+    settings_row.auto_update_graph_enabled = bool(settings_obj.get("auto_update_graph_enabled", True))
+    settings_row.auto_update_vector_enabled = bool(settings_obj.get("auto_update_vector_enabled", True))
+    settings_row.auto_update_search_enabled = bool(settings_obj.get("auto_update_search_enabled", True))
+    settings_row.auto_update_fractal_enabled = bool(settings_obj.get("auto_update_fractal_enabled", True))
+    settings_row.auto_update_tables_enabled = bool(settings_obj.get("auto_update_tables_enabled", True))
 
     db.add(settings_row)
     report["created"]["project_settings"] = 1
