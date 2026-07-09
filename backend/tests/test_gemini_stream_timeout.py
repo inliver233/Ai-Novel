@@ -70,9 +70,9 @@ def _drain_and_inspect(gen: Any) -> Exception | None:
     return None
 
 
-@pytest.mark.known_issue
+@pytest.mark.known_issue  # H25
 def test_gemini_stream_readtimeout_mid_stream_is_wrapped() -> None:
-    # H25: 流式读取 SSE 行时 httpx.ReadTimeout 应被捕获并转为 AppError，而非裸逃逸。
+    # 流式读取 SSE 行时 httpx.ReadTimeout 应被捕获并转为 AppError，而非裸逃逸。
     client = _make_stream_timeout_client(escape_at="iter_lines")
     gen, _state = call_gemini_generate_content_stream(**_build_call_kwargs(client))
 
@@ -84,9 +84,9 @@ def test_gemini_stream_readtimeout_mid_stream_is_wrapped() -> None:
     )
 
 
-@pytest.mark.known_issue
+@pytest.mark.known_issue  # H25
 def test_gemini_stream_readtimeout_at_connect_is_wrapped() -> None:
-    # H25: 建立/进入流连接时 httpx.ReadTimeout 应被捕获并转为 AppError，而非裸逃逸。
+    # 建立/进入流连接时 httpx.ReadTimeout 应被捕获并转为 AppError，而非裸逃逸。
     client = _make_stream_timeout_client(escape_at="enter")
     gen, _state = call_gemini_generate_content_stream(**_build_call_kwargs(client))
 

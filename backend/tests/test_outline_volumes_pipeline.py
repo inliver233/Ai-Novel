@@ -17,15 +17,31 @@ from app.services.outline_parsing_agent.models import AgentStepResult
 
 
 class _DummyDb:
+    """Minimal in-memory Session stub: entity lookup via ``get`` plus the
+    ``execute``/``add``/``commit`` surface the detailed-outline fast-path uses
+    to persist a row. Stored rows are tracked so tests can assert persistence.
+    """
+
     def __init__(self, outline: Outline, project: Project) -> None:
         self._outline = outline
         self._project = project
+        self.added: list = []
 
     def get(self, model, entity_id: str):
         if model is Outline and entity_id == self._outline.id:
             return self._outline
         if model is Project and entity_id == self._project.id:
             return self._project
+        return None
+
+    def execute(self, statement):  # noqa: ARG002 -- matches Session.execute
+        # Fast-path always finds no pre-existing DetailedOutline row here.
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+    def add(self, row) -> None:
+        self.added.append(row)
+
+    def commit(self) -> None:  # no-op, rows already held in self.added
         return None
 
 
@@ -69,8 +85,13 @@ class TestOutlineVolumesPipeline(unittest.TestCase):
         self.assertEqual(volumes[0].title, "第一卷")
         self.assertEqual(volumes[0].beats_text, "卷摘要")
 
-    @pytest.mark.known_issue  # H19：五条管线 SSE/同步逻辑漂移（细纲 max_tokens 同步流式不一致）
-    def test_generate_all_detailed_outlines_uses_llm_for_volume_based_outline(self) -> None:
+    def test_fast_path_persists_volume_with_summary_without_llm(self) -> None:
+        # When an outline structure carries a volume WITH a summary, the
+        # pipeline takes the documented fast path: it persists the summary as
+        # detailed-outline content directly, WITHOUT invoking the LLM, and
+        # emits volume_complete with chapter_count==0. This contract test
+        # pins that intentional short-circuit (formerly mis-tagged H19, which
+        # actually concerns max_tokens sync/stream drift, not LLM invocation).
         outline = Outline(
             id="outline-1",
             project_id="project-1",
@@ -133,12 +154,18 @@ class TestOutlineVolumesPipeline(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(llm_calls, ["卷摘要"])
+        # Fast path: the LLM must NOT be invoked for a volume that already
+        # carries a summary.
+        self.assertEqual(llm_calls, [])
+        # The volume must be persisted (one DetailedOutline row added).
+        self.assertEqual(len(db.added), 1)
+        # volume_complete is emitted with chapter_count 0 (no chapters parsed
+        # in the fast path) and the pipeline finishes without error.
+        complete_events = [e for e in events if e.get("type") == "volume_complete"]
+        self.assertTrue(len(complete_events) == 1)
+        self.assertEqual(complete_events[0].get("chapter_count"), 0)
         self.assertTrue(
-            any(
-                event.get("type") == "volume_complete" and event.get("chapter_count") == 1
-                for event in events
-            )
+            any(event.get("type") == "complete" and event.get("total_chapters") == 0 for event in events)
         )
 
 

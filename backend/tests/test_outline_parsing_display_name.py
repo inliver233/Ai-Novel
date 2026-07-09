@@ -52,8 +52,8 @@ def isolated_dynamic_display_names():
         global_dict.update(snapshot)
 
 
-# H20: 请求 A 注册的动态 agent display_name 不应被请求 B（从未注册）读到
-@pytest.mark.known_issue
+# 请求 A 注册的动态 agent display_name 不应被请求 B（从未注册）读到
+@pytest.mark.known_issue  # H20
 def test_dynamic_display_name_does_not_leak_across_requests(
     isolated_dynamic_display_names: None,
 ) -> None:
@@ -73,8 +73,8 @@ def test_dynamic_display_name_does_not_leak_across_requests(
     )
 
 
-# H20: 并发请求注册同 agent_id 时，各自查对应拿到自己的值，而非 last-write-wins
-@pytest.mark.known_issue
+# 并发请求注册同 agent_id 时，各自查对应拿到自己的值，而非 last-write-wins
+@pytest.mark.known_issue  # H20
 def test_concurrent_requests_do_not_clobber_each_others_display_name(
     isolated_dynamic_display_names: None,
 ) -> None:

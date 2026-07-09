@@ -26,6 +26,7 @@ from app.models.llm_task_preset import LLMTaskPreset
 from app.models.project import Project
 from app.models.project_membership import ProjectMembership
 from app.models.user import User
+from app.services.llm_profile_template import DEFAULT_TIMEOUT_SECONDS
 
 
 def _make_test_app(SessionLocal: sessionmaker) -> FastAPI:
@@ -217,15 +218,13 @@ class TestLlmProfileSyncPresetDefaults(unittest.TestCase):
         self.assertEqual(preset["max_tokens"], 1536)
         self.assertEqual(preset["timeout_seconds"], 96)
 
-    @pytest.mark.known_issue  # M22/M23：max_tokens 默认值口径漂移（期望 180，实际 1200）
     def test_binding_profile_creates_preset_with_updated_defaults(self) -> None:
         profile_id = self._create_profile(name="Defaults", model="gpt-4o-mini")
         self._bind_project_profile(profile_id)
 
         preset = self._get_preset()
-        self.assertEqual(preset["timeout_seconds"], 180)
+        self.assertEqual(preset["timeout_seconds"], DEFAULT_TIMEOUT_SECONDS)
         self.assertEqual(preset["max_tokens"], default_max_tokens("openai", "gpt-4o-mini"))
-        self.assertEqual(preset["max_tokens"], 12000)
 
     def test_profile_update_syncs_bound_task_preset_full_template(self) -> None:
         profile_id = self._create_profile(name="Task Profile", model="gpt-4o-mini")

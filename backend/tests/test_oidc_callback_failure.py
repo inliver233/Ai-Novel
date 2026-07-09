@@ -6,8 +6,10 @@ token 交换成功但响应**缺少 access_token** 时（如 IdP 返回 ``{}`` �
 （302 → next_path），既未调用 ``_fail`` 报错，也未走 ``_linuxdo_fetch_userinfo``。
 结果：用户实际未登录，却被导向成功页，无错误提示、无日志。
 
-正确行为：缺少 access_token 应返回**错误**（400 + ok=False 信封），而非成功重定向；
-且**不应设置会话 cookie**。当前实现有 bug，故本测试标 ``known_issue``，必须红。
+正确行为：缺少 access_token 应走 ``_fail("OIDC_TOKEN_MISSING")``，与其它失败分支一致地
+302 重定向到 ``/login?oidc_error=OIDC_TOKEN_MISSING``（而非 next_path 成功页）；
+且**不应设置会话 cookie**。当前实现有 bug（line 462 ``return response``），故本测试标
+``known_issue``，必须红。bug 修复后（line 462 改为 ``return _fail("OIDC_TOKEN_MISSING")``）转绿。
 
 载体：``make_test_app(factory, [auth_routes])`` + ``create_tables`` 全建活表；
 patch ``_linuxdo_discovery``（避免真实 HTTP）与 ``_linuxdo_exchange_code_for_token``
@@ -69,15 +71,21 @@ def test_linuxdo_oidc_callback_missing_access_token_returns_error() -> None:
                 follow_redirects=False,
             )
 
-        # 正确行为：缺少 access_token 应返回错误（400 + ok=False 信封）。
-        # 当前 bug：直接 return response（line 462）→ 302 成功重定向到 next_path，无错误。
-        assert resp.status_code == 400, f"期望 400 错误，实际 {resp.status_code}（成功重定向即 bug）"
-        body = resp.json()
-        assert body.get("ok") is False
+        # 正确行为：缺少 access_token 应走 _fail("OIDC_TOKEN_MISSING")，302 重定向到
+        # /login?oidc_error=OIDC_TOKEN_MISSING（与其它失败分支一致）。
+        # 当前 bug：直接 return response（line 462）→ 302 到 next_path（"/"），无 oidc_error。
+        assert resp.status_code == 302, f"期望 302 重定向，实际 {resp.status_code}"
+        loc = resp.headers["location"]
+        assert loc.startswith("/login"), (
+            f"期望重定向到 /login（错误页），实际 location={loc!r}（导向 next_path 即 bug）"
+        )
+        assert "oidc_error=OIDC_TOKEN_MISSING" in loc, (
+            f"期望 location 含 oidc_error=OIDC_TOKEN_MISSING，实际 location={loc!r}"
+        )
 
         # 不应设置会话 cookie（用户实际未登录）
-        assert "user_id" not in resp.cookies
-        assert "session_expire_at" not in resp.cookies
+        assert settings.auth_cookie_user_id_name not in resp.cookies
+        assert settings.auth_cookie_expire_at_name not in resp.cookies
     finally:
         settings.linuxdo_oidc_client_id = old_id
         settings.linuxdo_oidc_client_secret = old_secret

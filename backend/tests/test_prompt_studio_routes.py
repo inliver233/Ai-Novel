@@ -106,7 +106,7 @@ class TestPromptStudioRoutes(unittest.TestCase):
         for item in categories[:-1]:
             self.assertGreaterEqual(len(item["presets"]), 1)
 
-    @pytest.mark.known_issue  # M28/M23：prompt preset 契约靠 <plan> 等文本标记切分，模板漂移致断言失败
+    @pytest.mark.known_issue  # REAL BUG (M28/M23): prompt_studio_service.py:65,74 set config output_contract_heading="输出要求：" for plan_chapter/post_edit, but NO resource under app/resources/prompt_presets contains that heading (all use "<OUTPUT_CONTRACT>", verified via Grep). So _output_contract_suffix returns "" and _compose_guidance_template (:214-219) drops the entire output contract — incl. the <plan>/<rewrite> wrapper — from created/edited presets, so the LLM stops wrapping output. assertIn("<plan>", ...) below states the correct behavior the bug violates; it turns green once the heading aligns with the resources.
     def test_prompt_preset_crud_and_activation(self) -> None:
         client = TestClient(self.app)
 
@@ -172,15 +172,21 @@ class TestPromptStudioRoutes(unittest.TestCase):
         )
         self.assertEqual(get_deleted_response.status_code, 404)
 
-    @pytest.mark.known_issue  # M28：preset 分类在列表与详情间判定不一致
     def test_categories_route_filters_prompt_presets_without_guidance_block(self) -> None:
+        # A preset mapped to a category (here via active_for) but missing that
+        # category's guidance block must be excluded from the category listing.
+        # The preset is intentionally unbound (resource_key=None) so
+        # _ensure_prompt_studio_baseline never auto-upgrades it (the legacy
+        # version=3 < outline_generate_v3 resource version=4 path that used to
+        # inject the guidance block cannot fire); it stays guidance-block-free
+        # and the _has_guidance_block filter must keep it out.
         with self.SessionLocal() as db:
             db.add(
                 PromptPreset(
                     id="legacy-outline",
                     project_id="p1",
                     name="Legacy Outline",
-                    resource_key="outline_generate_v3",
+                    resource_key=None,
                     category="prompt",
                     scope="project",
                     version=3,
@@ -216,6 +222,10 @@ class TestPromptStudioRoutes(unittest.TestCase):
         outline_category = next(item for item in categories if item["key"] == "outline_generate")
         preset_ids = [item["id"] for item in outline_category["presets"]]
 
+        # The baseline default outline preset (which carries the guidance block)
+        # is listed, so the category itself works and the filter is meaningful...
+        self.assertTrue(preset_ids)
+        # ...while the guidance-block-free legacy preset is filtered out.
         self.assertNotIn("legacy-outline", preset_ids)
 
     def test_writing_style_crud_and_activation(self) -> None:

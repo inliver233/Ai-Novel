@@ -154,11 +154,13 @@ class TestAuthEndpoints(unittest.TestCase):
         self.assertEqual(resp.status_code, 409)
         self.assertEqual(resp.json()["error"]["code"], "CONFLICT")
 
-    @pytest.mark.known_issue
     def test_register_rejects_reserved_admin_user_id(self) -> None:
-        admin_id = str(settings.auth_admin_user_id or "admin").strip() or "admin"
+        # Admin-id reservation is opt-in via settings.auth_admin_user_id
+        # (auth.py:350-352). Patch it to the id being registered so the
+        # reservation fires and registration is forbidden.
         client = TestClient(self.app)
-        resp = client.post("/api/auth/local/register", json={"user_id": admin_id, "password": "password123"})
+        with patch.object(settings, "auth_admin_user_id", "admin"):
+            resp = client.post("/api/auth/local/register", json={"user_id": "admin", "password": "password123"})
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(resp.json()["error"]["code"], "FORBIDDEN")
 
