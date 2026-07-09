@@ -51,13 +51,9 @@ class TestProjectTaskDedupeChapterDone(unittest.TestCase):
             db.add(
                 ProjectSettings(
                     project_id="p1",
-                    auto_update_worldbook_enabled=True,
-                    auto_update_characters_enabled=False,
-                    auto_update_story_memory_enabled=False,
-                    auto_update_graph_enabled=False,
+                    auto_update_characters_enabled=True,
                     auto_update_vector_enabled=False,
                     auto_update_search_enabled=False,
-                    auto_update_fractal_enabled=False,
                 )
             )
             db.commit()
@@ -86,7 +82,7 @@ class TestProjectTaskDedupeChapterDone(unittest.TestCase):
                 db.execute(
                     select(ProjectTask).where(
                         ProjectTask.project_id == "p1",
-                        ProjectTask.kind == "worldbook_auto_update",
+                        ProjectTask.kind == "characters_auto_update",
                     )
                 )
                 .scalars()

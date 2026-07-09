@@ -19,9 +19,7 @@ from app.models.project_source_document import ProjectSourceDocument
 from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
 from app.models.story_memory import StoryMemory
-from app.models.structured_memory import MemoryEntity, MemoryEvent, MemoryEvidence, MemoryForeshadow, MemoryRelation
 from app.models.user import User
-from app.models.worldbook_entry import WorldBookEntry
 from app.services.import_export_service import export_project_bundle, import_project_bundle
 from app.services.prompt_presets import ensure_default_chapter_preset, ensure_default_outline_preset
 from app.services.vector_kb_service import ensure_default_kb
@@ -47,14 +45,8 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
                 Outline.__table__,
                 Chapter.__table__,
                 Character.__table__,
-                WorldBookEntry.__table__,
                 PromptPreset.__table__,
                 PromptBlock.__table__,
-                MemoryEntity.__table__,
-                MemoryRelation.__table__,
-                MemoryEvent.__table__,
-                MemoryForeshadow.__table__,
-                MemoryEvidence.__table__,
                 StoryMemory.__table__,
                 KnowledgeBase.__table__,
                 ProjectSourceDocument.__table__,
@@ -91,13 +83,7 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
             self.assertEqual(_count(db, select(Outline).where(Outline.project_id == new_project_id)), 1)
             self.assertEqual(_count(db, select(Chapter).where(Chapter.project_id == new_project_id)), 1)
             self.assertEqual(_count(db, select(Character).where(Character.project_id == new_project_id)), 1)
-            self.assertEqual(_count(db, select(WorldBookEntry).where(WorldBookEntry.project_id == new_project_id)), 1)
             self.assertEqual(_count(db, select(ProjectSourceDocument).where(ProjectSourceDocument.project_id == new_project_id)), 1)
-            self.assertEqual(_count(db, select(MemoryEntity).where(MemoryEntity.project_id == new_project_id)), 2)
-            self.assertEqual(_count(db, select(MemoryRelation).where(MemoryRelation.project_id == new_project_id)), 1)
-            self.assertEqual(_count(db, select(MemoryEvent).where(MemoryEvent.project_id == new_project_id)), 1)
-            self.assertEqual(_count(db, select(MemoryForeshadow).where(MemoryForeshadow.project_id == new_project_id)), 1)
-            self.assertEqual(_count(db, select(MemoryEvidence).where(MemoryEvidence.project_id == new_project_id)), 1)
             self.assertEqual(_count(db, select(StoryMemory).where(StoryMemory.project_id == new_project_id)), 1)
             self.assertGreaterEqual(_count(db, select(KnowledgeBase).where(KnowledgeBase.project_id == new_project_id)), 1)
 
@@ -143,38 +129,7 @@ def _seed_project(db: Session) -> None:
     project.active_outline_id = "o1"
 
     db.add(Character(id="char1", project_id="p1", name="Alice", role="hero", profile="p", notes=None))
-    db.add(WorldBookEntry(id="w1", project_id="p1", title="WB", content_md="wb", enabled=True, constant=False, keywords_json="[]"))
 
-    e1 = MemoryEntity(id="e1", project_id="p1", entity_type="person", name="Alice", summary_md="a", attributes_json=None, deleted_at=None)
-    e2 = MemoryEntity(id="e2", project_id="p1", entity_type="person", name="Bob", summary_md="b", attributes_json=None, deleted_at=None)
-    db.add_all([e1, e2])
-    db.add(
-        MemoryRelation(
-            id="r1",
-            project_id="p1",
-            from_entity_id="e1",
-            to_entity_id="e2",
-            relation_type="knows",
-            description_md="d",
-            attributes_json=None,
-            deleted_at=None,
-        )
-    )
-    db.add(MemoryEvent(id="ev1", project_id="p1", chapter_id="c1", event_type="event", title="t", content_md="m", attributes_json=None, deleted_at=None))
-    db.add(
-        MemoryForeshadow(
-            id="f1",
-            project_id="p1",
-            chapter_id="c1",
-            resolved_at_chapter_id=None,
-            title="f",
-            content_md="f",
-            resolved=0,
-            attributes_json=None,
-            deleted_at=None,
-        )
-    )
-    db.add(MemoryEvidence(id="x1", project_id="p1", source_type="chapter", source_id="c1", quote_md="q", attributes_json=None, deleted_at=None))
     db.add(
         StoryMemory(
             id="sm1",

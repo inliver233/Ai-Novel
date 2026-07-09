@@ -206,11 +206,13 @@ class TestCharactersAutoUpdateService(unittest.TestCase):
         self.assertTrue(str(mock_call.call_args_list[1].kwargs.get("request_id") or "").endswith(":retry1"))
 
     def test_schedule_chapter_done_tasks_includes_characters_auto_update(self) -> None:
+        # lite 分支删除了 worldbook / fractal auto-update；当前活调度函数为
+        # vector_rebuild / search_rebuild / characters_auto_update。
         with patch("app.services.vector_rag_service.schedule_vector_rebuild_task", return_value="t-vector"), patch(
             "app.services.search_index_service.schedule_search_rebuild_task", return_value="t-search"
-        ), patch("app.services.project_task_service.schedule_worldbook_auto_update_task", return_value="t-worldbook"), patch(
+        ), patch(
             "app.services.characters_auto_update_service.schedule_characters_auto_update_task", return_value="t-characters"
-        ), patch("app.services.project_task_service.schedule_fractal_rebuild_task", return_value="t-fractal"):
+        ):
             out = schedule_chapter_done_tasks(
                 db=Mock(),
                 project_id="p1",

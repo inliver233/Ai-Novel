@@ -22,18 +22,13 @@ class TestPromptTaskReachabilityRegistry(unittest.TestCase):
         for task in PROMPT_TASK_CATALOG:
             self.assertIn(f'key: "{task.key}"', text)
 
-    def test_ui_copy_and_e2e_registry_registered(self) -> None:
+    def test_ui_copy_registry_covers_backend_tasks(self) -> None:
+        # 跨层一致性：前端 uiCopy.ts 必须为每个后端 prompt 任务提供文案键。
+        # （原版本还断言 Playwright e2e spec 文件存在，但 e2e 基建已在 lite 裁剪中
+        # 删除——见 项目情况完全分析.md C9，故此处只保留仍有效的 ui_copy 检查。）
         ui_copy_text = self.ui_copy_path.read_text(encoding="utf-8")
-        e2e_cache: dict[Path, str] = {}
         for task in PROMPT_TASK_CATALOG:
             self.assertIn(f"{task.ui_copy_key}:", ui_copy_text)
-            self.assertGreater(len(task.e2e_specs), 0)
-            for rel_spec in task.e2e_specs:
-                spec_path = self.repo_root / rel_spec
-                self.assertTrue(spec_path.exists(), msg=f"missing e2e spec: {rel_spec}")
-                if spec_path not in e2e_cache:
-                    e2e_cache[spec_path] = spec_path.read_text(encoding="utf-8")
-                self.assertIn(f'"{task.key}"', e2e_cache[spec_path], msg=f"task {task.key} missing in {rel_spec}")
 
 
 if __name__ == "__main__":

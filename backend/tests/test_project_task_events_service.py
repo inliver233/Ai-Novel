@@ -16,7 +16,6 @@ from app.models.project_task_event import ProjectTaskEvent
 from app.models.user import User
 from app.services.characters_auto_update_service import schedule_characters_auto_update_task
 from app.services.project_task_event_service import append_project_task_event, project_task_event_to_dict
-from app.services.project_task_service import schedule_worldbook_auto_update_task
 from app.services.vector_rag_service import schedule_vector_rebuild_task
 
 
@@ -93,39 +92,6 @@ class TestProjectTaskEventsService(unittest.TestCase):
             self.assertEqual(payload["event_type"], "running")
             self.assertEqual(payload["payload"]["task"]["id"], "pt1")
             self.assertEqual(payload["payload"]["task"]["attempt"], 2)
-
-    def test_worldbook_failed_task_reschedule_emits_retry_event(self) -> None:
-        q = _RecordingQueue()
-        with self.SessionLocal() as db, patch("app.services.task_queue.get_task_queue", return_value=q):
-            db.add(
-                ProjectTask(
-                    id="pt-worldbook",
-                    project_id="p1",
-                    actor_user_id="u1",
-                    kind="worldbook_auto_update",
-                    status="failed",
-                    idempotency_key="worldbook:chapter:c1:since:T1:v1",
-                    params_json=json.dumps({"reason": "chapter_done"}, ensure_ascii=False),
-                    result_json=None,
-                    error_json=json.dumps({"error_type": "RuntimeError", "message": "boom"}, ensure_ascii=False),
-                )
-            )
-            db.commit()
-
-            task_id = schedule_worldbook_auto_update_task(
-                db=db,
-                project_id="p1",
-                actor_user_id="u1",
-                request_id="rid-1",
-                chapter_id="c1",
-                chapter_token="T1",
-                reason="chapter_done",
-            )
-
-            self.assertEqual(task_id, "pt-worldbook")
-            self.assertEqual(q.calls, [("project_task", "pt-worldbook")])
-            events = db.execute(select(ProjectTaskEvent).order_by(ProjectTaskEvent.seq.asc())).scalars().all()
-            self.assertEqual([event.event_type for event in events], ["retry"])
 
     def test_vector_scheduler_new_task_emits_queued_event(self) -> None:
         q = _RecordingQueue()

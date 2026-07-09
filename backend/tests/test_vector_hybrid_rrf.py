@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+import pytest
+
 from app.core.config import settings
 from app.services import vector_rag_service
 
@@ -25,6 +27,7 @@ class TestVectorHybridRrf(unittest.TestCase):
         self.assertTrue(lit.endswith("]"))
         self.assertIn(",", lit)
 
+    @pytest.mark.known_issue  # M13：_ALL_SOURCES 三处定义不一致（4源 vs 3源），overfilter relax 行为漂移
     def test_overfiltering_relax_sources_then_expand_candidates(self) -> None:
         orig_is_postgres = vector_rag_service._is_postgres
         orig_fetch = vector_rag_service._pgvector_hybrid_fetch

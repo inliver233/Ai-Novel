@@ -140,7 +140,9 @@ class TestBatchGenerationWorkerPauseRecovery(unittest.TestCase):
             return_value=("sys", "user", None, None, None, None, {}),
         ), patch.object(
             batch_generation_service,
-            "touch_project_task_heartbeat",
+            # 抑制心跳：touch_batch_project_task 内部会调 touch_project_task_heartbeat，
+            # 后者经未打补丁的 SessionLocal 写真实库（测试内存库无对应线程上下文）。
+            "touch_batch_project_task",
             return_value=None,
         ), patch.object(
             batch_generation_service,

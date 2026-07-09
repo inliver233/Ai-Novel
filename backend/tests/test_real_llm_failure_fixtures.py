@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 
 from app.schemas.characters_auto_update import CharactersAutoUpdateV1Request
-from app.schemas.worldbook_auto_update import WorldbookAutoUpdateV1Request
 from app.services.output_parsers import extract_json_value
 
 
@@ -48,19 +47,3 @@ class TestRealLlmFailureFixtures(unittest.TestCase):
         self.assertEqual(parsed.ops[0].name, "光头强")
         self.assertIsInstance(parsed.ops[0].patch, dict)
 
-    def test_worldbook_auto_update_fixture_reproduces_schema_drift(self) -> None:
-        p = FIX_DIR / "d8024a18-3416-47df-8656-9da9c669853f.worldbook_auto_update.output.txt"
-        text = p.read_text(encoding="utf-8")
-        value, _raw_json = extract_json_value(text)
-
-        self.assertIsInstance(value, dict)
-        self.assertEqual(value.get("schema_version"), "worldbook_auto_update_v1")
-        self.assertIsInstance(value.get("ops"), list)
-        self.assertIn("item", value["ops"][0])
-
-        parsed = WorldbookAutoUpdateV1Request.model_validate(value)
-        self.assertEqual(parsed.ops[0].op, "create")
-        entry0 = parsed.ops[0].entry or {}
-        self.assertIn("content_md", entry0)
-        self.assertNotIn("content", entry0)
-        self.assertIn(str(entry0.get("priority") or ""), {"drop_first", "optional", "important", "must"})

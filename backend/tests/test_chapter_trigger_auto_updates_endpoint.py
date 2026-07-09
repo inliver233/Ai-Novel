@@ -116,8 +116,10 @@ class TestChapterTriggerAutoUpdatesEndpoint(unittest.TestCase):
             self.assertTrue(payload1.get("ok"))
             data1 = payload1.get("data") or {}
             tasks1 = data1.get("tasks") or {}
-            self.assertTrue(str(tasks1.get("worldbook_auto_update") or ""))
-            self.assertTrue(str(tasks1.get("graph_auto_update") or ""))
+            # lite 分支删除了 worldbook/graph auto_update；当前活任务是
+            # vector_rebuild / search_rebuild / characters_auto_update。至少
+            # characters_auto_update 应被调度（默认开关开启）。
+            self.assertTrue(str(tasks1.get("characters_auto_update") or ""))
 
             with self.SessionLocal() as db:
                 before = db.execute(select(ProjectTask)).scalars().all()

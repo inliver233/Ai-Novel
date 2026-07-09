@@ -14,9 +14,7 @@ from app.models.project import Project
 from app.models.project_source_document import ProjectSourceDocument
 from app.models.search_index import SearchDocument
 from app.models.story_memory import StoryMemory
-from app.models.structured_memory import MemoryEntity, MemoryEvidence, MemoryRelation
 from app.models.user import User
-from app.models.worldbook_entry import WorldBookEntry
 from app.services import search_index_service
 
 
@@ -36,13 +34,9 @@ class TestSearchIndexService(unittest.TestCase):
                 Project.__table__,
                 Outline.__table__,
                 Chapter.__table__,
-                WorldBookEntry.__table__,
                 Character.__table__,
                 StoryMemory.__table__,
                 ProjectSourceDocument.__table__,
-                MemoryEntity.__table__,
-                MemoryRelation.__table__,
-                MemoryEvidence.__table__,
                 SearchDocument.__table__,
             ],
         )
@@ -74,21 +68,6 @@ class TestSearchIndexService(unittest.TestCase):
                     status="done",
                 )
             )
-            db.add(
-                WorldBookEntry(
-                    id="w1",
-                    project_id="p1",
-                    title="魔法石",
-                    content_md="一种神秘的石头",
-                    enabled=True,
-                    constant=False,
-                    keywords_json="[]",
-                    exclude_recursion=False,
-                    prevent_recursion=False,
-                    char_limit=0,
-                    priority="important",
-                )
-            )
             db.add(Character(id="ch1", project_id="p1", name="Alice", role="hero", profile="Brave", notes=""))
             db.add(
                 StoryMemory(
@@ -97,7 +76,7 @@ class TestSearchIndexService(unittest.TestCase):
                     chapter_id="c1",
                     memory_type="event",
                     title="相遇",
-                    content="Alice meets Bob",
+                    content="Alice meets Bob at UniqueStoryMemoryToken",
                     full_context_md=None,
                 )
             )
@@ -120,52 +99,24 @@ class TestSearchIndexService(unittest.TestCase):
                     error_message=None,
                 )
             )
-            db.add(MemoryEntity(id="e1", project_id="p1", entity_type="character", name="Bob", summary_md="UniqueEntitySummary", attributes_json=None))
-            db.add(MemoryEntity(id="e2", project_id="p1", entity_type="character", name="Carol", summary_md="", attributes_json=None))
-            db.add(
-                MemoryRelation(
-                    id="r1",
-                    project_id="p1",
-                    from_entity_id="e1",
-                    to_entity_id="e2",
-                    relation_type="ally",
-                    description_md="UniqueRelationDesc",
-                    attributes_json=None,
-                )
-            )
-            db.add(
-                MemoryEvidence(
-                    id="ev1",
-                    project_id="p1",
-                    source_type="chapter",
-                    source_id="c1",
-                    quote_md="UniqueEvidenceQuote",
-                    attributes_json=None,
-                )
-            )
             db.commit()
 
             result = search_index_service.rebuild_project_search_index(db=db, project_id="p1")
             db.commit()
             self.assertTrue(result.get("ok"))
 
-            rows = db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "Hello"}).all()
-            self.assertTrue(rows)
-
+            # 章节正文 / 源文档 / 故事记忆三处活内容均应进入 FTS 索引。
+            self.assertTrue(
+                db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "Hello"}).all()
+            )
             self.assertTrue(
                 db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "UniqueDocToken"}).all()
             )
             self.assertTrue(
-                db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "UniqueEntitySummary"}).all()
-            )
-            self.assertTrue(
-                db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "UniqueRelationDesc"}).all()
-            )
-            self.assertTrue(
-                db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "UniqueEvidenceQuote"}).all()
+                db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "UniqueStoryMemoryToken"}).all()
             )
 
-            # Update chapter content => old tokens should disappear.
+            # 章节内容更新后，旧 token 应消失、新 token 应出现（增量同步）。
             chapter = db.get(Chapter, "c1")
             self.assertIsNotNone(chapter)
             assert chapter is not None
@@ -181,17 +132,3 @@ class TestSearchIndexService(unittest.TestCase):
 
             new_rows = db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "Foobar"}).all()
             self.assertTrue(new_rows)
-
-            # Delete worldbook entry => tokens should disappear.
-            wb = db.get(WorldBookEntry, "w1")
-            self.assertIsNotNone(wb)
-            assert wb is not None
-            db.delete(wb)
-            db.commit()
-
-            result3 = search_index_service.rebuild_project_search_index(db=db, project_id="p1")
-            db.commit()
-            self.assertTrue(result3.get("ok"))
-
-            wb_rows = db.execute(text("SELECT rowid FROM search_index WHERE search_index MATCH :q"), {"q": "魔法石"}).all()
-            self.assertFalse(wb_rows)

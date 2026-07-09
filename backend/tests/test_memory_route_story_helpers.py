@@ -10,21 +10,11 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes.memory_route_models import StoryMemoryImportV1Item
 from app.api.routes.memory_route_story_helpers import (
-    _build_story_memory_open_loops_payload,
     _ensure_story_memory_rebuild_dirty,
     _import_story_memories_payload,
-    _list_story_memory_open_loop_rows,
-    _normalize_story_memory_open_loops_args,
-    _normalize_story_memory_resolved_at_chapter_id,
-    _require_story_memory_foreshadow,
-    _resolve_story_memory_foreshadow_payload,
     _validate_story_memory_import_schema_version,
 )
-from app.api.routes.memory_route_story_mappers import (
-    _build_story_memory_foreshadow_payload,
-    _build_story_memory_import_row,
-    _build_story_memory_open_loop_item,
-)
+from app.api.routes.memory_route_story_mappers import _build_story_memory_import_row
 from app.core.errors import AppError
 from app.db.base import Base
 from app.models.chapter import Chapter
@@ -38,6 +28,13 @@ UTC = timezone.utc
 
 
 class TestMemoryRouteStoryHelpers(unittest.TestCase):
+    """story_memory 导入路径与重建脏标记的活功能测试。
+
+    注：历史版本还覆盖了 "open_loops 列表" / "foreshadow 解析" 等子功能，
+    这些 helper 已随 lite 裁剪删除（story_memory 路由仅保留 CRUD + merge + import），
+    故此处只测当前仍存在的导入与脏标记路径。
+    """
+
     def setUp(self) -> None:
         engine = create_engine(
             'sqlite:///:memory:',
@@ -52,8 +49,8 @@ class TestMemoryRouteStoryHelpers(unittest.TestCase):
                 Project.__table__,
                 Outline.__table__,
                 Chapter.__table__,
-                StoryMemory.__table__,
                 ProjectSettings.__table__,
+                StoryMemory.__table__,
             ],
         )
         self.SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -63,68 +60,6 @@ class TestMemoryRouteStoryHelpers(unittest.TestCase):
             db.add(Project(id='p1', owner_user_id='u_owner', name='Project 1', genre=None, logline=None))
             db.add(Outline(id='o1', project_id='p1', title='Outline', content_md=None, structure_json=None))
             db.add(Chapter(id='c1', project_id='p1', outline_id='o1', number=1, title='Ch1', status='done'))
-            db.add(Chapter(id='c2', project_id='p1', outline_id='o1', number=2, title='Ch2', status='done'))
-            db.add_all(
-                [
-                    StoryMemory(
-                        id='sm1',
-                        project_id='p1',
-                        chapter_id='c1',
-                        memory_type='foreshadow',
-                        title='Open clue',
-                        content='A' * 220,
-                        full_context_md=None,
-                        importance_score=0.8,
-                        tags_json=None,
-                        story_timeline=30,
-                        text_position=0,
-                        text_length=10,
-                        is_foreshadow=1,
-                        foreshadow_resolved_at_chapter_id=None,
-                        metadata_json=None,
-                        created_at=datetime(2026, 3, 15, 12, 0, tzinfo=UTC),
-                        updated_at=datetime(2026, 3, 15, 12, 0, tzinfo=UTC),
-                    ),
-                    StoryMemory(
-                        id='sm2',
-                        project_id='p1',
-                        chapter_id='c2',
-                        memory_type='foreshadow',
-                        title='Open newer',
-                        content='new clue',
-                        full_context_md=None,
-                        importance_score=0.9,
-                        tags_json=None,
-                        story_timeline=31,
-                        text_position=0,
-                        text_length=10,
-                        is_foreshadow=1,
-                        foreshadow_resolved_at_chapter_id=None,
-                        metadata_json=None,
-                        created_at=datetime(2026, 3, 15, 12, 5, tzinfo=UTC),
-                        updated_at=datetime(2026, 3, 15, 12, 5, tzinfo=UTC),
-                    ),
-                    StoryMemory(
-                        id='sm3',
-                        project_id='p1',
-                        chapter_id='c2',
-                        memory_type='fact',
-                        title='Not foreshadow',
-                        content='plain memory',
-                        full_context_md=None,
-                        importance_score=0.1,
-                        tags_json=None,
-                        story_timeline=32,
-                        text_position=0,
-                        text_length=10,
-                        is_foreshadow=0,
-                        foreshadow_resolved_at_chapter_id=None,
-                        metadata_json=None,
-                        created_at=datetime(2026, 3, 15, 12, 10, tzinfo=UTC),
-                        updated_at=datetime(2026, 3, 15, 12, 10, tzinfo=UTC),
-                    ),
-                ]
-            )
             db.commit()
 
     def test_build_story_memory_import_row_trims_and_skips_blank_content(self) -> None:
@@ -155,59 +90,14 @@ class TestMemoryRouteStoryHelpers(unittest.TestCase):
         )
         self.assertIsNone(blank)
 
-    def test_validate_and_normalize_open_loop_args(self) -> None:
+    def test_validate_story_memory_import_schema_version_rejects_unknown(self) -> None:
         _validate_story_memory_import_schema_version('story_memory_import_v1')
-        args = _normalize_story_memory_open_loops_args(q=' clue ', order=' updated_desc ')
-        self.assertEqual(args.q_norm, 'clue')
-        self.assertEqual(args.order_norm, 'updated_desc')
-
         with self.assertRaises(AppError):
             _validate_story_memory_import_schema_version('story_memory_import_v2')
-
         with self.assertRaises(AppError):
-            _normalize_story_memory_open_loops_args(q=None, order='bad_order')
+            _validate_story_memory_import_schema_version(None)
 
-    def test_list_open_loop_rows_and_mapper_keep_preview_contract(self) -> None:
-        with self.SessionLocal() as db:
-            args = _normalize_story_memory_open_loops_args(q='open', order='timeline_desc')
-            rows, has_more = _list_story_memory_open_loop_rows(db, project_id='p1', limit=1, args=args)
-            self.assertTrue(has_more)
-            self.assertEqual([row.id for row in rows], ['sm2'])
-
-            item = _build_story_memory_open_loop_item(db.get(StoryMemory, 'sm1'))
-            self.assertEqual(item['resolved_at_chapter_id'], None)
-            self.assertTrue(str(item['content_preview']).endswith('…'))
-            self.assertLessEqual(len(str(item['content_preview'])), 201)
-
-    def test_require_resolve_helpers_and_dirty_mark(self) -> None:
-        with self.SessionLocal() as db:
-            row = _require_story_memory_foreshadow(db, project_id='p1', story_memory_id='sm1')
-            payload = _build_story_memory_foreshadow_payload(row)
-            self.assertEqual(payload['id'], 'sm1')
-            self.assertFalse(payload['resolved_at_chapter_id'])
-
-            resolved = _normalize_story_memory_resolved_at_chapter_id(
-                db,
-                project_id='p1',
-                resolved_at_chapter_id=' c2 ',
-            )
-            self.assertEqual(resolved, 'c2')
-
-            with self.assertRaises(AppError):
-                _require_story_memory_foreshadow(db, project_id='p1', story_memory_id='sm3')
-            with self.assertRaises(AppError):
-                _normalize_story_memory_resolved_at_chapter_id(db, project_id='p1', resolved_at_chapter_id='missing')
-
-            _ensure_story_memory_rebuild_dirty(db, project_id='p1', flush_on_create=True)
-            db.commit()
-
-        with self.SessionLocal() as db:
-            settings = db.get(ProjectSettings, 'p1')
-            self.assertIsNotNone(settings)
-            assert settings is not None
-            self.assertTrue(settings.vector_index_dirty)
-
-    def test_import_and_resolve_payload_helpers_schedule_and_return_contract(self) -> None:
+    def test_import_story_memories_payload_creates_rows_and_marks_rebuild_dirty(self) -> None:
         with self.SessionLocal() as db, patch(
             'app.api.routes.memory_route_story_helpers.schedule_vector_rebuild_task',
             return_value='vector-task',
@@ -215,7 +105,7 @@ class TestMemoryRouteStoryHelpers(unittest.TestCase):
             'app.api.routes.memory_route_story_helpers.schedule_search_rebuild_task',
             return_value='search-task',
         ) as mock_search:
-            import_payload = _import_story_memories_payload(
+            payload = _import_story_memories_payload(
                 db,
                 project_id='p1',
                 schema_version='story_memory_import_v1',
@@ -233,45 +123,30 @@ class TestMemoryRouteStoryHelpers(unittest.TestCase):
                 request_id='rid-import',
                 row_builder=_build_story_memory_import_row,
             )
-            self.assertEqual(import_payload['created'], 1)
-            self.assertEqual(len(import_payload['ids']), 1)
+            self.assertEqual(payload['created'], 1)
+            self.assertEqual(len(payload['ids']), 1)
+            # 导入应触发向量 / 搜索重建调度。
             mock_vector.assert_called_once()
             mock_search.assert_called_once()
 
-        with self.SessionLocal() as db, patch(
-            'app.api.routes.memory_route_story_helpers.schedule_vector_rebuild_task',
-            return_value='vector-task',
-        ) as mock_vector, patch(
-            'app.api.routes.memory_route_story_helpers.schedule_search_rebuild_task',
-            return_value='search-task',
-        ) as mock_search:
-            resolve_payload = _resolve_story_memory_foreshadow_payload(
-                db,
-                project_id='p1',
-                story_memory_id='sm1',
-                resolved_at_chapter_id='c2',
-                actor_user_id='u_owner',
-                request_id='rid-resolve',
-                payload_builder=_build_story_memory_foreshadow_payload,
-            )
-            self.assertEqual(resolve_payload['foreshadow']['id'], 'sm1')
-            self.assertEqual(resolve_payload['foreshadow']['resolved_at_chapter_id'], 'c2')
-            mock_vector.assert_called_once()
-            mock_search.assert_called_once()
-
-    def test_open_loops_payload_helper_returns_items_and_has_more(self) -> None:
         with self.SessionLocal() as db:
-            payload = _build_story_memory_open_loops_payload(
-                db,
-                project_id='p1',
-                limit=1,
-                q='open',
-                order='timeline_desc',
-                row_mapper=_build_story_memory_open_loop_item,
-            )
-            self.assertEqual(payload['returned'], 1)
-            self.assertTrue(payload['has_more'])
-            self.assertEqual(payload['items'][0]['id'], 'sm2')
+            settings = db.get(ProjectSettings, 'p1')
+            self.assertIsNotNone(settings)
+            assert settings is not None
+            self.assertTrue(settings.vector_index_dirty)
+
+    def test_import_story_memories_payload_rejects_empty_items(self) -> None:
+        with self.SessionLocal() as db:
+            with self.assertRaises(AppError):
+                _import_story_memories_payload(
+                    db,
+                    project_id='p1',
+                    schema_version='story_memory_import_v1',
+                    items=[],
+                    actor_user_id='u_owner',
+                    request_id='rid-import',
+                    row_builder=_build_story_memory_import_row,
+                )
 
 
 if __name__ == '__main__':

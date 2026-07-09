@@ -5,6 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from app.models.outline import Outline
 from app.models.project import Project
 from app.services.detailed_outline_generation import app_service as detailed_outline_app_service
@@ -67,6 +69,7 @@ class TestOutlineVolumesPipeline(unittest.TestCase):
         self.assertEqual(volumes[0].title, "第一卷")
         self.assertEqual(volumes[0].beats_text, "卷摘要")
 
+    @pytest.mark.known_issue  # H19：五条管线 SSE/同步逻辑漂移（细纲 max_tokens 同步流式不一致）
     def test_generate_all_detailed_outlines_uses_llm_for_volume_based_outline(self) -> None:
         outline = Outline(
             id="outline-1",

@@ -195,6 +195,38 @@ python start.py
 
 ---
 
+## 测试
+
+测试套件是功能完整性的**诚实镜像基准**：每条测试断言**正确行为**——对的绿、有 bug 的红，所见即所实。CI（`.github/workflows/ci.yml`）在 push / PR 时以安全网（`-m "not known_issue"`）为合并门禁。
+
+### 后端
+
+```bash
+cd backend
+pip install -r requirements-dev.txt     # pytest / pytest-cov
+
+python -m pytest -q                       # 诚实全貌（绿的=对的，红的=现存 bug）
+python -m pytest -m "not known_issue" -q  # 安全网（CI 门禁，必须绿=可部署）
+python -m pytest -m known_issue -q        # bug 看板（红=待修，绿=已修复待毕业）
+python scripts/run_quality_gate.py        # 编译 + ruff + 安全网测试（跨平台质量门）
+```
+
+详见 [`backend/tests/README.md`](backend/tests/README.md)。
+
+### 前端
+
+```bash
+cd frontend
+npm ci
+
+npx vitest run                            # 全部测试
+npx tsc -p tsconfig.test.json --noEmit    # 测试类型检查
+```
+
+测试统一收纳在 `frontend/tests/`，支持 jsdom + @testing-library 的组件交互测试。详见 [`frontend/tests/README.md`](frontend/tests/README.md)。
+
+---
+
 ## 数据持久化
 
 Docker Compose 默认会创建以下卷：

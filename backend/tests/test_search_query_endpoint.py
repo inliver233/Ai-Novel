@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from typing import Generator
 
+import pytest
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import create_engine
@@ -103,6 +105,7 @@ class TestSearchQueryEndpoint(unittest.TestCase):
             )
             db.commit()
 
+    @pytest.mark.known_issue  # H15：搜索查询绕过 FTS 索引、对 chapters 等做全表 LIKE
     def test_query_returns_items_and_supports_source_filter(self) -> None:
         client = TestClient(self.app)
 

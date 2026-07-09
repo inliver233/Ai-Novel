@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TYPE_CHECKING
 
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
@@ -14,6 +14,11 @@ from app.models.llm_profile import LLMProfile
 from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_membership import ProjectMembership
+
+if TYPE_CHECKING:
+    # Entry 采用惰性运行时导入（见 require_entry_*），此处仅用于类型注解解析，
+    # 不在运行期执行，避免循环导入。
+    from app.models.entry import Entry
 
 LOCAL_USER_ID = "local-user"
 
