@@ -42,7 +42,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Ruff (lint)
-        run: python -m ruff check app tests scripts
+        run: python -m ruff check app tests scripts conftest.py
 
       - name: Pytest (safety net — must stay green)
         run: python -m pytest -m "not known_issue" -q
