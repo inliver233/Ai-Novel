@@ -1,48 +1,181 @@
-"""backend-data#P3: ensure_db_schema 对遗留 SQLite 库的启发式误盖 head 戳。
+"""backend-data#P3: 遗留 SQLite 库不得被启发式误盖 Alembic head 戳。
 
-catalog backend-data#P3: ``app/db/migrations.py`` 的 ``ensure_db_schema`` 对
-「无 alembic_version 的遗留 SQLite 库」用一个【启发式】判定是否已是最新
-(:146-:168)：只要库里存在 ``outlines`` + ``llm_profiles`` 两张表，且
-``projects`` 含 ``active_outline_id`` / ``llm_profile_id`` 两列，就执行
-``alembic stamp head``。但 ``outlines``/``llm_profiles`` 早在 ``1c2a0e6b4c2d``
-（紧随 INIT_REVISION ``0f24b611cf21``）就已引入，而当前 head 是
-``b1c2d3e4f5a6``——两者之间还有数十个建表迁移。一个只有启发式三信号、却缺少
-后续 head 表的「中间态」遗留库会被误盖 ``head`` 戳，随后 ``command.upgrade(
-cfg, "head")`` 见已处于 head 便空转(no-op)，所有后续缺失表（例如 head 自带
-的 ``vector_rag_profiles``）永远不被创建。
+``ensure_db_schema`` 曾只凭 ``outlines``、``llm_profiles`` 两张表与
+``projects.active_outline_id`` / ``projects.llm_profile_id`` 两列，就把任何
+无 ``alembic_version`` 的 SQLite 库盖为当前 head。上述结构实际早在
+``1c2a0e6b4c2d`` 就已出现；直接盖 head 会跳过其后的所有真实迁移，使
+``entries``、``detailed_outlines``、``vector_rag_profiles`` 等后续表永久缺失。
 
-正确行为：``ensure_db_schema`` 跑完后，当前 head 要求的每张表都必须真实存在
-（真正迁移完成，而非虚假盖戳）。
-
-本测试构造这样的中间态遗留库，调用 ``ensure_db_schema``，断言 head 自带表
-``vector_rag_profiles`` 存在。当前实现因误盖 head 戳而空转 → 表仍缺失 →
-断言失败(RED)。修复后（真正建出 head 表）即转绿。
+测试用 Alembic 真实升级到 ``1c2a0e6b4c2d`` 来生成中间态 schema，再移除
+``alembic_version``，避免用无法对应任何历史 revision 的骨架库制造假场景。
+正确实现必须识别该真实 revision、从那里升级到动态解析出的当前 head，并保留
+已有用户、项目、大纲与 LLM profile 数据。对于无法安全映射到已知 revision 的
+非空 partial schema，则必须 fail closed，给出人工处理指引且不得写入版本戳。
 """
 
 from __future__ import annotations
 
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 from app.core.config import settings
 from app.db import migrations
 
 
-def _build_legacy_intermediate_db(db_path: Path) -> None:
-    """构造一个【触发启发式】却【缺少后续 head 表】的中间态遗留 SQLite 库。
+LEGACY_INTERMEDIATE_REVISION = "1c2a0e6b4c2d"
+_SEEDED_AT = "2026-01-02T03:04:05Z"
 
-    只建启发式三信号所需的最小结构：
-      - projects(id, active_outline_id, llm_profile_id)
-      - outlines(id)
-      - llm_profiles(id)
-    且【不建】alembic_version，也【不建】任何 ``1c2a0e6b4c2d`` 之后的表
-    （如 head 自带的 ``vector_rag_profiles``）。这正是旧版本用 create_all 建库、
-    代码升级到新 head 后遗留库的真实形态。
-    """
+
+def _database_url(db_path: Path) -> str:
+    return f"sqlite:///{db_path.as_posix()}"
+
+
+def _current_head(database_url: str) -> str:
+    cfg = migrations._alembic_config(database_url=database_url)
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+    assert head is not None
+    return head
+
+
+def _build_authentic_legacy_intermediate_db(db_path: Path, database_url: str) -> None:
+    """生成真实 1c2a0e6b4c2d schema，种入数据后模拟版本表遗失。"""
+
+    cfg = migrations._alembic_config(database_url=database_url)
+    command.upgrade(cfg, LEGACY_INTERMEDIATE_REVISION)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute(
+            """
+            INSERT INTO users (
+                id, email, password_hash, display_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("legacy-user", "legacy@example.test", "hash", "Legacy User", _SEEDED_AT, _SEEDED_AT),
+        )
+        conn.execute(
+            """
+            INSERT INTO projects (
+                id, owner_user_id, name, genre, logline, created_at, updated_at,
+                active_outline_id, llm_profile_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-project",
+                "legacy-user",
+                "Legacy Project",
+                "fantasy",
+                "A preserved legacy project",
+                _SEEDED_AT,
+                _SEEDED_AT,
+                None,
+                None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO outlines (
+                id, project_id, title, content_md, structure_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-outline",
+                "legacy-project",
+                "Legacy Outline",
+                "Preserve this outline",
+                '{"version":1}',
+                _SEEDED_AT,
+                _SEEDED_AT,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO llm_profiles (
+                id, owner_user_id, name, provider, base_url, model, api_key,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-profile",
+                "legacy-user",
+                "Legacy Profile",
+                "mock",
+                None,
+                "legacy-model",
+                "legacy-api-key",
+                _SEEDED_AT,
+                _SEEDED_AT,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE projects
+            SET active_outline_id = ?, llm_profile_id = ?
+            WHERE id = ?
+            """,
+            ("legacy-outline", "legacy-profile", "legacy-project"),
+        )
+        conn.execute("DROP TABLE alembic_version")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _build_authentic_init_db(db_path: Path, database_url: str) -> None:
+    """生成真实 INIT schema，种入旧单大纲数据后模拟版本表遗失。"""
+
+    cfg = migrations._alembic_config(database_url=database_url)
+    command.upgrade(cfg, migrations.INIT_REVISION)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute(
+            """
+            INSERT INTO users (
+                id, email, password_hash, display_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("init-user", "init@example.test", "hash", "Init User", _SEEDED_AT, _SEEDED_AT),
+        )
+        conn.execute(
+            """
+            INSERT INTO projects (
+                id, owner_user_id, name, genre, logline, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "init-project",
+                "init-user",
+                "Init Project",
+                "mystery",
+                "An INIT-era project",
+                _SEEDED_AT,
+                _SEEDED_AT,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO outline (project_id, content_md, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            ("init-project", "Preserve the INIT outline", _SEEDED_AT),
+        )
+        conn.execute("DROP TABLE alembic_version")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _build_unrecognized_partial_db(db_path: Path) -> None:
+    """生成不对应任何完整历史 revision、但会命中旧启发式的骨架 schema。"""
+
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute(
@@ -61,39 +194,190 @@ def _build_legacy_intermediate_db(db_path: Path) -> None:
         conn.close()
 
 
-# backend-data#P3: 启发式误盖 head 戳 -> 缺失 head 表永不被创建
-@pytest.mark.known_issue
+def _configure_sqlite_test(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    database_url: str,
+) -> None:
+    # ensure_db_schema 从 settings 构建 cfg；alembic/env.py 又优先读环境变量。
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setattr(settings, "database_url", database_url)
+    monkeypatch.setattr(settings, "app_env", "dev")
+
+
 def test_ensure_db_schema_creates_missing_head_tables_for_legacy_db(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "legacy.db"
-        database_url = f"sqlite:///{db_path.as_posix()}"
-        _build_legacy_intermediate_db(db_path)
+    db_path = tmp_path / "legacy-intermediate.db"
+    database_url = _database_url(db_path)
+    _configure_sqlite_test(monkeypatch, database_url=database_url)
+    _build_authentic_legacy_intermediate_db(db_path, database_url)
+    expected_head = _current_head(database_url)
 
-        # ensure_db_schema 内部读 settings.database_url 构建 alembic cfg；而
-        # alembic env.py 的 _get_database_url 又优先读 DATABASE_URL 环境变量。
-        # 两处都必须指向临时库；且 app_env != prod（否则 prod 下盖戳被跳过）。
-        monkeypatch.setenv("DATABASE_URL", database_url)
-        monkeypatch.setattr(settings, "database_url", database_url)
-        monkeypatch.setattr(settings, "app_env", "dev")
+    engine = create_engine(database_url)
+    try:
+        migrations.ensure_db_schema(engine=engine)
+    finally:
+        engine.dispose()
 
-        engine = create_engine(database_url)
-        try:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        actual_head_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        user_row = conn.execute(
+            "SELECT email, display_name FROM users WHERE id = ?",
+            ("legacy-user",),
+        ).fetchone()
+        project_row = conn.execute(
+            """
+            SELECT name, active_outline_id, llm_profile_id
+            FROM projects WHERE id = ?
+            """,
+            ("legacy-project",),
+        ).fetchone()
+        outline_row = conn.execute(
+            "SELECT title, content_md, structure_json FROM outlines WHERE id = ?",
+            ("legacy-outline",),
+        ).fetchone()
+        profile_row = conn.execute(
+            "SELECT name, provider, model FROM llm_profiles WHERE id = ?",
+            ("legacy-profile",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    inspect_engine = create_engine(database_url)
+    try:
+        tables = set(inspect(inspect_engine).get_table_names())
+    finally:
+        inspect_engine.dispose()
+
+    assert actual_head_row == (expected_head,)
+    assert {
+        "entries",
+        "detailed_outlines",
+        "user_usage_stats",
+        "vector_rag_profiles",
+    }.issubset(tables)
+    assert user_row == ("legacy@example.test", "Legacy User")
+    assert project_row == ("Legacy Project", "legacy-outline", "legacy-profile")
+    assert outline_row == ("Legacy Outline", "Preserve this outline", '{"version":1}')
+    assert profile_row == ("Legacy Profile", "mock", "legacy-model")
+
+
+def test_ensure_db_schema_upgrades_authentic_init_legacy_db(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-init.db"
+    database_url = _database_url(db_path)
+    _configure_sqlite_test(monkeypatch, database_url=database_url)
+    _build_authentic_init_db(db_path, database_url)
+    expected_head = _current_head(database_url)
+
+    engine = create_engine(database_url)
+    try:
+        migrations.ensure_db_schema(engine=engine)
+    finally:
+        engine.dispose()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        actual_head_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        project_row = conn.execute(
+            "SELECT name, active_outline_id FROM projects WHERE id = ?",
+            ("init-project",),
+        ).fetchone()
+        assert project_row is not None
+        active_outline_id = project_row[1]
+        outline_row = conn.execute(
+            "SELECT project_id, content_md FROM outlines WHERE id = ?",
+            (active_outline_id,),
+        ).fetchone()
+        user_row = conn.execute(
+            "SELECT email, display_name FROM users WHERE id = ?",
+            ("init-user",),
+        ).fetchone()
+        has_vector_rag_profiles = bool(
+            conn.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'vector_rag_profiles'
+                """
+            ).fetchone()
+        )
+    finally:
+        conn.close()
+
+    assert actual_head_row == (expected_head,)
+    assert project_row[0] == "Init Project"
+    assert isinstance(active_outline_id, str) and active_outline_id
+    assert outline_row == ("init-project", "Preserve the INIT outline")
+    assert user_row == ("init@example.test", "Init User")
+    assert has_vector_rag_profiles is True
+
+
+def test_ensure_db_schema_rejects_unrecognized_partial_sqlite_without_stamping(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "unrecognized-partial.db"
+    database_url = _database_url(db_path)
+    _build_unrecognized_partial_db(db_path)
+    _configure_sqlite_test(monkeypatch, database_url=database_url)
+
+    engine = create_engine(database_url)
+    try:
+        with pytest.raises(RuntimeError) as exc_info:
             migrations.ensure_db_schema(engine=engine)
-        finally:
-            engine.dispose()
+    finally:
+        engine.dispose()
 
-        # 正确行为：ensure_db_schema 跑完后，head 自带的 vector_rag_profiles 表
-        # 必须真实存在。当前 bug：启发式误盖 head 戳 -> upgrade head 空转 ->
-        # 表从未被建 -> 断言失败(RED)。
-        engine2 = create_engine(database_url)
-        try:
-            tables = set(inspect(engine2).get_table_names())
-        finally:
-            engine2.dispose()
+    message = str(exc_info.value).lower()
+    assert "sqlite" in message
+    assert "unversioned" in message or "alembic_version" in message
+    assert "manual" in message or "backup" in message
 
-    assert "vector_rag_profiles" in tables, (
-        "ensure_db_schema 误将中间态遗留库盖为 head，未真正迁移，"
-        "head 自带表 vector_rag_profiles 仍缺失"
-    )
+    inspect_engine = create_engine(database_url)
+    try:
+        tables = set(inspect(inspect_engine).get_table_names())
+    finally:
+        inspect_engine.dispose()
+
+    assert tables == {"projects", "outlines", "llm_profiles"}
+    assert "alembic_version" not in tables
+
+
+def test_ensure_db_schema_rejects_matching_tables_and_columns_with_missing_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "malformed-init.db"
+    database_url = _database_url(db_path)
+    _configure_sqlite_test(monkeypatch, database_url=database_url)
+    _build_authentic_init_db(db_path, database_url)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("DROP INDEX ix_projects_owner_user_id")
+        conn.commit()
+    finally:
+        conn.close()
+
+    engine = create_engine(database_url)
+    try:
+        with pytest.raises(RuntimeError, match="does not exactly match"):
+            migrations.ensure_db_schema(engine=engine)
+    finally:
+        engine.dispose()
+
+    inspect_engine = create_engine(database_url)
+    try:
+        inspector = inspect(inspect_engine)
+        tables = set(inspector.get_table_names())
+        project_indexes = {index["name"] for index in inspector.get_indexes("projects")}
+    finally:
+        inspect_engine.dispose()
+
+    assert "alembic_version" not in tables
+    assert "ix_projects_owner_user_id" not in project_indexes
