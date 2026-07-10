@@ -1,10 +1,8 @@
 """全局错误信封契约测试。
 
-M2（项目情况完全分析.md）：``StarletteHTTPException`` 未注册全局处理器 →
-404（路由不存在）/405（方法不允许）会走 Starlette 内置默认处理器，绕过项目统一
-错误信封 ``{ok, error, request_id}``，返回 ``{"detail": "..."}``。本测试断言
-【正确行为】：4xx/5xx 响应都应是统一信封。当前实现有 bug，故标记 ``known_issue``
-（诚实镜像语义：真跑真红；修复后自动转绿，从 bug 看板毕业）。
+M2（项目情况完全分析.md）曾由于未注册 ``StarletteHTTPException``
+全局处理器，使 404（路由不存在）/405（方法不允许）绕过项目统一错误
+信封。本测试固化修复后的响应体、请求 ID 和 HTTP 协议头契约。
 
 载体用生产 ``app``（完整 exception handler 栈），而非 ``make_test_app`` 脚手架——
 脚手架只挂 ``AppError`` 处理器是刻意设计（让其他异常自然冒泡给测试），若给它加全栈
@@ -30,28 +28,44 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-# M2: StarletteHTTPException 未注册 → 404 绕过统一错误信封
-@pytest.mark.known_issue
+# M2: StarletteHTTPException 必须转换为统一错误信封
 def test_not_found_returns_unified_error_envelope(client: TestClient) -> None:
-    resp = client.get("/api/__definitely_not_a_route__")
+    request_id = "rid-error-envelope-404"
+    resp = client.get(
+        "/api/__definitely_not_a_route__",
+        headers={"X-Request-Id": request_id},
+    )
+
     assert resp.status_code == 404
-    body = resp.json()
-    # 正确行为：统一信封 {ok:false, error:{code,message,details}, request_id}
-    # 当前 bug：返回 Starlette 默认 {"detail": "Not Found"}，缺 ok/error/request_id。
-    assert body.get("ok") is False
-    assert isinstance(body.get("error"), dict)
-    assert {"code", "message"} <= set(body["error"])
-    assert "request_id" in body
+    assert resp.json() == {
+        "ok": False,
+        "error": {
+            "code": "NOT_FOUND",
+            "message": "Not Found",
+            "details": {},
+        },
+        "request_id": request_id,
+    }
+    assert resp.headers["X-Request-Id"] == request_id
 
 
-# M2: StarletteHTTPException 未注册 → 405 绕过统一错误信封
-@pytest.mark.known_issue
+# M2: 405 除统一信封外，还必须保留 Starlette 生成的 Allow 头
 def test_method_not_allowed_returns_unified_error_envelope(client: TestClient) -> None:
-    resp = client.post("/api/health")  # GET 路由用 POST → 405
+    request_id = "rid-error-envelope-405"
+    resp = client.post(
+        "/api/health",  # GET 路由用 POST → 405
+        headers={"X-Request-Id": request_id},
+    )
+
     assert resp.status_code == 405
-    body = resp.json()
-    # 当前 bug：返回 {"detail": "Method Not Allowed"}，缺统一信封字段。
-    assert body.get("ok") is False
-    assert isinstance(body.get("error"), dict)
-    assert {"code", "message"} <= set(body["error"])
-    assert "request_id" in body
+    assert resp.json() == {
+        "ok": False,
+        "error": {
+            "code": "METHOD_NOT_ALLOWED",
+            "message": "Method Not Allowed",
+            "details": {},
+        },
+        "request_id": request_id,
+    }
+    assert resp.headers["X-Request-Id"] == request_id
+    assert "GET" in {method.strip() for method in resp.headers["Allow"].split(",")}

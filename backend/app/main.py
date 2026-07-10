@@ -39,6 +39,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # ──────────────────────────────────────────────────────────────────
 # 内部模块导入 — 每个导入都对应项目中的一个功能模块
@@ -578,7 +579,33 @@ async def request_id_and_logging_middleware(request: Request, call_next):  # typ
 # 响应头中始终包含 X-Request-Id 用于排查
 
 
-# ── 5.1 业务异常处理器 ─────────────────────────────────────────────
+# ── 5.1 框架 HTTP 异常处理器 ───────────────────────────────────────
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """将路由级 HTTP 异常转换为统一错误信封，并保留 Allow 等协议头。"""
+
+    rid = getattr(request.state, "request_id", new_request_id())
+    status_code = int(exc.status_code)
+    code, message = {
+        404: ("NOT_FOUND", "Not Found"),
+        405: ("METHOD_NOT_ALLOWED", "Method Not Allowed"),
+    }.get(status_code, (f"HTTP_{status_code}", "HTTP Error"))
+    log_event(
+        logger,
+        "warning" if status_code < 500 else "error",
+        path=request.url.path,
+        method=request.method,
+        status_code=status_code,
+        error_code=code,
+        message=message,
+    )
+    headers = {key: value for key, value in (exc.headers or {}).items() if key.lower() != "x-request-id"}
+    headers["X-Request-Id"] = rid
+    payload = error_payload(request_id=rid, code=code, message=message, details={})
+    return JSONResponse(payload, status_code=status_code, headers=headers)
+
+
+# ── 5.2 业务异常处理器 ─────────────────────────────────────────────
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     """
@@ -613,7 +640,7 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(payload, status_code=exc.status_code, headers={"X-Request-Id": rid})
 
 
-# ── 5.2 请求参数校验异常处理器 ──────────────────────────────────────
+# ── 5.3 请求参数校验异常处理器 ──────────────────────────────────────
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """
@@ -652,7 +679,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     return JSONResponse(payload, status_code=400, headers={"X-Request-Id": rid})
 
 
-# ── 5.3 数据库异常处理器 ───────────────────────────────────────────
+# ── 5.4 数据库异常处理器 ───────────────────────────────────────────
 @app.exception_handler(SQLAlchemyError)
 async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
     """
@@ -682,7 +709,7 @@ async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JS
     return JSONResponse(payload, status_code=500, headers={"X-Request-Id": rid})
 
 
-# ── 5.4 兜底异常处理器 ────────────────────────────────────────────
+# ── 5.5 兜底异常处理器 ────────────────────────────────────────────
 @app.exception_handler(Exception)
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """
