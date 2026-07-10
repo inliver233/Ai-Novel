@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -13,31 +15,25 @@ from alembic.config import Config
 from sqlalchemy import Table
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url
+from sqlalchemy.sql.ddl import sort_tables
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
 
-TABLE_ORDER: list[str] = [
-    "users",
-    "user_passwords",
-    "llm_profiles",
-    "projects",
-    "project_memberships",
-    "project_settings",
-    "llm_presets",
-    "prompt_presets",
-    "prompt_blocks",
-    "outlines",
-    "chapters",
-    "characters",
-    "worldbook_entries",
-    "plot_analysis",
-    "story_memories",
-    "generation_runs",
-    "batch_generation_tasks",
-    "batch_generation_task_items",
-]
+_IGNORED_SOURCE_TABLES = frozenset(
+    {
+        "alembic_version",
+        # SQLite-only FTS5 virtual table and its derived shadow tables. The
+        # portable source of truth is search_documents; Postgres does not use
+        # these physical tables.
+        "search_index",
+        "search_index_config",
+        "search_index_data",
+        "search_index_docsize",
+        "search_index_idx",
+    }
+)
 
 
 def _backend_alembic_config(*, database_url: str) -> Config:
@@ -62,15 +58,124 @@ def _normalize_sqlite_url(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
         raise SystemExit("--source is required")
-    if raw.startswith("sqlite:"):
-        return raw
+    try:
+        if make_url(raw).get_backend_name() == "sqlite":
+            return raw
+    except Exception:
+        pass
     path = Path(raw).expanduser().resolve()
     return f"sqlite:///{path.as_posix()}"
 
 
+def _require_existing_sqlite_source(source_url: str) -> Path:
+    try:
+        url = make_url(source_url)
+    except Exception as exc:
+        raise SystemExit("--source must be a valid SQLite URL or file path") from exc
+    if url.get_backend_name() != "sqlite":
+        raise SystemExit(f"--source must be SQLite, got dialect={url.get_backend_name()!r}")
+
+    database = str(url.database or "").strip()
+    if not database or database == ":memory:" or database.startswith("file:"):
+        raise SystemExit("--source must point to an existing SQLite database file")
+    source_path = Path(database).expanduser()
+    if not source_path.is_absolute():
+        source_path = (Path.cwd() / source_path).resolve()
+    if not source_path.is_file():
+        raise SystemExit(f"SQLite source database does not exist: {source_path}")
+    return source_path
+
+
+def _validate_source_schema(src_engine: Engine) -> None:
+    if src_engine.dialect.name != "sqlite":
+        raise RuntimeError(f"Source engine must be SQLite, got dialect={src_engine.dialect.name!r}")
+    try:
+        portable_tables = set(sa.inspect(src_engine).get_table_names()) - _IGNORED_SOURCE_TABLES
+    except sa.exc.SQLAlchemyError as exc:
+        raise RuntimeError("Unable to read the SQLite source schema") from exc
+
+    required_anchors = {"users", "projects"}
+    missing_anchors = sorted(required_anchors - portable_tables)
+    if not portable_tables or missing_anchors:
+        raise RuntimeError(
+            "SQLite source does not contain a recognizable Ai-Novel schema; "
+            f"missing required tables: {missing_anchors or sorted(required_anchors)}"
+        )
+
+
+def _is_deferred_project_outline_fk(foreign_key: sa.ForeignKey) -> bool:
+    return (
+        foreign_key.parent.table.name == "projects"
+        and foreign_key.parent.name == "active_outline_id"
+        and foreign_key.column.table.name == "outlines"
+    )
+
+
+def _sorted_table_names(tables: Iterable[Table]) -> list[str]:
+    ordered_input = sorted(tables, key=lambda table: table.name)
+    return [table.name for table in sort_tables(ordered_input, skip_fn=_is_deferred_project_outline_fk)]
+
+
+def _build_copy_plan(
+    *,
+    src_engine: Engine,
+    dst_engine: Engine,
+) -> tuple[list[str], dict[str, Table], dict[str, Table], list[str]]:
+    source_table_names = set(sa.inspect(src_engine).get_table_names())
+    target_table_names = set(sa.inspect(dst_engine).get_table_names()) - {"alembic_version"}
+    skipped_source_tables = sorted(source_table_names & _IGNORED_SOURCE_TABLES)
+    portable_source_tables = source_table_names - _IGNORED_SOURCE_TABLES
+
+    unmigrated_source_tables = sorted(portable_source_tables - target_table_names)
+    if unmigrated_source_tables:
+        raise RuntimeError(
+            "Source contains application tables that do not exist in the target schema; migration aborted before "
+            f"copying data: {unmigrated_source_tables}"
+        )
+
+    copy_table_names = portable_source_tables & target_table_names
+    src_md = sa.MetaData()
+    dst_md = sa.MetaData()
+    if copy_table_names:
+        names = sorted(copy_table_names)
+        src_md.reflect(bind=src_engine, only=names)
+        dst_md.reflect(bind=dst_engine, only=names)
+
+    src_tables = {name: src_md.tables[name] for name in copy_table_names}
+    dst_tables = {name: dst_md.tables[name] for name in copy_table_names}
+    table_order = _sorted_table_names(dst_tables.values())
+    return table_order, src_tables, dst_tables, skipped_source_tables
+
+
+def _upgrade_to_head(cfg: Config, *, database_url: str) -> None:
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = database_url
+    try:
+        command.upgrade(cfg, "head")
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+
+
 def _ensure_target_migrations(target_url: str) -> None:
     cfg = _backend_alembic_config(database_url=target_url)
-    command.upgrade(cfg, "head")
+    _upgrade_to_head(cfg, database_url=target_url)
+
+
+def _create_head_schema_reference_engine() -> Engine:
+    database_url = "sqlite://"
+    engine = sa.create_engine(database_url)
+    cfg = _backend_alembic_config(database_url=database_url)
+    try:
+        with engine.begin() as conn:
+            cfg.attributes["connection"] = conn
+            _upgrade_to_head(cfg, database_url=database_url)
+    except Exception:
+        engine.dispose()
+        raise
+    return engine
 
 
 def _pg_required_extensions(engine: Engine) -> dict[str, bool] | None:
@@ -78,9 +183,7 @@ def _pg_required_extensions(engine: Engine) -> dict[str, bool] | None:
         return None
     with engine.connect() as conn:
         rows = conn.execute(
-            sa.text(
-                "SELECT extname FROM pg_extension WHERE extname IN ('uuid-ossp', 'pg_trgm') ORDER BY extname"
-            )
+            sa.text("SELECT extname FROM pg_extension WHERE extname IN ('uuid-ossp', 'pg_trgm') ORDER BY extname")
         ).fetchall()
     existing = {str(r[0]) for r in rows}
     return {"uuid-ossp": "uuid-ossp" in existing, "pg_trgm": "pg_trgm" in existing}
@@ -93,11 +196,7 @@ def _count_rows(conn: sa.Connection, table: Table) -> int:
 def _select_samples(conn: sa.Connection, table: Table, *, limit: int) -> list[dict[str, Any]]:
     pk_cols = list(table.primary_key.columns)
     order_by = pk_cols if pk_cols else [table.c[c.name] for c in table.columns]
-    rows = (
-        conn.execute(sa.select(table).order_by(*order_by).limit(max(0, int(limit))))
-        .mappings()
-        .all()
-    )
+    rows = conn.execute(sa.select(table).order_by(*order_by).limit(max(0, int(limit)))).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -131,6 +230,33 @@ def _missing_fk_count(conn: sa.Connection, table: Table, fk: dict[str, Any], md:
     return int(conn.execute(stmt).scalar_one())
 
 
+def _reset_postgres_sequence(conn: sa.Connection, table: Table) -> None:
+    if conn.dialect.name != "postgresql":
+        return
+
+    primary_key_columns = list(table.primary_key.columns)
+    if len(primary_key_columns) != 1 or not isinstance(primary_key_columns[0].type, sa.Integer):
+        return
+
+    primary_key = primary_key_columns[0]
+    sequence_name = conn.execute(
+        sa.text("SELECT pg_get_serial_sequence(:table_name, :column_name)"),
+        {"table_name": table.fullname, "column_name": primary_key.name},
+    ).scalar_one_or_none()
+    if not sequence_name:
+        return
+
+    max_value = conn.execute(sa.select(sa.func.max(primary_key))).scalar_one()
+    conn.execute(
+        sa.text("SELECT setval(CAST(:sequence_name AS regclass), :value, :is_called)"),
+        {
+            "sequence_name": str(sequence_name),
+            "value": int(max_value) if max_value is not None else 1,
+            "is_called": max_value is not None,
+        },
+    )
+
+
 def _copy_table(
     *,
     src_conn: sa.Connection,
@@ -139,7 +265,7 @@ def _copy_table(
     dst_table: Table,
     chunk_size: int,
     resume: bool,
-    post_insert_hook: callable[[sa.Connection], None] | None = None,
+    post_insert_hook: Callable[[sa.Connection], None] | None = None,
 ) -> int:
     inserted = 0
 
@@ -165,16 +291,21 @@ def _copy_table(
                 inserted += len(rows)
         if post_insert_hook is not None:
             post_insert_hook(dst_conn)
+        _reset_postgres_sequence(dst_conn, dst_table)
     return inserted
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Migrate ainovel SQLite data to Postgres (preserve IDs).")
     parser.add_argument("--source", required=True, help="SQLite DB path or sqlite:/// URL")
-    parser.add_argument("--target", required=True, help="Postgres SQLAlchemy URL (e.g. postgresql://user:pass@host:5432/db)")
+    parser.add_argument(
+        "--target", required=True, help="Postgres SQLAlchemy URL (e.g. postgresql://user:pass@host:5432/db)"
+    )
     parser.add_argument("--chunk-size", type=int, default=2000, help="Insert batch size per table")
     parser.add_argument("--no-migrate-schema", action="store_true", help="Skip alembic upgrade head on target")
-    parser.add_argument("--resume", action="store_true", help="Idempotent mode: ON CONFLICT DO NOTHING (for retry/resume)")
+    parser.add_argument(
+        "--resume", action="store_true", help="Idempotent mode: ON CONFLICT DO NOTHING (for retry/resume)"
+    )
     parser.add_argument("--report", default="sqlite_to_postgres.report.json", help="Write a JSON report to this path")
     parser.add_argument("--dry-run", action="store_true", help="Plan only; do not write to target")
     args = parser.parse_args(argv)
@@ -184,10 +315,16 @@ def main(argv: list[str] | None = None) -> int:
     if not target_url:
         raise SystemExit("--target is required")
 
+    _require_existing_sqlite_source(src_url)
     print(f"[source] {_mask_db_url(src_url)}")
     print(f"[target] {_mask_db_url(target_url)}")
 
     src_engine = sa.create_engine(src_url, connect_args={"check_same_thread": False})
+    try:
+        _validate_source_schema(src_engine)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
     dst_engine = sa.create_engine(target_url, pool_pre_ping=True)
 
     if dst_engine.dialect.name != "postgresql":
@@ -200,9 +337,13 @@ def main(argv: list[str] | None = None) -> int:
         "warnings": [],
     }
 
+    plan_target_engine = dst_engine
+    reference_engine: Engine | None = None
     if not args.no_migrate_schema:
         if args.dry_run:
-            print("[plan] alembic upgrade head (target)")
+            print("[plan] alembic upgrade head (target; simulated locally without target writes)")
+            reference_engine = _create_head_schema_reference_engine()
+            plan_target_engine = reference_engine
         else:
             print("[step] alembic upgrade head (target)")
             _ensure_target_migrations(target_url)
@@ -214,20 +355,28 @@ def main(argv: list[str] | None = None) -> int:
             report["warnings"].append({"code": "PG_EXT_MISSING", "details": exts})
             print(f"[warn] postgres extensions missing: {exts}")
 
-    src_md = sa.MetaData()
-    dst_md = sa.MetaData()
-    src_tables: dict[str, Table] = {}
-    dst_tables: dict[str, Table] = {}
+    try:
+        try:
+            table_order, src_tables, dst_tables, skipped_source_tables = _build_copy_plan(
+                src_engine=src_engine,
+                dst_engine=plan_target_engine,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+    finally:
+        if reference_engine is not None:
+            reference_engine.dispose()
 
-    for name in TABLE_ORDER:
-        src_tables[name] = Table(name, src_md, autoload_with=src_engine)
-        dst_tables[name] = Table(name, dst_md, autoload_with=dst_engine)
+    report["source"]["skipped_tables"] = skipped_source_tables
+    report["table_order"] = table_order
+    if skipped_source_tables:
+        print(f"[info] skipped source metadata/derived tables: {skipped_source_tables}")
 
     # Safety check: by default require empty target so we don't duplicate real data.
     if not args.resume and not args.dry_run:
         with dst_engine.connect() as conn:
             non_empty: list[tuple[str, int]] = []
-            for name in TABLE_ORDER:
+            for name in table_order:
                 cnt = _count_rows(conn, dst_tables[name])
                 if cnt:
                     non_empty.append((name, cnt))
@@ -246,19 +395,17 @@ def main(argv: list[str] | None = None) -> int:
         t_projects = dst_tables["projects"]
         for project_id, outline_id in projects_active_outline_by_project_id.items():
             conn.execute(
-                sa.update(t_projects)
-                .where(t_projects.c.id == project_id)
-                .values(active_outline_id=outline_id)
+                sa.update(t_projects).where(t_projects.c.id == project_id).values(active_outline_id=outline_id)
             )
 
     if args.dry_run:
         print("[plan] table copy order:")
-        for t in TABLE_ORDER:
+        for t in table_order:
             print(f"  - {t}")
         return 0
 
     with src_engine.connect() as src_conn:
-        for name in TABLE_ORDER:
+        for name in table_order:
             src_table = src_tables[name]
             dst_table = dst_tables[name]
 
@@ -313,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     # Verification report (counts / sample hashes / FK checks).
     sample_limit = 20
     with src_engine.connect() as sconn, dst_engine.connect() as dconn:
-        for name in TABLE_ORDER:
+        for name in table_order:
             st = src_tables[name]
             dt = dst_tables[name]
 
@@ -336,7 +483,7 @@ def main(argv: list[str] | None = None) -> int:
             fk_missing_total = 0
             inspector = sa.inspect(dconn)
             for fk in inspector.get_foreign_keys(name):
-                fk_missing_total += _missing_fk_count(dconn, dt, fk, dst_md)
+                fk_missing_total += _missing_fk_count(dconn, dt, fk, dt.metadata)
             table_report["missing_fk_total"] = fk_missing_total
 
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")

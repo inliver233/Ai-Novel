@@ -34,6 +34,15 @@ $env:DATABASE_URL = "postgresql://user:pass@host:5432/ainovel"
 
 4) **搬运数据（逐表，保留 id）**
 
+脚本会在复制前反射源/目标 schema，并按外键依赖自动生成完整表顺序：
+
+- 源路径必须是已存在且包含 `users` / `projects` 的可识别 Ai-Novel SQLite 库，路径拼错或空库会立即失败；
+- 复制所有同时存在于 SQLite 源库与当前 PostgreSQL schema 的业务表；
+- 跳过可由 `search_documents` 重建的 SQLite FTS5 虚表/影子表；
+- PostgreSQL 专属 `vector_chunks` 不从 SQLite 复制，向量数据需按现有索引流程重建；
+- 若源库存在目标 schema 无法承接的业务表，会在写入任何业务数据前中止并列出表名；
+- 保留自增主键后会重置 PostgreSQL sequence，避免迁移后的新写入与旧 id 冲突。
+
 ```powershell
 cd backend
 .\.venv\Scripts\python.exe scripts\migrate_sqlite_to_postgres.py `
@@ -44,7 +53,7 @@ cd backend
 
 可选参数（建议先跑一遍 dry-run 熟悉流程）：
 
-- `--dry-run`：只输出计划，不写入目标库
+- `--dry-run`：只输出计划；默认在本地临时 SQLite 中模拟当前 Alembic head，不写入目标库 schema 或业务数据
 - `--resume`：幂等断点续跑（Postgres：`ON CONFLICT DO NOTHING`；要求表有主键）
 - `--no-migrate-schema`：跳过目标库的 `alembic upgrade head`（已手工跑过迁移时使用）
 - `--chunk-size`：单表批量写入大小（默认通常够用；大库可调）
@@ -65,6 +74,7 @@ cd backend
 
 脚本会写入 report（JSON）：
 
+- 实际 `table_order` 与源库中被跳过的元数据/SQLite 派生表；
 - 每表：`source_count` / `target_count`
 - 抽样：`sample_hash_source` / `sample_hash_target`
 - 外键抽检：`missing_fk_total`（应为 `0`）
