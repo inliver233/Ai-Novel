@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
 import { useToast } from "../components/ui/toast";
+import { toastApiError } from "../lib/apiErrorPresentation";
 import {
   EMPTY_PROJECT_TASK_DETAIL_SNAPSHOT,
   EMPTY_PROJECT_TASK_LIST_SNAPSHOT,
@@ -101,7 +102,7 @@ export function useProjectTaskListResource(args: {
       } catch (error) {
         if (options.silent) return;
         const err = normalizeApiError(error);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        toastApiError(toast, err);
       }
     },
     [enabled, limit, projectId, status, toast],
@@ -149,7 +150,7 @@ export function useProjectTaskDetailResource(args: {
       } catch (error) {
         if (options.silent) return;
         const err = normalizeApiError(error);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        toastApiError(toast, err);
       }
     },
     [enabled, taskId, toast],
@@ -197,7 +198,7 @@ export function useProjectTaskRuntimeResource(args: {
       } catch (error) {
         if (options.silent) return;
         const err = normalizeApiError(error);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        toastApiError(toast, err);
       }
     },
     [enabled, taskId, toast],

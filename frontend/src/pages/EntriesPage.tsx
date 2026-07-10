@@ -104,31 +104,20 @@ export function EntriesPage() {
   const refreshWizard = wizard.refresh;
   const bumpWizardLocal = wizard.bumpLocal;
 
-  const [loadError, setLoadError] = useState<null | { message: string; code: string; requestId?: string }>(null);
-
   const entriesQuery = useProjectData<Entry[]>(projectId, async (id) => {
-    try {
-      const items: Entry[] = [];
-      let offset = 0;
+    const items: Entry[] = [];
+    let offset = 0;
 
-      while (true) {
-        const page = await listEntries(id, { limit: PAGE_SIZE, offset });
-        items.push(...page.items);
-        if (typeof page.next_offset !== "number") break;
-        offset = page.next_offset;
-      }
-
-      setLoadError(null);
-      return items;
-    } catch (error) {
-      if (error instanceof ApiError) {
-        setLoadError({ message: error.message, code: error.code, requestId: error.requestId });
-      } else {
-        setLoadError({ message: "请求失败", code: "UNKNOWN_ERROR" });
-      }
-      throw error;
+    while (true) {
+      const page = await listEntries(id, { limit: PAGE_SIZE, offset });
+      items.push(...page.items);
+      if (typeof page.next_offset !== "number") break;
+      offset = page.next_offset;
     }
+
+    return items;
   });
+  const loadError = entriesQuery.error;
   const entries = useMemo(() => entriesQuery.data ?? [], [entriesQuery.data]);
   const loading = entriesQuery.loading;
 
@@ -417,7 +406,7 @@ export function EntriesPage() {
         <div className="error-card">
           <div className="state-title">加载失败</div>
           <div className="state-desc">{`${loadError.message} (${loadError.code})`}</div>
-          {loadError.requestId ? (
+          {loadError.requestId && loadError.requestId !== "unknown" ? (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtext">
               <span>request_id: {loadError.requestId}</span>
               <button

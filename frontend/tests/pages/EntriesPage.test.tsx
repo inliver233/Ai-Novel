@@ -19,6 +19,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import type { Entry } from "@/types";
 import type { WizardProgress } from "@/services/wizard";
+import { ApiError } from "@/services/apiClient";
 
 type CapturedAutoSave = {
   getSnapshot: () => unknown;
@@ -206,6 +207,26 @@ describe("EntriesPage 核心 happy-path（D 类，应绿）", () => {
 
     expect(container.querySelectorAll('[role="button"].panel-interactive')).toHaveLength(2);
     expect(mocks.listEntries).toHaveBeenCalledTimes(1);
+  });
+
+  it("加载失败时内联展示错误且可静默重试恢复", async () => {
+    mocks.listEntries
+      .mockRejectedValueOnce(
+        new ApiError({ code: "ENTRY_LOAD_FAILED", message: "条目加载失败", requestId: "rid-entry", status: 503 }),
+      )
+      .mockResolvedValueOnce(pageList([entryA]));
+
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText("条目加载失败 (ENTRY_LOAD_FAILED)")).toBeInTheDocument();
+    expect(screen.getByText("request_id: rid-entry")).toBeInTheDocument();
+    expect(mocks.toast.toastError).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("雨夜相遇")).toBeInTheDocument();
+    expect(screen.queryByText("条目加载失败 (ENTRY_LOAD_FAILED)")).not.toBeInTheDocument();
+    expect(mocks.listEntries).toHaveBeenCalledTimes(2);
   });
 
   it("点击标签筛选后仅显示带该标签的条目", async () => {

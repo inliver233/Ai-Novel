@@ -75,34 +75,38 @@ export function useWritingPageState(): WritingPageState {
   const [promptInspectorOpen, setPromptInspectorOpen] = useState(false);
   const [autoUpdatesTriggering, setAutoUpdatesTriggering] = useState(false);
 
-  const writingQuery = useProjectData<WritingLoaded>(projectId, async (id) => {
-    const loadEntries = async (): Promise<EntryItem[]> => {
-      const items: EntryItem[] = [];
-      let offset = 0;
-      while (true) {
-        const page = await listEntries(id, { limit: 200, offset });
-        items.push(...page.items);
-        if (typeof page.next_offset !== "number") break;
-        offset = page.next_offset;
-      }
-      return items;
-    };
+  const writingQuery = useProjectData<WritingLoaded>(
+    projectId,
+    async (id) => {
+      const loadEntries = async (): Promise<EntryItem[]> => {
+        const items: EntryItem[] = [];
+        let offset = 0;
+        while (true) {
+          const page = await listEntries(id, { limit: 200, offset });
+          items.push(...page.items);
+          if (typeof page.next_offset !== "number") break;
+          offset = page.next_offset;
+        }
+        return items;
+      };
 
-    const [outlineRes, presetRes, charactersRes, entries] = await Promise.all([
-      apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
-      apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
-      apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`),
-      loadEntries(),
-    ]);
-    const outlinesRes = await apiJson<{ outlines: OutlineListItem[] }>(`/api/projects/${id}/outlines`);
-    return {
-      outlines: outlinesRes.data.outlines,
-      outline: outlineRes.data.outline,
-      preset: presetRes.data.llm_preset,
-      characters: charactersRes.data.characters,
-      entries,
-    };
-  });
+      const [outlineRes, presetRes, charactersRes, entries] = await Promise.all([
+        apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
+        apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
+        apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`),
+        loadEntries(),
+      ]);
+      const outlinesRes = await apiJson<{ outlines: OutlineListItem[] }>(`/api/projects/${id}/outlines`);
+      return {
+        outlines: outlinesRes.data.outlines,
+        outline: outlineRes.data.outline,
+        preset: presetRes.data.llm_preset,
+        characters: charactersRes.data.characters,
+        entries,
+      };
+    },
+    { toastOnError: true },
+  );
   const outlines = writingQuery.data?.outlines ?? [];
   const outline = writingQuery.data?.outline ?? null;
   const characters = writingQuery.data?.characters ?? [];

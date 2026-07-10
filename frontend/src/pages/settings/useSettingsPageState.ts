@@ -59,27 +59,15 @@ export function useSettingsPageState(): SettingsPageState {
   const baselineSettingsRef = useRef<ProjectSettings | null>(null);
   const [baselineProject, setBaselineProject] = useState<Project | null>(null);
   const [baselineSettings, setBaselineSettings] = useState<ProjectSettings | null>(null);
-  const [loadError, setLoadError] = useState<null | { message: string; code: string; requestId?: string }>(null);
-
   const [projectForm, setProjectForm] = useState<ProjectForm>(() => createDefaultProjectForm());
   const [settingsForm, setSettingsForm] = useState<SettingsForm>(() => createDefaultSettingsForm());
 
   const settingsQuery = useProjectData<SettingsLoaded>(projectId, async (id) => {
-    try {
-      const [pRes, sRes] = await Promise.all([
-        apiJson<{ project: Project }>(`/api/projects/${id}`),
-        apiJson<{ settings: ProjectSettings }>(`/api/projects/${id}/settings`),
-      ]);
-      setLoadError(null);
-      return { project: pRes.data.project, settings: sRes.data.settings };
-    } catch (e) {
-      if (e instanceof ApiError) {
-        setLoadError({ message: e.message, code: e.code, requestId: e.requestId });
-      } else {
-        setLoadError({ message: "请求失败", code: "UNKNOWN_ERROR" });
-      }
-      throw e;
-    }
+    const [pRes, sRes] = await Promise.all([
+      apiJson<{ project: Project }>(`/api/projects/${id}`),
+      apiJson<{ settings: ProjectSettings }>(`/api/projects/${id}/settings`),
+    ]);
+    return { project: pRes.data.project, settings: sRes.data.settings };
   });
 
   useEffect(() => {
@@ -355,8 +343,14 @@ export function useSettingsPageState(): SettingsPageState {
   return {
     loading,
     blockingLoadError:
-      !loading && !baselineProject && !baselineSettings
-        ? (loadError ?? { message: "项目加载失败", code: "UNKNOWN_ERROR" })
+      !loading && settingsQuery.data === null
+        ? settingsQuery.error
+          ? {
+              message: settingsQuery.error.message,
+              code: settingsQuery.error.code,
+              requestId: settingsQuery.error.requestId === "unknown" ? undefined : settingsQuery.error.requestId,
+            }
+          : { message: "项目加载失败", code: "UNKNOWN_ERROR" }
         : null,
     reloadAll: async () => {
       await settingsQuery.refresh();

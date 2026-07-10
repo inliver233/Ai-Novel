@@ -88,18 +88,22 @@ export function useOutlinePageState(): OutlinePageState {
   const baselineRef = useRef("");
   const pendingDetailedSwitchOutlineIdRef = useRef<string | null>(null);
 
-  const outlineQuery = useProjectData<OutlineLoaded>(projectId, async (id) => {
-    const [outlineResponse, presetResponse] = await Promise.all([
-      apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
-      apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
-    ]);
-    const outlinesResponse = await apiJson<{ outlines: OutlineListItem[] }>(`/api/projects/${id}/outlines`);
-    return {
-      outlines: outlinesResponse.data.outlines,
-      outline: outlineResponse.data.outline,
-      preset: presetResponse.data.llm_preset,
-    };
-  });
+  const outlineQuery = useProjectData<OutlineLoaded>(
+    projectId,
+    async (id) => {
+      const [outlineResponse, presetResponse] = await Promise.all([
+        apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
+        apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
+      ]);
+      const outlinesResponse = await apiJson<{ outlines: OutlineListItem[] }>(`/api/projects/${id}/outlines`);
+      return {
+        outlines: outlinesResponse.data.outlines,
+        outline: outlineResponse.data.outline,
+        preset: presetResponse.data.llm_preset,
+      };
+    },
+    { toastOnError: true },
+  );
 
   useEffect(() => {
     if (!outlineQuery.data) return;

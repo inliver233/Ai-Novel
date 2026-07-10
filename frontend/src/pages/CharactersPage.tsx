@@ -42,22 +42,11 @@ export function CharactersPage() {
   const refreshWizard = wizard.refresh;
   const bumpWizardLocal = wizard.bumpLocal;
 
-  const [loadError, setLoadError] = useState<null | { message: string; code: string; requestId?: string }>(null);
-
   const charactersQuery = useProjectData<Character[]>(projectId, async (id) => {
-    try {
-      const res = await apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`);
-      setLoadError(null);
-      return res.data.characters;
-    } catch (e) {
-      if (e instanceof ApiError) {
-        setLoadError({ message: e.message, code: e.code, requestId: e.requestId });
-      } else {
-        setLoadError({ message: "请求失败", code: "UNKNOWN_ERROR" });
-      }
-      throw e;
-    }
+    const res = await apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`);
+    return res.data.characters;
   });
+  const loadError = charactersQuery.error;
   const characters = useMemo(() => charactersQuery.data ?? [], [charactersQuery.data]);
   const loading = charactersQuery.loading;
 
@@ -293,7 +282,7 @@ export function CharactersPage() {
         <div className="error-card">
           <div className="state-title">加载失败</div>
           <div className="state-desc">{`${loadError.message} (${loadError.code})`}</div>
-          {loadError.requestId ? (
+          {loadError.requestId && loadError.requestId !== "unknown" ? (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtext">
               <span>request_id: {loadError.requestId}</span>
               <button

@@ -27,24 +27,28 @@ export function useWizardProgress(projectId: string | undefined): {
   const [, setVersion] = useState(0);
   const chapterListQuery = useChapterMetaList(projectId);
 
-  const wizardQuery = useProjectData<WizardLoaded>(projectId, async (id) => {
-    const [pRes, settingsRes, charsRes, outlineRes, presetRes, profilesRes] = await Promise.all([
-      apiJson<{ project: Project }>(`/api/projects/${id}`),
-      apiJson<{ settings: ProjectSettings }>(`/api/projects/${id}/settings`),
-      apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`),
-      apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
-      apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
-      apiJson<{ profiles: LLMProfile[] }>(`/api/llm_profiles`),
-    ]);
-    return {
-      project: pRes.data.project,
-      settings: settingsRes.data.settings,
-      characters: charsRes.data.characters,
-      outline: outlineRes.data.outline,
-      llmPreset: presetRes.data.llm_preset,
-      profiles: profilesRes.data.profiles,
-    };
-  });
+  const wizardQuery = useProjectData<WizardLoaded>(
+    projectId,
+    async (id) => {
+      const [pRes, settingsRes, charsRes, outlineRes, presetRes, profilesRes] = await Promise.all([
+        apiJson<{ project: Project }>(`/api/projects/${id}`),
+        apiJson<{ settings: ProjectSettings }>(`/api/projects/${id}/settings`),
+        apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`),
+        apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
+        apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
+        apiJson<{ profiles: LLMProfile[] }>(`/api/llm_profiles`),
+      ]);
+      return {
+        project: pRes.data.project,
+        settings: settingsRes.data.settings,
+        characters: charsRes.data.characters,
+        outline: outlineRes.data.outline,
+        llmPreset: presetRes.data.llm_preset,
+        profiles: profilesRes.data.profiles,
+      };
+    },
+    { toastOnError: true },
+  );
   const { data, loading, refresh } = wizardQuery;
 
   const refreshDebounceRef = useRef<number | null>(null);
