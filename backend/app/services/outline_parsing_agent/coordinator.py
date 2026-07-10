@@ -42,13 +42,11 @@ from app.services.outline_parsing_agent.agents.validation_agent import Validatio
 from app.services.outline_parsing_agent.chunker import TextChunker
 from app.services.outline_parsing_agent.config import AgentPipelineConfig
 from app.services.outline_parsing_agent.models import (
-    AGENT_DISPLAY_NAMES,
     AgentStepResult,
     ParsedDetailedOutline,
     ParseResult,
     SubTask,
     get_agent_display_name,
-    register_agent_display_name,
 )
 
 logger = logging.getLogger("ainovel.parsing_agent")
@@ -421,10 +419,6 @@ class OutlineParsingOrchestrator:
         analysis_context = _build_analysis_context(planner_step)
         task_plan = _extract_task_plan(planner_step)
 
-        # Register dynamic display names
-        for task in task_plan:
-            register_agent_display_name(task.id, task.display_name)
-
         # Phase 2: Dynamic extraction
         agents: dict[str, DynamicExtractionAgent] = {}
         for task in task_plan:
@@ -570,10 +564,7 @@ class OutlineParsingOrchestrator:
 
             analysis_context = _build_analysis_context(planner_step)
             task_plan = _extract_task_plan(planner_step)
-
-            # Register dynamic display names
-            for task in task_plan:
-                register_agent_display_name(task.id, task.display_name)
+            display_names_by_id = {task.id: task.display_name for task in task_plan}
 
             # Send task plan to frontend so it can create dynamic agent cards
             yield {
@@ -666,7 +657,7 @@ class OutlineParsingOrchestrator:
                             yield {
                                 "type": "agent_complete",
                                 "agent": a_id,
-                                "display_name": get_agent_display_name(a_id),
+                                "display_name": display_names_by_id.get(a_id) or get_agent_display_name(a_id),
                                 "data": dict(step.data) if step.data else {},
                                 "status": step.status,
                                 "duration_ms": step.duration_ms,
@@ -710,7 +701,6 @@ class OutlineParsingOrchestrator:
 
                 for task in failed_tasks:
                     repair_agent_id = f"repair_{task.id}"
-                    register_agent_display_name(repair_agent_id, f"修复: {task.display_name}")
                     yield {
                         "type": "agent_start",
                         "agent": repair_agent_id,

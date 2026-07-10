@@ -146,19 +146,7 @@ AGENT_DISPLAY_NAMES: dict[str, str] = {
     "repair": "JSON 修复",
 }
 
-# Runtime-registered dynamic agent display names
-_dynamic_display_names: dict[str, str] = {}
-
-
-def register_agent_display_name(agent_id: str, display_name: str) -> None:
-    """Register a display name for a dynamically created agent."""
-    _dynamic_display_names[agent_id] = display_name
-
 
 def get_agent_display_name(agent_name: str) -> str:
-    """Return Chinese display name for an agent (supports dynamic agents)."""
-    return (
-        AGENT_DISPLAY_NAMES.get(agent_name)
-        or _dynamic_display_names.get(agent_name)
-        or agent_name
-    )
+    """Return the built-in Chinese display name, or the unchanged agent name."""
+    return AGENT_DISPLAY_NAMES.get(agent_name) or agent_name

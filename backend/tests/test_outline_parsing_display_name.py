@@ -1,107 +1,218 @@
-"""大纲解析 agent display_name 注册表的隔离契约测试。  # H20
+"""Public display-name isolation contracts for outline parsing streams.
 
-catalog H20：``app/services/outline_parsing_agent/models.py`` 的
-``_dynamic_display_names`` 是**进程全局 dict**，``register_agent_display_name`` /
-``get_agent_display_name`` 仅以 ``agent_id`` 为 key，**不带 user_id / request_id /
-project_id 任何隔离维度**。多用户并发解析时：
+The planner may assign the same dynamic agent id in multiple requests while
+giving that agent a request-specific display name.  Every stream event must
+continue to use the display name from its own task plan, even when requests
+execute concurrently or the async generator is advanced one event at a time.
 
-  - 请求 A 注册的 display_name 会被请求 B 的同 agent_id 写入覆盖（last-write-wins）；
-  - 请求 B 即使从未注册过某 agent，也会读到请求 A 残留的值（跨请求泄漏）；
-  - 字典永不清理 → 内存泄漏 + 显示串话。
-
-本测试断言【正确行为】：不同请求/用户的 display_name 查询应互相隔离——为 userA
-设置的 display_name 不应被 userB 的查询读到。当前实现有 bug，故标记
-``known_issue``（诚实镜像：真跑真红；修复后自动转绿）。
-
-注：``register_agent_display_name`` / ``get_agent_display_name`` 是模块级公开
-函数（非 ``_`` 前缀），直接调用以测其隔离契约正当。``_dynamic_display_names``
-本身是 ``_`` 前缀私有 dict，仅在 try/finally 中快照+还原用于测试隔离清理，不
-断言其内部结构。``AGENT_DISPLAY_NAMES``（内置常量）代码从不修改，无需清理。
-
-数据串话仅对【非内置】agent_id 可见：``get_agent_display_name`` 用 ``or``
-短路——内置 key（如 ``structure``）的真值恒胜，动态注册对内置 key 是死代码。
-故用非内置 key（``repair_<taskid>`` 形态，见 coordinator.py:713）方能让
-``_dynamic_display_names`` 真正参与解析，暴露隔离缺失。
+These tests deliberately exercise the package's public stream API instead of
+the former process-global display-name registry.  Fake LLM-facing agents keep
+the tests deterministic while the real coordinator, parallel extraction path,
+event queue, merge, and validation stages remain in use.
 """
 
 from __future__ import annotations
 
-from contextvars import Context
+import asyncio
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
+from threading import Barrier
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
-import pytest
-
-from app.services.outline_parsing_agent import models as opa_models
-from app.services.outline_parsing_agent.models import (
-    get_agent_display_name,
-    register_agent_display_name,
-)
+from app.services.outline_parsing_agent import parse_outline_stream_events
+from app.services.outline_parsing_agent import coordinator as coordinator_module
+from app.services.outline_parsing_agent.models import AgentStepResult
 
 
-@pytest.fixture()
-def isolated_dynamic_display_names():
-    """H20: 快照并清空 ``_dynamic_display_names``，测试后还原。
+def _planner_step(*, task_id: str, display_name: str) -> AgentStepResult:
+    return AgentStepResult(
+        agent_name="planner",
+        status="success",
+        data={
+            "task_plan": [
+                {
+                    "id": task_id,
+                    "type": "structure",
+                    "display_name": display_name,
+                    "scope": "提取请求自己的章节结构",
+                }
+            ]
+        },
+    )
 
-    该 dict 是进程全局可变状态，不清理会污染同进程其他测试（正是 bug 的另一面：
-    代码自身从不清理它）。每个测试从空 dict 起步，结束后还原原内容。
-    """
-    global_dict = opa_models._dynamic_display_names  # noqa: SLF001 — 测试清理用
-    snapshot = dict(global_dict)
-    global_dict.clear()
-    try:
+
+def _structure_step(*, task_id: str) -> AgentStepResult:
+    return AgentStepResult(
+        agent_name=task_id,
+        status="success",
+        data={"outline_md": "", "volumes": [], "chapters": []},
+    )
+
+
+@contextmanager
+def _patched_pipeline(*, task_id: str, extraction_barrier: Barrier | None) -> Iterator[None]:
+    class FakePlannerAgent:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def run_on_chunks(self, chunks: list[Any]) -> AgentStepResult:
+            # The request content is a unique display name in this test harness.
+            return _planner_step(task_id=task_id, display_name=chunks[0].text)
+
+    class FakeDynamicExtractionAgent:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def run_on_chunks(
+            self,
+            _chunks: list[Any],
+            _analysis_context: str,
+            *,
+            on_streaming: Any | None = None,
+        ) -> AgentStepResult:
+            # Both requests have completed planning (and any display-name
+            # registration) before either parallel completion event is emitted.
+            if extraction_barrier is not None:
+                extraction_barrier.wait()
+            if on_streaming is not None:
+                on_streaming("token")
+            return _structure_step(task_id=task_id)
+
+        def parse_response(self, value: Any) -> Any:
+            return value
+
+    resolved = SimpleNamespace(
+        llm_call=SimpleNamespace(
+            provider="test-provider",
+            base_url="https://llm.invalid/v1",
+            model="test-model",
+        ),
+        api_key="test-key",
+    )
+
+    with (
+        patch.object(coordinator_module, "_resolve_outline_llm_preset", return_value=resolved),
+        patch.object(coordinator_module, "_get_llm_strategy", return_value=object()),
+        patch.object(coordinator_module, "PlannerAgent", FakePlannerAgent),
+        patch.object(
+            coordinator_module,
+            "DynamicExtractionAgent",
+            FakeDynamicExtractionAgent,
+        ),
+    ):
         yield
-    finally:
-        global_dict.clear()
-        global_dict.update(snapshot)
 
 
-# 请求 A 注册的动态 agent display_name 不应被请求 B（从未注册）读到
-@pytest.mark.known_issue  # H20
-def test_dynamic_display_name_does_not_leak_across_requests(
-    isolated_dynamic_display_names: None,
+async def _collect_stream(*, request_id: str, display_name: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    async for event in parse_outline_stream_events(
+        project_id="project-test",
+        user_id="user-test",
+        content=display_name,
+        request_id=request_id,
+        agent_config={"parallel_extraction": True},
+    ):
+        events.append(event)
+    return events
+
+
+async def _collect_concurrent_streams(
+    *,
+    task_id: str,
+    display_names: tuple[str, str],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    with _patched_pipeline(task_id=task_id, extraction_barrier=Barrier(2, timeout=5)):
+        streams = await asyncio.gather(
+            _collect_stream(request_id="request-a", display_name=display_names[0]),
+            _collect_stream(request_id="request-b", display_name=display_names[1]),
+        )
+    return list(zip(display_names, streams, strict=True))
+
+
+def _assert_stream_uses_own_display_name(
+    *,
+    task_id: str,
+    expected_display_name: str,
+    events: list[dict[str, Any]],
 ) -> None:
-    request_a_agent = "repair_structure"  # coordinator.py:713 形态的非内置 agent_id
-    request_a_label = "修复: 请求A的大纲骨架"
+    task_plan = next(event for event in events if event.get("type") == "task_plan")
+    planned_task = next(task for task in task_plan["tasks"] if task["id"] == task_id)
+    assert planned_task["display_name"] == expected_display_name
 
-    # 两个独立 Context 模拟两个并发请求的 Python 执行上下文。正确实现可用
-    # request-scoped 对象或 ContextVar 隔离；当前进程全局 dict 会跨 Context 泄漏。
-    request_a = Context()
-    request_b = Context()
+    agent_events = [
+        event
+        for event in events
+        if event.get("agent") == task_id and event.get("type") in {"agent_start", "agent_streaming", "agent_complete"}
+    ]
+    assert agent_events, f"没有收到动态 agent {task_id!r} 的公开事件"
+    assert any(event.get("type") == "agent_complete" for event in agent_events)
+    assert {event.get("display_name") for event in agent_events} == {expected_display_name}
 
-    request_a.run(register_agent_display_name, request_a_agent, request_a_label)
 
-    # 请求 B（独立用户/请求，从未注册任何 display_name）查询同一 agent_id
-    # 正确行为：请求 B 应拿到回退值（裸 agent_id），而非请求 A 残留的值
-    # 当前 bug：全局 dict 无隔离 → 请求 B 读到请求 A 的值 → 断言失败(red)
-    leaked = request_b.run(get_agent_display_name, request_a_agent)
-    assert leaked == request_a_agent, (
-        f"跨请求泄漏：请求 B 读到请求 A 注册的 display_name {leaked!r}，"
-        f"期望回退值 {request_a_agent!r}（display_name 注册表应按请求隔离）"
+# 请求 A/B 使用相同动态 id 时，每条公开 stream 只能看到自己的 display_name。
+def test_dynamic_display_name_does_not_leak_across_requests() -> None:
+    task_id = "shared_structure_agent"
+    display_names = ("请求 A：大纲骨架", "请求 B：大纲骨架")
+
+    streams = asyncio.run(_collect_concurrent_streams(task_id=task_id, display_names=display_names))
+
+    for expected_display_name, events in streams:
+        _assert_stream_uses_own_display_name(
+            task_id=task_id,
+            expected_display_name=expected_display_name,
+            events=events,
+        )
+
+
+# Planner 合法复用 built-in id 并给出自定义 label 时，并发请求也不能被静态名或彼此覆盖。
+def test_concurrent_requests_do_not_clobber_each_others_display_name() -> None:
+    task_id = "structure"
+    display_names = ("请求 A：自定义结构提取", "请求 B：自定义结构提取")
+
+    streams = asyncio.run(_collect_concurrent_streams(task_id=task_id, display_names=display_names))
+
+    for expected_display_name, events in streams:
+        _assert_stream_uses_own_display_name(
+            task_id=task_id,
+            expected_display_name=expected_display_name,
+            events=events,
+        )
+
+
+def test_display_name_survives_incremental_async_generator_advancement() -> None:
+    """The sync SSE bridge advances one async-generator event per task.
+
+    Request-local data must live in the parsing operation itself; state stored
+    only in a ContextVar set before an earlier yield would disappear here.
+    """
+
+    task_id = "incremental_structure_agent"
+    display_name = "逐事件推进：大纲骨架"
+
+    with _patched_pipeline(task_id=task_id, extraction_barrier=None):
+        stream: AsyncIterator[dict[str, Any]] = parse_outline_stream_events(
+            project_id="project-test",
+            user_id="user-test",
+            content=display_name,
+            request_id="request-incremental",
+            agent_config={"parallel_extraction": True},
+        )
+        loop = asyncio.new_event_loop()
+        events: list[dict[str, Any]] = []
+        try:
+            while True:
+                try:
+                    events.append(loop.run_until_complete(stream.__anext__()))
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.run_until_complete(stream.aclose())
+            loop.close()
+
+    _assert_stream_uses_own_display_name(
+        task_id=task_id,
+        expected_display_name=display_name,
+        events=events,
     )
-
-
-# 并发请求注册同 agent_id 时，各自查对应拿到自己的值，而非 last-write-wins
-@pytest.mark.known_issue  # H20
-def test_concurrent_requests_do_not_clobber_each_others_display_name(
-    isolated_dynamic_display_names: None,
-) -> None:
-    agent_id = "repair_character"  # 非内置 agent_id，让 _dynamic_display_names 参与解析
-    request_a_label = "修复: 请求A的角色卡"
-    request_b_label = "修复: 请求B的角色卡"
-
-    request_a = Context()
-    request_b = Context()
-
-    # 两个独立请求上下文各自注册同名 agent。
-    request_a.run(register_agent_display_name, agent_id, request_a_label)
-    request_b.run(register_agent_display_name, agent_id, request_b_label)
-
-    # 请求 A 重新查询自己注册的 agent 的 display_name
-    # 正确行为：请求 A 拿到自己的值 request_a_label
-    # 当前 bug：全局 dict 按 agent_id 单维度索引 → 请求 B 覆盖请求 A → 串话
-    seen_by_a = request_a.run(get_agent_display_name, agent_id)
-    seen_by_b = request_b.run(get_agent_display_name, agent_id)
-    assert seen_by_a == request_a_label, (
-        f"并发串话：请求 A 的 display_name 被请求 B 覆盖为 {seen_by_a!r}，"
-        f"期望请求 A 自己的值 {request_a_label!r}（注册表应按请求隔离，非 last-write-wins）"
-    )
-    assert seen_by_b == request_b_label
