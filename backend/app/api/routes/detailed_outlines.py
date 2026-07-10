@@ -519,7 +519,7 @@ def create_chapters(
     user_id: UserIdDep,
     detailed_outline_id: str,
     replace: bool = Query(default=False),
-    x_llm_api_key: str | None = Header(default=None, alias="X-LLM-Api-Key"),
+    x_llm_api_key: str | None = Header(default=None, alias="X-LLM-API-Key", max_length=4096),
 ) -> dict:
     request_id = request.state.request_id
     _require_detailed_outline_editor(db, detailed_outline_id=detailed_outline_id, user_id=user_id)

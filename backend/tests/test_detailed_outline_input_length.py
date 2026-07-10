@@ -1,12 +1,8 @@
-"""B 类 known_issue 测试 —— detailed_outlines create_chapters 端点
-X-LLM-Api-Key 请求头缺少 max_length=4096 校验（catalog M12）。
+"""``create_chapters`` 的 LLM API key Header 长度契约回归测试。
 
-【诚实镜像】断言【正确行为】：超过 4096 字符的 X-LLM-Api-Key 应被
-FastAPI Header 校验拒绝，返回 400 VALIDATION_ERROR。
-当前实现（app/api/routes/detailed_outlines.py:522）该 Header 缺少
-max_length=4096——同文件 line 349/485/653 的同类端点均有该校验——故
-超长输入被接受，端点继续执行（200），测试红（FAILED）。
-bug 修复后（补 max_length=4096）→ 400 VALIDATION_ERROR → 测试绿。
+该端点与其他细纲生成端点统一使用规范名称 ``X-LLM-API-Key``，允许最多
+4096 个字符。超长值必须在进入端点前由 FastAPI 校验拒绝，并通过生产校验
+错误处理器返回不包含敏感输入的 ``400 VALIDATION_ERROR`` 信封。
 """
 
 from __future__ import annotations
@@ -18,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 
 from app.api.routes import detailed_outlines as detailed_outlines_routes
 from app.main import validation_error_handler
+from app.models.chapter import Chapter
 from app.models.detailed_outline import DetailedOutline
 from app.models.outline import Outline
 from app.models.project import Project
@@ -74,22 +71,38 @@ def env():
     engine.dispose()
 
 
-@pytest.mark.known_issue  # M12
 def test_create_chapters_rejects_overlength_llm_api_key_header(env):
-    """X-LLM-Api-Key 超过 4096 字符应返回 400 VALIDATION_ERROR。
-
-    正确行为：该 Header 应有 max_length=4096（与同文件 line 485 等同类端点一致），
-    超长值被 FastAPI Header 校验拒绝 → 400 VALIDATION_ERROR。
-    当前 bug：line 522 缺 max_length → 超长值被接受 → 端点继续执行（200）→ 断言失败（红）。
-    """
-    overlength_key = "x" * 5000  # 超过 4096 上限
+    """4097 字符的密钥在路由执行和数据库变更前被安全拒绝。"""
+    secret_marker = "sk-test-sensitive-marker"
+    overlength_key = secret_marker + ("x" * (4097 - len(secret_marker)))
     resp = env["client"].post(
         f"/api/detailed_outlines/{DETAILED_OUTLINE_ID}/create_chapters",
-        headers={"X-LLM-Api-Key": overlength_key},
+        headers={"X-LLM-API-Key": overlength_key},
     )
 
-    # 断言【正确行为】：400 校验错误（统一错误信封 ok=False + error.code=VALIDATION_ERROR）
     assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["ok"] is False
     assert body["error"]["code"] == "VALIDATION_ERROR"
+    errors = body["error"]["details"]["errors"]
+    assert any(
+        error.get("type") == "string_too_long"
+        and error.get("loc") == ["header", "X-LLM-API-Key"]
+        for error in errors
+    )
+    assert secret_marker not in resp.text
+    assert overlength_key not in resp.text
+
+    with env["factory"]() as db:
+        assert db.query(Chapter).count() == 0
+
+
+def test_create_chapters_accepts_max_length_llm_api_key_header(env):
+    """恰好 4096 字符的密钥仍满足公开 Header 契约。"""
+    resp = env["client"].post(
+        f"/api/detailed_outlines/{DETAILED_OUTLINE_ID}/create_chapters",
+        headers={"X-LLM-API-Key": "x" * 4096},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["count"] == 1
