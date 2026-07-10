@@ -6,6 +6,7 @@ from typing import Any, Callable, Iterator
 
 import httpx
 
+from app.core.errors import AppError
 from app.llm.max_tokens import extract_max_tokens_upper_bound
 
 from app.llm.redaction import redact_text
@@ -352,6 +353,10 @@ def call_gemini_generate_content_stream(
 
                 if delta:
                     yield delta
+        except httpx.TimeoutException as exc:
+            raise AppError(code="LLM_TIMEOUT", message="连接超时，请检查网络或 base_url 是否正确", status_code=504) from exc
+        except httpx.HTTPError as exc:
+            raise AppError(code="LLM_UPSTREAM_ERROR", message="连接失败，请检查网络或 base_url 是否正确", status_code=502) from exc
         finally:
             state.latency_ms = int((time.perf_counter() - start) * 1000)
             merged_dropped = dropped_params + [p for p in compat_dropped_params if p not in dropped_params]

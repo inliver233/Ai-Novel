@@ -1,13 +1,4 @@
-"""B 类 known_issue 测试 —— Gemini 流式生成 httpx.ReadTimeout 裸逃逸（catalog H25）。
-
-诚实镜像：断言【正确行为】= 流式生成中 httpx.ReadTimeout 应被捕获并转为封装错误
-（AppError，如 LLM_TIMEOUT），不应作为裸 httpx 异常逃逸到 StreamingResponse。
-
-当前 ``app/llm/providers/gemini_generate_content.py`` 的流式 generator 只有 finally、
-没有 ``except httpx.*`` → ``httpx.ReadTimeout`` 直接逃逸生成器，绕过
-``call_llm_stream_messages`` 的 ``try/except AppError``（生成器是惰性的，异常在迭代
-而非创建时抛出）与 ``_attach_llm_error_context``。故本测试必须 FAILED（红）。
-"""
+"""Regression coverage for lazy Gemini streaming transport failures."""
 
 from __future__ import annotations
 
@@ -19,83 +10,141 @@ import httpx
 import pytest
 
 from app.core.errors import AppError
+from app.llm import client as llm_client
 from app.llm.messages import ChatMessage
 from app.llm.providers.gemini_generate_content import call_gemini_generate_content_stream
 
 
-def _make_stream_timeout_client(*, escape_at: str) -> Any:
-    """构造假的 httpx.Client，其 ``stream`` 在指定环节抛 ``httpx.ReadTimeout``。
+_PARTIAL_SSE_LINE = 'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}'
 
-    escape_at:
-      - "iter_lines": 连接建立成功（200），但读取 SSE 行时超时（流式中途超时，最贴近 H25）。
-      - "enter": 建立/进入流连接时即超时。
-    """
+
+def _partial_lines_then_timeout() -> Any:
+    yield _PARTIAL_SSE_LINE
+    raise httpx.ReadTimeout("stream read timed out")
+
+
+def _make_stream_error_client(*, escape_at: str) -> Any:
     client = MagicMock()
-    resp = MagicMock()
-    resp.status_code = 200
+    response = MagicMock()
+    response.status_code = 200
 
-    cm = MagicMock()
-    if escape_at == "enter":
-        cm.__enter__ = MagicMock(side_effect=httpx.ReadTimeout("stream connect timed out"))
-    else:
-        cm.__enter__ = MagicMock(return_value=resp)
-        resp.iter_lines = MagicMock(side_effect=httpx.ReadTimeout("stream read timed out"))
-    cm.__exit__ = MagicMock(return_value=False)
+    context_manager = MagicMock()
+    context_manager.__enter__ = MagicMock(return_value=response)
+    context_manager.__exit__ = MagicMock(return_value=False)
+    client.stream = MagicMock(return_value=context_manager)
 
-    client.stream = MagicMock(return_value=cm)
+    if escape_at == "stream":
+        client.stream.side_effect = httpx.ReadTimeout("stream construction timed out")
+    elif escape_at == "enter":
+        context_manager.__enter__.side_effect = httpx.ConnectTimeout("stream connect timed out")
+    elif escape_at == "iter_lines":
+        response.iter_lines.side_effect = _partial_lines_then_timeout
+    elif escape_at == "http_error":
+        client.stream.side_effect = httpx.ConnectError("stream connect failed")
+    else:  # pragma: no cover - test helper guard
+        raise ValueError(f"unsupported escape_at: {escape_at}")
+
     return client
 
 
-def _build_call_kwargs(client: Any) -> dict[str, Any]:
-    return dict(
-        client=client,
+def _build_provider_call_kwargs(client: Any) -> dict[str, Any]:
+    return {
+        "client": client,
+        "base_url": "https://generativelanguage.googleapis.com",
+        "model": "gemini-1.5-pro",
+        "api_key": "test-key",
+        "messages": [ChatMessage(role="user", content="ping")],
+        "filtered_params": {},
+        "dropped_params": [],
+        "timeout": httpx.Timeout(10.0),
+        "start": time.perf_counter(),
+        "extra": {},
+    }
+
+
+def _assert_timeout_error(exc: AppError) -> None:
+    assert exc.code == "LLM_TIMEOUT"
+    assert exc.status_code == 504
+    assert exc.message == "连接超时，请检查网络或 base_url 是否正确"
+    assert isinstance(exc.__cause__, httpx.TimeoutException)
+
+
+def test_gemini_stream_readtimeout_mid_stream_is_wrapped() -> None:
+    client = _make_stream_error_client(escape_at="iter_lines")
+    stream_iter, state = call_gemini_generate_content_stream(**_build_provider_call_kwargs(client))
+
+    assert next(stream_iter) == "partial"
+    with pytest.raises(AppError) as exc_info:
+        next(stream_iter)
+
+    _assert_timeout_error(exc_info.value)
+    assert state.latency_ms is not None
+
+
+@pytest.mark.parametrize("escape_at", ["stream", "enter"])
+def test_gemini_stream_readtimeout_at_connect_is_wrapped(escape_at: str) -> None:
+    client = _make_stream_error_client(escape_at=escape_at)
+    stream_iter, state = call_gemini_generate_content_stream(**_build_provider_call_kwargs(client))
+
+    with pytest.raises(AppError) as exc_info:
+        list(stream_iter)
+
+    _assert_timeout_error(exc_info.value)
+    assert state.latency_ms is not None
+
+
+def test_gemini_stream_timeout_public_boundary_adds_llm_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_stream_error_client(escape_at="enter")
+    monkeypatch.setattr(llm_client, "get_llm_http_client", lambda: client)
+
+    stream_iter, _state = llm_client.call_llm_stream_messages(
+        provider="gemini",
         base_url="https://generativelanguage.googleapis.com",
         model="gemini-1.5-pro",
         api_key="test-key",
         messages=[ChatMessage(role="user", content="ping")],
-        filtered_params={},
-        dropped_params=[],
-        timeout=httpx.Timeout(10.0),
-        start=time.perf_counter(),
-        extra={},
+        params={},
+        timeout_seconds=7,
     )
 
+    with pytest.raises(AppError) as exc_info:
+        list(stream_iter)
 
-def _drain_and_inspect(gen: Any) -> Exception | None:
-    """耗尽生成器，返回逃逸的异常（若无则 None）。"""
-    try:
-        list(gen)
-    except Exception as exc:
-        return exc
-    return None
+    exc = exc_info.value
+    _assert_timeout_error(exc)
+    assert exc.details == {
+        "provider": "gemini",
+        "model": "gemini-1.5-pro",
+        "timeout_seconds": 7,
+        "base_url_host": "generativelanguage.googleapis.com",
+    }
 
 
-@pytest.mark.known_issue  # H25
-def test_gemini_stream_readtimeout_mid_stream_is_wrapped() -> None:
-    # 流式读取 SSE 行时 httpx.ReadTimeout 应被捕获并转为 AppError，而非裸逃逸。
-    client = _make_stream_timeout_client(escape_at="iter_lines")
-    gen, _state = call_gemini_generate_content_stream(**_build_call_kwargs(client))
+def test_gemini_stream_http_error_public_boundary_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_stream_error_client(escape_at="http_error")
+    monkeypatch.setattr(llm_client, "get_llm_http_client", lambda: client)
 
-    raised = _drain_and_inspect(gen)
-    assert raised is not None, "expected the stream to surface an error on httpx.ReadTimeout"
-    # 正确行为：逃逸的应是封装后的 AppError（如 LLM_TIMEOUT），而非裸 httpx.ReadTimeout。
-    assert isinstance(raised, AppError), (
-        f"httpx.ReadTimeout escaped bare (got {type(raised).__name__}); expected a wrapped AppError"
+    stream_iter, _state = llm_client.call_llm_stream_messages(
+        provider="gemini",
+        base_url="https://generativelanguage.googleapis.com",
+        model="gemini-1.5-pro",
+        api_key="test-key",
+        messages=[ChatMessage(role="user", content="ping")],
+        params={},
+        timeout_seconds=9,
     )
-    assert raised.code == "LLM_TIMEOUT"
-    assert raised.status_code == 504
 
+    with pytest.raises(AppError) as exc_info:
+        list(stream_iter)
 
-@pytest.mark.known_issue  # H25
-def test_gemini_stream_readtimeout_at_connect_is_wrapped() -> None:
-    # 建立/进入流连接时 httpx.ReadTimeout 应被捕获并转为 AppError，而非裸逃逸。
-    client = _make_stream_timeout_client(escape_at="enter")
-    gen, _state = call_gemini_generate_content_stream(**_build_call_kwargs(client))
-
-    raised = _drain_and_inspect(gen)
-    assert raised is not None, "expected the stream to surface an error on httpx.ReadTimeout"
-    assert isinstance(raised, AppError), (
-        f"httpx.ReadTimeout escaped bare (got {type(raised).__name__}); expected a wrapped AppError"
-    )
-    assert raised.code == "LLM_TIMEOUT"
-    assert raised.status_code == 504
+    exc = exc_info.value
+    assert exc.code == "LLM_UPSTREAM_ERROR"
+    assert exc.status_code == 502
+    assert exc.message == "连接失败，请检查网络或 base_url 是否正确"
+    assert isinstance(exc.__cause__, httpx.ConnectError)
+    assert exc.details == {
+        "provider": "gemini",
+        "model": "gemini-1.5-pro",
+        "timeout_seconds": 9,
+        "base_url_host": "generativelanguage.googleapis.com",
+    }
