@@ -25,13 +25,17 @@ describe("SSEPostClient.connect", () => {
     );
 
     const calls: string[] = [];
-    const client = new SSEPostClient("/api/x", { q: 1 }, {
-      onOpen: (info) => calls.push(`open:${info.requestId}`),
-      onProgress: (m) => calls.push(`progress:${m.progress}`),
-      onChunk: (c) => calls.push(`chunk:${c}`),
-      onResult: (d) => calls.push(`result:${(d as { id: string }).id}`),
-      onDone: () => calls.push("done"),
-    });
+    const client = new SSEPostClient(
+      "/api/x",
+      { q: 1 },
+      {
+        onOpen: (info) => calls.push(`open:${info.requestId}`),
+        onProgress: (m) => calls.push(`progress:${m.progress}`),
+        onChunk: (c) => calls.push(`chunk:${c}`),
+        onResult: (d) => calls.push(`result:${(d as { id: string }).id}`),
+        onDone: () => calls.push("done"),
+      },
+    );
 
     const res = await client.connect();
 
@@ -69,12 +73,16 @@ describe("SSEPostClient.connect", () => {
     );
     let errMsg: string | undefined;
     let errCode: number | undefined;
-    const client = new SSEPostClient("/api/x", {}, {
-      onError: (e, c) => {
-        errMsg = e;
-        errCode = c;
+    const client = new SSEPostClient(
+      "/api/x",
+      {},
+      {
+        onError: (e, c) => {
+          errMsg = e;
+          errCode = c;
+        },
       },
-    });
+    );
     await expect(client.connect()).rejects.toMatchObject({ name: "SSEError", code: "SSE_SERVER_ERROR" });
     expect(errMsg).toBe("模型超时");
     expect(errCode).toBe(504);

@@ -1,10 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import { SSEPostClient } from "@/services/sseClient";
-import {
-  createChapterMarkerStreamParser,
-  type ChapterMarkerStreamPhase,
-} from "@/services/chapterMarkerStreamParser";
+import { createChapterMarkerStreamParser, type ChapterMarkerStreamPhase } from "@/services/chapterMarkerStreamParser";
 import { makeSseResponse } from "../setup";
 
 // 集成层（D 类 happy-path，应绿）：复刻写作页 SSE 流式生成主链路两端的真实协作。
@@ -38,19 +35,23 @@ async function streamChapter(response: Response): Promise<StreamOutcome> {
   const progressMessages: string[] = [];
   let doneCalled = false;
 
-  const client = new SSEPostClient("/api/chapter/generate", { prompt: "x" }, {
-    onChunk: (c) => {
-      const out = parser.push(c);
-      content += out.contentDelta;
-      summary += out.summaryDelta;
+  const client = new SSEPostClient(
+    "/api/chapter/generate",
+    { prompt: "x" },
+    {
+      onChunk: (c) => {
+        const out = parser.push(c);
+        content += out.contentDelta;
+        summary += out.summaryDelta;
+      },
+      onProgress: (m) => {
+        progressMessages.push(m.message);
+      },
+      onDone: () => {
+        doneCalled = true;
+      },
     },
-    onProgress: (m) => {
-      progressMessages.push(m.message);
-    },
-    onDone: () => {
-      doneCalled = true;
-    },
-  });
+  );
 
   const res = await client.connect();
   const end = parser.finalize();

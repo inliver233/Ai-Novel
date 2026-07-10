@@ -41,15 +41,18 @@ def make_test_app(
     """
     app = FastAPI()
 
+    # Starlette 后注册的 middleware 位于外层。生产 main.py 先注册 auth、后注册
+    # request-id/logging，因此这里也必须先 auth 后 request-id，使 request-id 在认证
+    # 异常路径上同样可用。
+    if with_auth_middleware:
+        app.middleware("http")(auth_session_middleware)
+
     if with_request_id:
 
         @app.middleware("http")
         async def _request_id_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
             request.state.request_id = "rid-test"
             return await call_next(request)
-
-    if with_auth_middleware:
-        app.middleware("http")(auth_session_middleware)
 
     app.add_exception_handler(AppError, app_error_handler)
 

@@ -69,9 +69,7 @@ function buildTransport(
 
 describe("chapterStore (deeper interactions)", () => {
   it("fans out meta state changes to every active subscriber", async () => {
-    const store = createChapterStore(
-      buildTransport({ fetchAllChapterMeta: async () => [makeListItem()] }),
-    );
+    const store = createChapterStore(buildTransport({ fetchAllChapterMeta: async () => [makeListItem()] }));
     const listenerA = vi.fn();
     const listenerB = vi.fn();
     const unsubscribeA = store.subscribeMeta("project-1", listenerA);
@@ -95,9 +93,7 @@ describe("chapterStore (deeper interactions)", () => {
   });
 
   it("fans out detail state changes to every active subscriber", async () => {
-    const store = createChapterStore(
-      buildTransport({ fetchChapterDetail: async () => makeDetail() }),
-    );
+    const store = createChapterStore(buildTransport({ fetchChapterDetail: async () => makeDetail() }));
     const listenerA = vi.fn();
     const listenerB = vi.fn();
     const unsubscribeA = store.subscribeDetail("chapter-1", listenerA);

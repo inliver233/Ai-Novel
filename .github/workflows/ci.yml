@@ -1,9 +1,10 @@
 # CI 守门（项目情况完全分析.md C7/E：此前仓库无任何 CI）。
 #
 # 红灯即禁止合并（§6.1）：
-#   - backend：ruff + pytest 安全网（`-m "not known_issue"` 必须绿 = 可部署）；
+#   - backend：ruff + pytest/coverage 安全网（`-m "not known_issue"` 必须绿 = 可部署）；
 #     另有 known_issue backlog 步骤（informational，允许失败 = 暴露待修 bug 数）。
-#   - frontend：eslint + tsc 类型检查 + vitest
+#   - frontend：tests-only lint/format + 生产构建 + 测试类型检查 + vitest/coverage；
+#     全量 lint 暂为 informational（既有业务源码债清理后再升为硬门禁）。
 #
 # Python 版本与生产对齐（3.11）；Node 用 LTS。依赖走 lock 文件保证可复现。
 
@@ -33,19 +34,20 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/requirements.lock.txt
+          cache-dependency-path: |
+            backend/requirements.lock.txt
+            backend/requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.lock.txt
-          pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Ruff (lint)
         run: python -m ruff check app tests scripts conftest.py
 
-      - name: Pytest (safety net — must stay green)
-        run: python -m pytest -m "not known_issue" -q
+      - name: Pytest + coverage baseline (safety net — must stay green)
+        run: python -m pytest -m "not known_issue" -q --cov=app --cov-report=term --cov-fail-under=62
         env:
           AINOVEL_APP_ENV: test
 
@@ -80,14 +82,19 @@ jobs:
         run: npm run lint
         continue-on-error: true
 
-      - name: Type check (app build)
-        run: npx tsc -b
+      - name: Test lint + formatting (hard gate)
+        run: |
+          npx eslint tests vitest.config.ts
+          npx prettier --check tests vitest.config.ts tsconfig.test.json
+
+      - name: Production build
+        run: npm run build
 
       - name: Type check (tests)
         run: npx tsc -p tsconfig.test.json --noEmit
 
-      - name: Vitest (safety net — must stay green)
-        run: npx vitest run --tagsFilter '!@known_issue'
+      - name: Vitest + coverage baseline (safety net — must stay green)
+        run: npx vitest run --coverage --tagsFilter '!@known_issue'
 
       - name: Known-issue backlog (informational, expected to fail)
         run: npx vitest run --tagsFilter '@known_issue'

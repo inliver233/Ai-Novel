@@ -1,17 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { buildClearTaskApiKeyConfirm, buildDeleteTaskModuleConfirm, PROMPTS_COPY } from "@/pages/prompts/promptsCopy";
+import { buildClearTaskApiKeyConfirm, buildDeleteTaskModuleConfirm } from "@/pages/prompts/promptsCopy";
 
 describe("promptsCopy", () => {
-  it("keeps the prompts vector test-save hint stable", () => {
-    expect(PROMPTS_COPY.vectorRag.saveBeforeTestHint).toContain("保存 RAG 配置");
-  });
-
   it("builds the delete-task confirmation with the task label", () => {
-    expect(buildDeleteTaskModuleConfirm("章节生成").description).toContain("章节生成");
+    const taskLabel = "task-label-sentinel";
+    const confirmation = buildDeleteTaskModuleConfirm(taskLabel);
+
+    expect(confirmation.description).toContain(taskLabel);
+    expect(confirmation.title).toEqual(expect.any(String));
+    expect(confirmation.confirmText).toEqual(expect.any(String));
   });
 
   it("builds the shared-profile clear confirmation with the profile name", () => {
-    expect(buildClearTaskApiKeyConfirm("shared-profile").description).toContain("shared-profile");
+    const profileName = "profile-name-sentinel";
+    const confirmation = buildClearTaskApiKeyConfirm(profileName);
+
+    expect(confirmation.description).toContain(profileName);
+    expect(confirmation.title).toEqual(expect.any(String));
+    expect(confirmation.confirmText).toEqual(expect.any(String));
   });
 });

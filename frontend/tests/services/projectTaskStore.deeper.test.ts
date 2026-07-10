@@ -101,9 +101,7 @@ describe("projectTaskStore (deeper interactions)", () => {
   });
 
   it("fans out runtime state changes to every active subscriber", async () => {
-    const store = createProjectTaskStore(
-      buildTransport({ fetchProjectTaskRuntime: async () => makeRuntime() }),
-    );
+    const store = createProjectTaskStore(buildTransport({ fetchProjectTaskRuntime: async () => makeRuntime() }));
     const listenerA = vi.fn();
     const listenerB = vi.fn();
     const unsubscribeA = store.subscribeProjectTaskRuntime("task-1", listenerA);

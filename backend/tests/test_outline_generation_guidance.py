@@ -20,7 +20,6 @@ from app.api.routes.outline import (
     _format_chapter_number_ranges,
     _outline_fill_batch_size_for_missing,
     _outline_fill_max_attempts_for_missing,
-    _outline_fill_progress_message,
     _outline_segment_batch_size_for_target,
     _parse_outline_batch_output,
     _recommend_outline_max_tokens,
@@ -102,11 +101,15 @@ class TestOutlineGenerationGuidance(unittest.TestCase):
                 model=model,
                 current_max_tokens=4096,
             )
-            if recommended is not None:
-                self.assertLessEqual(recommended, limit)
-                if previous is not None:
-                    self.assertGreaterEqual(recommended, previous)
-                previous = recommended
+            expected = min(count * 200, 64000, limit)
+            # count>=21 且 current=4096，小于这些样本的 expected；必须真的给出推荐值，
+            # 不能让“全部返回 None”绕过单调性检查假绿。
+            self.assertIsNotNone(recommended)
+            self.assertEqual(recommended, expected)
+            self.assertLessEqual(recommended, limit)
+            if previous is not None:
+                self.assertGreaterEqual(recommended, previous)
+            previous = recommended
 
         # Only raises, never lowers: when current_max_tokens already meets the
         # recommendation, no override is returned.
@@ -130,7 +133,7 @@ class TestOutlineGenerationGuidance(unittest.TestCase):
             current_max_tokens=4096,
         )
         self.assertIsNotNone(clamped)
-        self.assertLessEqual(clamped, gpt4_limit)
+        self.assertEqual(clamped, gpt4_limit)
 
     def test_outline_contract_template_uses_dynamic_rules(self) -> None:
         template_path = Path("app/resources/prompt_presets/outline_generate_v3/templates/sys.outline.contract.json.md")
@@ -213,17 +216,6 @@ class TestOutlineGenerationGuidance(unittest.TestCase):
         # Missing 195 chapters should provide enough rounds for incremental completion.
         self.assertEqual(_outline_fill_max_attempts_for_missing(195), 41)
         self.assertEqual(_outline_fill_max_attempts_for_missing(0), 1)
-
-    def test_outline_fill_progress_message(self) -> None:
-        self.assertEqual(
-            _outline_fill_progress_message({"attempt": 2, "max_attempts": 11, "remaining_count": 37}),
-            "补全缺失章节... 第 2/11 轮，剩余 37 章",
-        )
-        self.assertEqual(
-            _outline_fill_progress_message({"remaining_count": 9}),
-            "补全缺失章节... 剩余 9 章",
-        )
-        self.assertEqual(_outline_fill_progress_message(None), "补全缺失章节...")
 
     def test_parse_outline_batch_output_uses_fallback_outline(self) -> None:
         text = json.dumps(

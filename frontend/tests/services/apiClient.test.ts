@@ -14,15 +14,16 @@ describe("apiJson", () => {
 
   it("解包成功响应的 data", async () => {
     const body: ApiOkPayload<{ id: string }> = { ok: true, data: { id: "c1" }, request_id: "rid-1" };
-    vi.mocked(fetch).mockResolvedValueOnce(
-      makeJsonResponse(body, { headers: { "X-Request-Id": "rid-1" } }),
-    );
+    vi.mocked(fetch).mockResolvedValueOnce(makeJsonResponse(body, { headers: { "X-Request-Id": "rid-1" } }));
 
     const res = await apiJson<{ id: string }>("/api/projects/p1/chapters/c1");
 
     expect(fetch).toHaveBeenCalledWith(
       "/api/projects/p1/chapters/c1",
-      expect.objectContaining({ credentials: "include", headers: expect.objectContaining({ "Content-Type": "application/json" }) }),
+      expect.objectContaining({
+        credentials: "include",
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
     );
     expect(res.ok).toBe(true);
     expect(res.data.id).toBe("c1");
@@ -30,9 +31,7 @@ describe("apiJson", () => {
   });
 
   it("把错误信封转为 ApiError 并保留 code/requestId/status", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      makeApiErrorResponse("VALIDATION_ERROR", "参数错误", 400, "rid-err"),
-    );
+    vi.mocked(fetch).mockResolvedValueOnce(makeApiErrorResponse("VALIDATION_ERROR", "参数错误", 400, "rid-err"));
 
     await expect(apiJson("/api/x")).rejects.toMatchObject({
       name: "ApiError",

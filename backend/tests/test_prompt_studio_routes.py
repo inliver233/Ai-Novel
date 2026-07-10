@@ -106,7 +106,6 @@ class TestPromptStudioRoutes(unittest.TestCase):
         for item in categories[:-1]:
             self.assertGreaterEqual(len(item["presets"]), 1)
 
-    @pytest.mark.known_issue  # REAL BUG (M28/M23): prompt_studio_service.py:65,74 set config output_contract_heading="输出要求：" for plan_chapter/post_edit, but NO resource under app/resources/prompt_presets contains that heading (all use "<OUTPUT_CONTRACT>", verified via Grep). So _output_contract_suffix returns "" and _compose_guidance_template (:214-219) drops the entire output contract — incl. the <plan>/<rewrite> wrapper — from created/edited presets, so the LLM stops wrapping output. assertIn("<plan>", ...) below states the correct behavior the bug violates; it turns green once the heading aligns with the resources.
     def test_prompt_preset_crud_and_activation(self) -> None:
         client = TestClient(self.app)
 
@@ -128,19 +127,6 @@ class TestPromptStudioRoutes(unittest.TestCase):
         )
         self.assertEqual(detail_response.status_code, 200)
         self.assertEqual(detail_response.json()["data"]["preset"]["content"], "你是我的私人章节分析师。")
-
-        with self.SessionLocal() as db:
-            block = (
-                db.execute(
-                    select(PromptBlock)
-                    .where(PromptBlock.preset_id == preset_id)
-                    .where(PromptBlock.identifier == "sys.plan_chapter.role")
-                )
-                .scalars()
-                .one()
-            )
-            self.assertIn("<plan>", block.template)
-            self.assertIn("你是我的私人章节分析师。", block.template)
 
         activate_response = client.put(
             f"/api/projects/p1/prompt-studio/presets/{preset_id}/activate?category=plan_chapter",
@@ -171,6 +157,34 @@ class TestPromptStudioRoutes(unittest.TestCase):
             headers={"X-Test-User": "u_editor"},
         )
         self.assertEqual(get_deleted_response.status_code, 404)
+
+    @pytest.mark.known_issue  # M28/backend-llm-prompt#10：Studio 组合时丢失输出合同
+    def test_plan_preset_keeps_output_contract(self) -> None:
+        """仅隔离 M28 缺陷，不把整条 CRUD 流程放进 known_issue quarantine。"""
+        client = TestClient(self.app)
+        create_response = client.post(
+            "/api/projects/p1/prompt-studio/presets?category=plan_chapter",
+            headers={"X-Test-User": "u_editor"},
+            json={"name": "custom-plan", "content": "custom planner guidance"},
+        )
+        self.assertEqual(create_response.status_code, 200)
+        preset_id = create_response.json()["data"]["preset"]["id"]
+
+        with self.SessionLocal() as db:
+            blocks = list(
+                db.execute(select(PromptBlock).where(PromptBlock.preset_id == preset_id))
+                .scalars()
+                .all()
+            )
+
+        self.assertTrue(blocks)
+        combined_templates = "\n".join(str(block.template or "") for block in blocks if block.enabled)
+        # 正确行为：无论合同与 guidance 同块还是独立块，最终 preset 都必须保留
+        # plan_chapter 的完整结构化输出合同。仅检查 ``<plan>`` 会被 user block 中
+        # “请输出 <plan>”的一句话假满足，却仍丢失 conflict/beats 等合同正文。
+        # 当前 heading 漂移使整个 <OUTPUT_CONTRACT> 块从自定义 preset 消失。
+        self.assertIn("<OUTPUT_CONTRACT>", combined_templates)
+        self.assertIn("<plan>", combined_templates)
 
     def test_categories_route_filters_prompt_presets_without_guidance_block(self) -> None:
         # A preset mapped to a category (here via active_for) but missing that

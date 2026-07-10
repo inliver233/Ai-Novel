@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import unittest
 
-import pytest
-
 from app.core.config import settings
 from app.services import vector_rag_service
 
@@ -27,7 +25,6 @@ class TestVectorHybridRrf(unittest.TestCase):
         self.assertTrue(lit.endswith("]"))
         self.assertIn(",", lit)
 
-    @pytest.mark.known_issue  # M13：_ALL_SOURCES 三处定义不一致（4源 vs 3源），overfilter relax 行为漂移
     def test_overfiltering_relax_sources_then_expand_candidates(self) -> None:
         orig_is_postgres = vector_rag_service._is_postgres
         orig_fetch = vector_rag_service._pgvector_hybrid_fetch
@@ -58,15 +55,17 @@ class TestVectorHybridRrf(unittest.TestCase):
             settings.vector_final_max_chunks = 6
 
             out = vector_rag_service._pgvector_hybrid_query(
-                project_id="p1", query_text="hello", query_vec=[0.1], sources=["worldbook"]
+                project_id="p1", query_text="hello", query_vec=[0.1], sources=["outline"]
             )
             overfilter = out.get("overfilter")
             self.assertIsInstance(overfilter, dict)
             self.assertEqual(overfilter.get("actions"), ["relax_sources", "expand_candidates"])
 
             self.assertEqual(len(calls), 3)
-            self.assertEqual(calls[0]["sources"], ["worldbook"])
-            self.assertEqual(calls[1]["sources"], ["worldbook", "outline", "chapter", "story_memory"])
+            self.assertEqual(calls[0]["sources"], ["outline"])
+            # lite 的规范全集只有三个活源；worldbook 是已删除功能的幽灵源，不能
+            # 被 overfilter relax 重新引入。
+            self.assertEqual(calls[1]["sources"], ["outline", "chapter", "story_memory"])
             self.assertEqual(calls[2]["vector_k"], 60)
             self.assertEqual(calls[2]["fts_k"], 60)
         finally:
@@ -106,12 +105,12 @@ class TestVectorHybridRrf(unittest.TestCase):
             settings.vector_final_max_chunks = 6
 
             out = vector_rag_service._pgvector_hybrid_query(
-                project_id="p1", query_text="hello", query_vec=[0.1], sources=["worldbook"]
+                project_id="p1", query_text="hello", query_vec=[0.1], sources=["outline"]
             )
             overfilter = out.get("overfilter")
             self.assertIsInstance(overfilter, dict)
             self.assertEqual(overfilter.get("actions"), [])
-            self.assertEqual(overfilter.get("used_sources"), ["worldbook"])
+            self.assertEqual(overfilter.get("used_sources"), ["outline"])
             self.assertEqual(len(calls), 1)
         finally:
             vector_rag_service._is_postgres = orig_is_postgres  # type: ignore[assignment]
@@ -146,7 +145,7 @@ class TestVectorHybridRrf(unittest.TestCase):
             settings.vector_overfiltering_enabled = False
 
             out = vector_rag_service._pgvector_hybrid_query(
-                project_id="p1", query_text="hello", query_vec=[0.1], sources=["worldbook"]
+                project_id="p1", query_text="hello", query_vec=[0.1], sources=["outline"]
             )
             overfilter = out.get("overfilter")
             self.assertIsInstance(overfilter, dict)

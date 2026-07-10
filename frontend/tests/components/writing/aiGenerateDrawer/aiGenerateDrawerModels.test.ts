@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { GenerateForm } from "@/components/writing/types";
-import { AI_GENERATE_CONTEXT_TOGGLES, getAiGenerateDrawerState, getStyleHelperText } from "@/components/writing/aiGenerateDrawer/aiGenerateDrawerModels";
+import {
+  AI_GENERATE_CONTEXT_TOGGLES,
+  getAiGenerateDrawerState,
+  getStyleHelperText,
+} from "@/components/writing/aiGenerateDrawer/aiGenerateDrawerModels";
 
 function makeForm(overrides: Partial<GenerateForm> = {}): GenerateForm {
   return {
@@ -39,16 +43,23 @@ describe("aiGenerateDrawerModels", () => {
     expect(hasPreset.presetSummary).toBe("openai / gpt-test");
   });
 
-  it("keeps prompt override and style helper text copy stable", () => {
+  it("derives prompt override state and preserves dynamic style context", () => {
     const state = getAiGenerateDrawerState({
       genForm: makeForm({ prompt_override: { user: "override" } }),
       preset: null,
     });
 
     expect(state.hasPromptOverride).toBe(true);
-    expect(state.presetSummary).toBe("未加载 LLM 配置");
-    expect(getStyleHelperText("项目默认风格", null)).toBe("项目默认：项目默认风格");
-    expect(getStyleHelperText(null, "E_STYLE")).toBe("项目默认：（未设置） | 加载失败：E_STYLE");
+    expect(state.presetSummary).toEqual(expect.any(String));
+    expect(state.presetSummary).not.toHaveLength(0);
+
+    const namedStyleText = getStyleHelperText("noir-sentinel", null);
+    expect(namedStyleText).toContain("noir-sentinel");
+    expect(namedStyleText).not.toContain("null");
+
+    const failedStyleText = getStyleHelperText(null, "E_STYLE_SENTINEL");
+    expect(failedStyleText).toContain("E_STYLE_SENTINEL");
+    expect(failedStyleText).not.toContain("null");
   });
 
   it("keeps mapped context toggles deterministic", () => {

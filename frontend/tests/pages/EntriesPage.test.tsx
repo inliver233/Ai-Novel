@@ -133,6 +133,28 @@ function pageList(items: Entry[]) {
   return { items, next_offset: null };
 }
 
+function getTopPrimaryAction(container: HTMLElement): HTMLButtonElement {
+  const button = container.querySelector<HTMLButtonElement>("button.btn-primary");
+  expect(button).not.toBeNull();
+  return button!;
+}
+
+function getOpenEntryDialog(): HTMLElement {
+  return screen.getByRole("dialog");
+}
+
+function getDialogTitleInput(dialog: HTMLElement): HTMLInputElement {
+  const input = dialog.querySelector<HTMLInputElement>('input[name="title"]');
+  expect(input).not.toBeNull();
+  return input!;
+}
+
+function getDialogPrimaryAction(dialog: HTMLElement): HTMLButtonElement {
+  const button = dialog.querySelector<HTMLButtonElement>("button.btn-primary");
+  expect(button).not.toBeNull();
+  return button!;
+}
+
 describe("EntriesPage 核心 happy-path（D 类，应绿）", () => {
   beforeEach(() => {
     installMatchMediaPolyfill();
@@ -150,17 +172,16 @@ describe("EntriesPage 核心 happy-path（D 类，应绿）", () => {
     mocks.wizardBumpLocal.mockClear();
   });
 
-  it("列表加载后显示已有条目与总数", async () => {
+  it("列表加载后显示已有条目", async () => {
     mocks.listEntries.mockResolvedValue(pageList([entryA, entryB]));
 
-    renderPage();
+    const { container } = renderPage();
 
     // 等待挂载 load 完成（listEntries 在 useProjectData loader 内分页拉取，next_offset=null 单页终止）。
     await screen.findByText("雨夜相遇");
     expect(screen.getByText("皇城禁令")).toBeInTheDocument();
 
-    // 顶部统计：无筛选时显示 "共 N 个条目"。
-    expect(screen.getByText(/共 2 个条目/)).toBeInTheDocument();
+    expect(container.querySelectorAll('[role="button"].panel-interactive')).toHaveLength(2);
     expect(mocks.listEntries).toHaveBeenCalledTimes(1);
   });
 
@@ -168,47 +189,46 @@ describe("EntriesPage 核心 happy-path（D 类，应绿）", () => {
     mocks.listEntries.mockResolvedValue(pageList([entryA, entryB]));
 
     const user = userEvent.setup();
-    renderPage();
+    const { container } = renderPage();
     await screen.findByText("雨夜相遇");
 
-    // 点击 "设定" 筛选 chip（entryA 含 "设定"，entryB 不含）。
-    await user.click(screen.getByRole("button", { name: "设定" }));
+    // 通过测试数据里的标签定位筛选 chip，不绑定生产界面的说明文案。
+    const tagButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button.rounded-full")).find(
+      (button) => button.textContent === entryA.tags[0],
+    );
+    expect(tagButton).not.toBeUndefined();
+    await user.click(tagButton!);
 
-    // 有筛选时统计显示 "共 filtered/total 个条目"。
-    await waitFor(() => expect(screen.getByText(/共 1\/2 个条目/)).toBeInTheDocument());
-
-    expect(screen.getByText("雨夜相遇")).toBeInTheDocument();
-    expect(screen.queryByText("皇城禁令")).toBeNull();
+    await waitFor(() => expect(container.querySelectorAll('[role="button"].panel-interactive')).toHaveLength(1));
+    expect(screen.getByText(entryA.title)).toBeInTheDocument();
+    expect(screen.queryByText(entryB.title)).toBeNull();
   });
 
   it("创建条目：填表单提交后新条目出现", async () => {
     // 用 1 条已有条目，避免空态 "新增条目" 按钮与顶部按钮重名。
     mocks.listEntries.mockResolvedValue(pageList([entryA]));
-    mocks.createEntry.mockImplementation(async (_pid: string, body: { title: string; content?: string; tags?: string[] }) =>
-      makeEntry("e-new", body.title, body.content ?? "", body.tags ?? []),
+    mocks.createEntry.mockImplementation(
+      async (_pid: string, body: { title: string; content?: string; tags?: string[] }) =>
+        makeEntry("e-new", body.title, body.content ?? "", body.tags ?? []),
     );
 
     const user = userEvent.setup();
-    renderPage();
+    const { container } = renderPage();
     await screen.findByText("雨夜相遇");
 
-    // 打开新增抽屉（顶部按钮，accessible name 精确 "新增条目"）。
-    await user.click(screen.getByRole("button", { name: "新增条目" }));
+    // 顶部主操作打开新增抽屉；不锁定按钮的用户可见文案。
+    await user.click(getTopPrimaryAction(container));
 
-    // 抽屉内标题输入框（label 文本含 "标题"，search 输入 aria-label 为 "条目搜索" 故不冲突）。
-    const titleInput = screen.getByRole("textbox", { name: /标题/ });
+    const dialog = getOpenEntryDialog();
+    const titleInput = getDialogTitleInput(dialog);
     await user.type(titleInput, "测试新条目");
 
-    // 提交保存。
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(getDialogPrimaryAction(dialog));
 
     // createEntry 被调用，返回的条目被前置到列表 → 新标题出现。
     await waitFor(() => expect(screen.getByText("测试新条目")).toBeInTheDocument());
-    expect(mocks.createEntry).toHaveBeenCalledWith(
-      PROJECT_ID,
-      expect.objectContaining({ title: "测试新条目" }),
-    );
-    expect(mocks.toast.toastSuccess).toHaveBeenCalledWith("已保存");
+    expect(mocks.createEntry).toHaveBeenCalledWith(PROJECT_ID, expect.objectContaining({ title: "测试新条目" }));
+    expect(mocks.toast.toastSuccess).toHaveBeenCalledTimes(1);
   });
 
   it("编辑条目：改字段保存后更新反映", async () => {
@@ -227,18 +247,19 @@ describe("EntriesPage 核心 happy-path（D 类，应绿）", () => {
     await user.click(screen.getByText("雨夜相遇"));
 
     // 抽屉内标题输入框应预填当前标题；清空后输入新标题。
-    const titleInput = await screen.findByRole("textbox", { name: /标题/ });
+    const dialog = getOpenEntryDialog();
+    const titleInput = getDialogTitleInput(dialog);
     expect(titleInput).toHaveValue("雨夜相遇");
     await user.clear(titleInput);
     await user.type(titleInput, updatedTitle);
 
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(getDialogPrimaryAction(dialog));
 
     // updateEntry 被调用，返回的条目替换原条目 → 旧标题消失、新标题出现。
     await waitFor(() => expect(screen.getByText(updatedTitle)).toBeInTheDocument());
     expect(screen.queryByText("雨夜相遇")).toBeNull();
     expect(mocks.updateEntry).toHaveBeenCalledWith(entryA.id, expect.objectContaining({ title: updatedTitle }));
-    expect(mocks.toast.toastSuccess).toHaveBeenCalledWith("已保存");
+    expect(mocks.toast.toastSuccess).toHaveBeenCalledTimes(1);
   });
 
   it("删除条目：确认后条目从列表消失", async () => {
@@ -249,12 +270,15 @@ describe("EntriesPage 核心 happy-path（D 类，应绿）", () => {
     renderPage();
     await screen.findByText("雨夜相遇");
 
-    // 点击卡片内 "删除" 按钮（onClick 内 stopPropagation，不会触发 openEdit）。
-    await user.click(screen.getByRole("button", { name: "删除" }));
+    // 通过条目测试数据定位卡片，再点击其 danger action；不锁定按钮文案。
+    const entryCard = screen.getByText(entryA.title).closest<HTMLElement>('[role="button"]');
+    const deleteButton = entryCard?.querySelector<HTMLButtonElement>("button.text-danger");
+    expect(deleteButton).not.toBeNull();
+    await user.click(deleteButton!);
 
     // 确认弹窗（confirm 桩默认 resolve true）→ deleteEntry → setEntries 移除。
     await waitFor(() => expect(screen.queryByText("雨夜相遇")).toBeNull());
     expect(mocks.deleteEntry).toHaveBeenCalledWith(entryA.id);
-    expect(mocks.toast.toastSuccess).toHaveBeenCalledWith("已删除");
+    expect(mocks.toast.toastSuccess).toHaveBeenCalledTimes(1);
   });
 });

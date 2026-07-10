@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { appendCappedRawText, buildGeneratedOutlineTitle, buildNextOutlineTitle, toFinalPreviewJson } from "@/pages/outline/outlineModels";
+import {
+  appendCappedRawText,
+  buildGeneratedOutlineTitle,
+  buildNextOutlineTitle,
+  toFinalPreviewJson,
+} from "@/pages/outline/outlineModels";
 
 describe("outlineModels", () => {
   it("caps streamed raw text and preserves a truncation prefix", () => {

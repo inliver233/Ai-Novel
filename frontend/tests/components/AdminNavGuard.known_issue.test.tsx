@@ -36,22 +36,18 @@ vi.mock("@/components/atelier/ThemeToggle", () => ({
 import { AppShell } from "@/components/layout/AppShell";
 
 describe("AdminNavGuard (M42 known_issue)", () => {
-  it(
-    "非 admin 用户不应看到'用户管理'导航入口",
-    { tags: ["@known_issue"] },
-    () => {
-      const { container } = render(
-        <MemoryRouter initialEntries={["/"]}>
-          <AppShell />
-        </MemoryRouter>,
-      );
+  it("非 admin 用户不应看到'用户管理'导航入口", { tags: ["@known_issue"] }, () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={["/"]}>
+        <AppShell />
+      </MemoryRouter>,
+    );
 
-      // 正确行为：非 admin 用户根本不应渲染 /admin/users 导航入口（defense-in-depth，
-      // 即便页面层/后端有校验，导航层也应在非 admin 用户下屏蔽该入口）。
-      // 按 href 断言（不锁中文文案，§6.6 规则 2）：该入口不应进入 DOM。
-      const adminUsersLinks = container.querySelectorAll('a[href="/admin/users"]');
+    // 正确行为：非 admin 用户根本不应渲染 /admin/users 导航入口（defense-in-depth，
+    // 即便页面层/后端有校验，导航层也应在非 admin 用户下屏蔽该入口）。
+    // 按 href 断言（不锁中文文案，§6.6 规则 2）：该入口不应进入 DOM。
+    const adminUsersLinks = container.querySelectorAll('a[href="/admin/users"]');
 
-      expect(adminUsersLinks).toHaveLength(0);
-    },
-  );
+    expect(adminUsersLinks).toHaveLength(0);
+  });
 });

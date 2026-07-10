@@ -49,9 +49,11 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { useAuth } from "@/contexts/auth";
 
 // 认证成功响应信封（ApiOkPayload 形态）。expire_at=null → 刷新延迟取默认 5min。
-function authUserOk(
-  overrides: { id?: string; display_name?: string; is_admin?: boolean } = {},
-): { ok: true; data: { user: { id: string; display_name: string; is_admin: boolean }; session: { expire_at: number | null } }; request_id: string } {
+function authUserOk(overrides: { id?: string; display_name?: string; is_admin?: boolean } = {}): {
+  ok: true;
+  data: { user: { id: string; display_name: string; is_admin: boolean }; session: { expire_at: number | null } };
+  request_id: string;
+} {
   return {
     ok: true,
     data: {
@@ -194,7 +196,11 @@ describe("AuthContext 交互（D 类 happy-path）", () => {
       if (path === "/api/auth/user") return Promise.resolve(authUserOk());
       if (path === "/api/auth/refresh") {
         refreshCalls();
-        return Promise.resolve({ ok: true, data: { refreshed: true, session: { expire_at: null } }, request_id: "rid-refresh" });
+        return Promise.resolve({
+          ok: true,
+          data: { refreshed: true, session: { expire_at: null } },
+          request_id: "rid-refresh",
+        });
       }
       return Promise.resolve({ ok: true, data: {}, request_id: "rid" });
     });

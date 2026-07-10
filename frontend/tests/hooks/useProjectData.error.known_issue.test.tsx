@@ -74,7 +74,7 @@ describe("useProjectData 加载失败应暴露 error (M39 known_issue)", () => {
 
     // M39 正确行为断言：hook 结果应暴露 error 状态，使消费方可编程感知错误并渲染重试 UI。
     // 当前 ProjectDataResult 类型未声明 error，断言前以期望形态做类型收窄（known_issue 诚实镜像）。
-    const exposed = result.current as ProjectDataResult<unknown> & { error?: unknown; status?: string };
+    const exposed = result.current as ProjectDataResult<unknown> & { error?: unknown };
     expect(exposed.error).toBeTruthy();
   });
 });

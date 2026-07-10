@@ -26,6 +26,8 @@ project_id 任何隔离维度**。多用户并发解析时：
 
 from __future__ import annotations
 
+from contextvars import Context
+
 import pytest
 
 from app.services.outline_parsing_agent import models as opa_models
@@ -60,13 +62,17 @@ def test_dynamic_display_name_does_not_leak_across_requests(
     request_a_agent = "repair_structure"  # coordinator.py:713 形态的非内置 agent_id
     request_a_label = "修复: 请求A的大纲骨架"
 
-    # 请求 A 的解析管线注册了 repair_structure 的 display_name
-    register_agent_display_name(request_a_agent, request_a_label)
+    # 两个独立 Context 模拟两个并发请求的 Python 执行上下文。正确实现可用
+    # request-scoped 对象或 ContextVar 隔离；当前进程全局 dict 会跨 Context 泄漏。
+    request_a = Context()
+    request_b = Context()
+
+    request_a.run(register_agent_display_name, request_a_agent, request_a_label)
 
     # 请求 B（独立用户/请求，从未注册任何 display_name）查询同一 agent_id
     # 正确行为：请求 B 应拿到回退值（裸 agent_id），而非请求 A 残留的值
     # 当前 bug：全局 dict 无隔离 → 请求 B 读到请求 A 的值 → 断言失败(red)
-    leaked = get_agent_display_name(request_a_agent)
+    leaked = request_b.run(get_agent_display_name, request_a_agent)
     assert leaked == request_a_agent, (
         f"跨请求泄漏：请求 B 读到请求 A 注册的 display_name {leaked!r}，"
         f"期望回退值 {request_a_agent!r}（display_name 注册表应按请求隔离）"
@@ -82,16 +88,20 @@ def test_concurrent_requests_do_not_clobber_each_others_display_name(
     request_a_label = "修复: 请求A的角色卡"
     request_b_label = "修复: 请求B的角色卡"
 
-    # 请求 A 先注册
-    register_agent_display_name(agent_id, request_a_label)
-    # 请求 B 并发注册同名 agent（合法：不同请求各自有自己的 repair 流程）
-    register_agent_display_name(agent_id, request_b_label)
+    request_a = Context()
+    request_b = Context()
+
+    # 两个独立请求上下文各自注册同名 agent。
+    request_a.run(register_agent_display_name, agent_id, request_a_label)
+    request_b.run(register_agent_display_name, agent_id, request_b_label)
 
     # 请求 A 重新查询自己注册的 agent 的 display_name
     # 正确行为：请求 A 拿到自己的值 request_a_label
     # 当前 bug：全局 dict 按 agent_id 单维度索引 → 请求 B 覆盖请求 A → 串话
-    seen_by_a = get_agent_display_name(agent_id)
+    seen_by_a = request_a.run(get_agent_display_name, agent_id)
+    seen_by_b = request_b.run(get_agent_display_name, agent_id)
     assert seen_by_a == request_a_label, (
         f"并发串话：请求 A 的 display_name 被请求 B 覆盖为 {seen_by_a!r}，"
         f"期望请求 A 自己的值 {request_a_label!r}（注册表应按请求隔离，非 last-write-wins）"
     )
+    assert seen_by_b == request_b_label

@@ -197,18 +197,18 @@ python start.py
 
 ## 测试
 
-测试套件是功能完整性的**诚实镜像基准**：每条测试断言**正确行为**——对的绿、有 bug 的红，所见即所实。CI（`.github/workflows/ci.yml`）在 push / PR 时以安全网（`-m "not known_issue"`）为合并门禁。
+测试套件是功能完整性的**诚实镜像基准**：每条测试断言**正确行为**——对的绿、有 bug 的红，所见即所实。CI（`.github/workflows/ci.yml`）在 push / PR 时以后端 `-m "not known_issue"`、前端 `--tagsFilter '!@known_issue'` 安全网及其覆盖率基线为合并门禁。
 
 ### 后端
 
 ```bash
 cd backend
-pip install -r requirements-dev.txt     # pytest / pytest-cov
+python -m pip install -r requirements-dev.txt # 锁定的生产依赖 + 测试/质量工具
 
 python -m pytest -q                       # 诚实全貌（绿的=对的，红的=现存 bug）
-python -m pytest -m "not known_issue" -q  # 安全网（CI 门禁，必须绿=可部署）
+python -m pytest -m "not known_issue" -q --cov=app --cov-report=term --cov-fail-under=62 # 安全网/coverage 门禁
 python -m pytest -m known_issue -q        # bug 看板（红=待修，绿=已修复待毕业）
-python scripts/run_quality_gate.py        # 编译 + ruff + 安全网测试（跨平台质量门）
+python scripts/run_quality_gate.py        # 编译 + ruff + 安全网测试 + coverage≥62%
 ```
 
 详见 [`backend/tests/README.md`](backend/tests/README.md)。
@@ -219,8 +219,11 @@ python scripts/run_quality_gate.py        # 编译 + ruff + 安全网测试（�
 cd frontend
 npm ci
 
-npx vitest run                            # 全部测试
+npx vitest run                            # 诚实全貌（安全网绿 + 已知 bug 红）
+npx vitest run --coverage --tagsFilter '!@known_issue' # 安全网/coverage 门禁
+npx vitest run --tagsFilter '@known_issue'  # bug 看板（红=待修，绿=待毕业）
 npx tsc -p tsconfig.test.json --noEmit    # 测试类型检查
+npm run build                             # 生产构建门禁
 ```
 
 测试统一收纳在 `frontend/tests/`，支持 jsdom + @testing-library 的组件交互测试。详见 [`frontend/tests/README.md`](frontend/tests/README.md)。

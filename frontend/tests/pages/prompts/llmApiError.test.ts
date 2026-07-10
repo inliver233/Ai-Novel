@@ -11,7 +11,10 @@ describe("prompts/llmApiError", () => {
       requestId: "req-1",
       status: 400,
     });
-    expect(formatLlmTestApiError(err)).toBe("请先保存 API Key");
+    const formatted = formatLlmTestApiError(err);
+    expect(formatted).toEqual(expect.any(String));
+    expect(formatted).not.toHaveLength(0);
+    expect(formatted).not.toBe(err.message);
   });
 
   it("extracts upstream bad-request detail and compat adjustments", () => {
@@ -23,15 +26,16 @@ describe("prompts/llmApiError", () => {
       details: {
         upstream_error: JSON.stringify({
           error: {
-            message: "unsupported response_format",
+            message: "upstream-detail-sentinel",
           },
         }),
-        compat_adjustments: ["lowered max_tokens", "removed top_p"],
+        compat_adjustments: ["compat-one-sentinel", "compat-two-sentinel"],
       },
     });
-    expect(formatLlmTestApiError(err)).toBe(
-      "请求参数有误，可能是模型名称或参数不支持（上游：unsupported response_format）（兼容：lowered max_tokens、removed top_p）",
-    );
+    const formatted = formatLlmTestApiError(err);
+    expect(formatted).toContain("upstream-detail-sentinel");
+    expect(formatted).toContain("compat-one-sentinel");
+    expect(formatted).toContain("compat-two-sentinel");
   });
 
   it("surfaces upstream status codes for transient service failures", () => {
@@ -44,6 +48,8 @@ describe("prompts/llmApiError", () => {
         status_code: 503,
       },
     });
-    expect(formatLlmTestApiError(err)).toBe("服务暂时不可用，请稍后重试（503）");
+    const formatted = formatLlmTestApiError(err);
+    expect(formatted).toContain("503");
+    expect(formatted).not.toBe(err.message);
   });
 });

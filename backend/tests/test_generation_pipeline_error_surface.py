@@ -2,12 +2,14 @@
 静默吞掉 LLM 配置错误（catalog M18）。
 
 【诚实镜像】断言【正确行为】：LLM 配置错误（无 profile 且无 header API key）
-应显式抛出 AppError，不应被 try/except 静默吞掉。
+可以按既有 fail-soft 设计继续使用调用方传入的 fallback 配置，但必须在 step.warnings
+写入结构化告警，并以 WARNING 级别记录降级，使调用方/用户与运维日志都能观察到；
+不能被 try/except 静默吞掉。
 当前实现（app/services/generation_pipeline.py:127,214）的 ``except Exception``
 捕获了 ``resolve_task_llm_config`` 抛出的 ``AppError("LLM_KEY_MISSING")`` 并设
 ``resolved=None``，导致错误被吞、函数继续用 fallback 配置——用户无感知。
 对照 ``run_mcp_research_step``（同文件 line 90）有 ``logger.exception``，证明吞错是遗漏。
-bug 修复后（移除或缩小 except 范围）→ AppError 传播 → 测试绿。
+bug 修复后（记录 WARNING 并追加 ``llm_config_resolve_failed``）→ 测试绿。
 """
 
 from __future__ import annotations
@@ -16,8 +18,6 @@ import logging
 from unittest.mock import patch
 
 import pytest
-
-from app.core.errors import AppError
 from app.models.llm_preset import LLMPreset
 from app.models.project import Project
 from app.services.generation_pipeline import run_content_optimize_step, run_post_edit_step
@@ -78,23 +78,25 @@ def env():
 
 
 @pytest.mark.known_issue  # M18
-def test_post_edit_surfaces_llm_config_error(env):
-    """run_post_edit_step 在 LLM 配置错误时应抛出 AppError，而非静默吞掉。
+def test_post_edit_surfaces_llm_config_error(env, caplog: pytest.LogCaptureFixture):
+    """run_post_edit_step 在配置降级时应返回结构化 warning。
 
     正确行为：project 无 llm_profile_id 且无 header API key 时，
-    resolve_task_llm_config 抛 AppError("LLM_KEY_MISSING")；
-    run_post_edit_step 应让其传播（或显式返回错误标志），不应 try/except 吞掉。
+    resolve_task_llm_config 抛 AppError("LLM_KEY_MISSING")；pipeline 可以继续使用
+    fallback llm_call，但结果必须包含 ``llm_config_resolve_failed``。
     当前 bug（generation_pipeline.py:127）：except Exception → resolved=None →
-    静默继续用 fallback 配置 → 函数正常返回 → 断言失败（红）。
+    静默继续用 fallback 配置且 warnings 无记录 → 断言失败（红）。
     """
     factory = env["factory"]
-    fake_result = make_recorded_result(text="<rewrite>润色后内容</rewrite>")
-    with patch("app.services.generation_pipeline.SessionLocal", factory):
-        with patch_call_llm(
-            fake_result, path="app.services.generation_pipeline.call_llm_and_record"
-        ):
-            with pytest.raises(AppError):
-                run_post_edit_step(
+    edited_content = "润色后的章节内容保持情节与人物关系完整。" * 6
+    fake_result = make_recorded_result(text=f"<rewrite>{edited_content}</rewrite>")
+    with caplog.at_level(logging.WARNING, logger="test"):
+        caplog.clear()
+        with patch("app.services.generation_pipeline.SessionLocal", factory):
+            with patch_call_llm(
+                fake_result, path="app.services.generation_pipeline.call_llm_and_record"
+            ):
+                result = run_post_edit_step(
                     logger=logging.getLogger("test"),
                     request_id="rid-test",
                     actor_user_id=USER_ID,
@@ -106,24 +108,30 @@ def test_post_edit_surfaces_llm_config_error(env):
                     raw_content="原始章节内容",
                     macro_seed="seed",
                 )
+
+    assert result.applied is True
+    assert "llm_config_resolve_failed" in result.warnings
+    assert any(record.name == "test" and record.levelno == logging.WARNING for record in caplog.records)
 
 
 @pytest.mark.known_issue  # M18
-def test_content_optimize_surfaces_llm_config_error(env):
-    """run_content_optimize_step 在 LLM 配置错误时应抛出 AppError，而非静默吞掉。
+def test_content_optimize_surfaces_llm_config_error(env, caplog: pytest.LogCaptureFixture):
+    """run_content_optimize_step 在配置降级时应返回结构化 warning。
 
-    正确行为：同 post_edit——resolve_task_llm_config 抛 AppError("LLM_KEY_MISSING")，
-    应让其传播。当前 bug（generation_pipeline.py:214）：except Exception →
-    resolved=None → 静默继续 → 断言失败（红）。
+    正确行为：同 post_edit——允许 fallback，但 warnings 必须包含稳定错误码。
+    当前 bug（generation_pipeline.py:214）：except Exception → resolved=None →
+    静默继续且无 warning → 断言失败（红）。
     """
     factory = env["factory"]
-    fake_result = make_recorded_result(text="<content>优化后内容</content>")
-    with patch("app.services.generation_pipeline.SessionLocal", factory):
-        with patch_call_llm(
-            fake_result, path="app.services.generation_pipeline.call_llm_and_record"
-        ):
-            with pytest.raises(AppError):
-                run_content_optimize_step(
+    optimized_content = "优化后的章节内容保持情节与人物关系完整。" * 6
+    fake_result = make_recorded_result(text=f"<content>{optimized_content}</content>")
+    with caplog.at_level(logging.WARNING, logger="test"):
+        caplog.clear()
+        with patch("app.services.generation_pipeline.SessionLocal", factory):
+            with patch_call_llm(
+                fake_result, path="app.services.generation_pipeline.call_llm_and_record"
+            ):
+                result = run_content_optimize_step(
                     logger=logging.getLogger("test"),
                     request_id="rid-test",
                     actor_user_id=USER_ID,
@@ -135,3 +143,7 @@ def test_content_optimize_surfaces_llm_config_error(env):
                     raw_content="原始章节内容",
                     macro_seed="seed",
                 )
+
+    assert result.applied is True
+    assert "llm_config_resolve_failed" in result.warnings
+    assert any(record.name == "test" and record.levelno == logging.WARNING for record in caplog.records)

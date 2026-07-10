@@ -7,10 +7,9 @@
 - :mod:`tests.support.seed`  —— 高频实体 seeding helper（user / auth cookie）
 - :mod:`tests.support.llm`   —— LLM 调用打桩 helper
 
-设计原则：与既有约定逐字节对齐（见 ``tests/test_auth_session.py:26-46`` 的
-``_make_test_app`` 权威样板），仅做"去重复"，不改行为。既有 unittest 风格
-测试可零成本迁移到这些 helper；pytest fixtures 在 ``tests/conftest.py`` 中
-基于本包提供。
+设计原则：测试 app 的中间件/异常处理语义以生产 ``app.main`` 为事实源，而不是以
+某一份旧测试样板为事实源。既有 unittest 风格测试可渐进迁移到这些 helper；根级
+``backend/conftest.py`` 仅提供最小 fixture，其余 helper 推荐显式导入。
 """
 
 from tests.support.app import make_client, make_test_app

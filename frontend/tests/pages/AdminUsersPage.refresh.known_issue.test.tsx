@@ -170,20 +170,26 @@ describe("AdminUsersPage 创建用户后刷新 (fe8-P8 known_issue)", () => {
     await waitFor(() => expect(mocks.apiJson).toHaveBeenCalled());
 
     // fe8-P8 bug 复现第一步：先搜索 newuser，使 searchQuery="newuser"、cursor=null。
-    await user.type(screen.getByPlaceholderText(/输入关键词/), NEW_USER_ID);
-    await user.click(screen.getByRole("button", { name: "应用筛选" }));
+    const searchInput = document.querySelector<HTMLInputElement>("#admin_users_search");
+    expect(searchInput).not.toBeNull();
+    await user.type(searchInput!, NEW_USER_ID);
+    const searchSubmit = searchInput!.closest("form")!.querySelector<HTMLButtonElement>('button[type="submit"]');
+    expect(searchSubmit).not.toBeNull();
+    await user.click(searchSubmit!);
     // 搜索触发 load（q=newuser）→ 此时 created=false → 返回空列表。
     await waitFor(() => expect(mocks.apiJson).toHaveBeenCalledWith(expect.stringContaining("q=newuser")));
 
     // fe8-P8 bug 复现第二步：在创建表单填入同名 user_id 并提交。
-    await user.type(screen.getByPlaceholderText("例如：admin2"), NEW_USER_ID);
-    await user.click(screen.getByRole("button", { name: "创建" }));
+    const userIdInput = document.querySelector<HTMLInputElement>("#admin_users_user_id");
+    expect(userIdInput).not.toBeNull();
+    await user.type(userIdInput!, NEW_USER_ID);
+    const createSubmit = userIdInput!.closest("form")!.querySelector<HTMLButtonElement>('button[type="submit"]');
+    expect(createSubmit).not.toBeNull();
+    await user.click(createSubmit!);
 
     // 前置确认：createUser 已执行（POST 成功 → toastSuccess 被调用）。
     // 若此处失败说明测试搭建错误而非 bug。
-    await waitFor(() =>
-      expect(mocks.toast.toastSuccess).toHaveBeenCalledWith("用户已创建", expect.any(String)),
-    );
+    await waitFor(() => expect(mocks.toast.toastSuccess).toHaveBeenCalledWith(expect.any(String), "rid-create"));
 
     // 正确行为断言：创建用户后列表应刷新，新用户 newuser 应出现在列表中。
     // waitFor 轮询以给可能的刷新 effect 留出时间（honest mirror：若修复则 load 重跑、

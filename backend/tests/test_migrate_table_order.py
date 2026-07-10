@@ -49,16 +49,3 @@ def test_table_order_covers_all_active_tables() -> None:
     # 当前 bug：18 张表 < 31 张活表，15 张活表未列入 → 断言失败(red)。
     missing = active_tables - set(table_order)
     assert not missing, f"TABLE_ORDER 缺失活表（迁移时会静默丢数据）: {sorted(missing)}"
-
-
-# dep-P2: TABLE_ORDER 长度应 >= 活表数量（覆盖性必要条件）
-@pytest.mark.known_issue
-def test_table_order_length_covers_active_count() -> None:
-    table_order = _load_table_order()
-    active_count = len(Base.metadata.tables)
-
-    # 正确行为：TABLE_ORDER 至少与活表数等长（覆盖所有活表的必要条件）。
-    # 当前 bug：len=18 < 31 → 断言失败(red)。
-    assert len(table_order) >= active_count, (
-        f"TABLE_ORDER 长度 {len(table_order)} < 活表数 {active_count}，无法覆盖全部活表"
-    )

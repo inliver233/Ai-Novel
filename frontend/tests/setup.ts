@@ -22,7 +22,10 @@ afterEach(() => {
  * 构造一个最小的 fetch Response（非流式 JSON）。
  * 用于 apiClient 的成功/错误路径测试。
  */
-export function makeJsonResponse(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
+export function makeJsonResponse(
+  body: unknown,
+  init: { status?: number; headers?: Record<string, string> } = {},
+): Response {
   const status = init.status ?? 200;
   return new Response(JSON.stringify(body), {
     status,
@@ -42,7 +45,10 @@ export function makeApiErrorResponse(code: string, message: string, status = 400
  * 构造一个 SSE text/event-stream Response，body 由若干 [event,data] 块组成。
  * 用于 sseClient（SSEPostClient）测试。每块以 "\n\n" 分隔，data 行为 JSON 字符串。
  */
-export function makeSseResponse(blocks: Array<{ event?: string; data: unknown }>, init: { status?: number; headers?: Record<string, string> } = {}): Response {
+export function makeSseResponse(
+  blocks: Array<{ event?: string; data: unknown }>,
+  init: { status?: number; headers?: Record<string, string> } = {},
+): Response {
   const chunks: string[] = [];
   for (const block of blocks) {
     const parts: string[] = [];

@@ -29,10 +29,19 @@ def main() -> int:
     run_step("-m", "compileall", "-q", "app", "alembic", "tests", "scripts")
     # 2. lint（ruff 配置见 backend/ruff.toml）。含 conftest.py（根级测试基建，跨平台 Fernet key）。
     run_step("-m", "ruff", "check", "app", "tests", "scripts", "conftest.py")
-    # 3. 测试安全网：只跑"本该绿"的测试（排除 known_issue 已知 bug）。
+    # 3. 测试安全网 + 覆盖率基线：只跑"本该绿"的测试（排除 known_issue 已知 bug）。
     #    诚实镜像语义下默认 pytest -q 会因 known_issue 染红，故质量门用安全网视图保持 EXIT:0。
     #    查看待修 backlog：python -m pytest -m known_issue
-    run_step("-m", "pytest", "-q", "-m", "not known_issue")
+    run_step(
+        "-m",
+        "pytest",
+        "-q",
+        "-m",
+        "not known_issue",
+        "--cov=app",
+        "--cov-report=term",
+        "--cov-fail-under=62",
+    )
     return 0
 
 

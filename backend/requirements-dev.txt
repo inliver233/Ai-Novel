@@ -1,8 +1,8 @@
--r requirements.txt
-ruff>=0.11.11,<0.12.0
+-r requirements.lock.txt
+ruff==0.11.13
 
 # 测试运行器与覆盖率。
 # pytest 兼容既有 unittest 风格测试（无需改写旧测试），并提供 fixture / 参数化 / marker。
-pytest>=8.0,<9.0
-pytest-cov>=5.0,<7.0
-
+pytest==8.4.1
+pytest-cov==6.3.0
+PyYAML==6.0.3

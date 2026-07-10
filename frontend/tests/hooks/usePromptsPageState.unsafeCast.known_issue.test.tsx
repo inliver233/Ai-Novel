@@ -2,8 +2,8 @@
 // catalog: frontend-pages#P4
 // known_issue：usePromptsPageState.saveAll 的 catch 块对抛出值【不做 instanceof 判定】直接
 // 当作 ApiError 解构，导致非 ApiError 抛出（如上游 TypeError / 未规整化的网络失败）时
-// err.message / err.code / err.requestId 全为 undefined → toast 文案变成 "boom (undefined)"、
-// requestId 被丢弃（无可追溯链路）。
+// err.code / err.requestId 为 undefined → toast 文案变成 "boom (undefined)"；而且存在
+// requestId 的异常也可能因裸断言丢失追溯信息。
 //
 // 证据：frontend/src/pages/prompts/usePromptsPageState.ts:451-453
 //   } catch (e) {
@@ -13,7 +13,7 @@
 //   }
 //
 // 正确行为：任何抛出值必须先规整化为 ApiError（或安全兜底）再取字段，使 toast 永不出现
-// "(undefined)" 子串、且 requestId 不被丢弃。当前实现未规整化 → 本测试【真跑真红】。
+// "(undefined)" 子串。TypeError 本身没有 requestId，本测试不要求伪造追踪 ID。
 //
 // 隔离策略（参考 tests/hooks/useQueuedSave.test.tsx 的同款 page-state hook 挂载模式）：
 // heavy 依赖（router/toast/confirm/wizard/autoSave/saveHotkey/persistentOutlet）全部 vi.mock
@@ -140,7 +140,7 @@ beforeEach(() => {
 });
 
 describe("usePromptsPageState.saveAll catch 应规整化非 ApiError（frontend-pages#P4 known_issue）", () => {
-  it("PUT 抛 TypeError 时，toast 文案不应含 '(undefined)'、requestId 不应被丢弃", { tags: ["@known_issue"] }, async () => {
+  it("PUT 抛 TypeError 时，toast 文案不应含 '(undefined)'", { tags: ["@known_issue"] }, async () => {
     const { result } = renderHook(() => usePromptsPageState());
 
     // 前置：加载完成（6 个 GET 落定），baseline 已置位。
@@ -177,13 +177,12 @@ describe("usePromptsPageState.saveAll catch 应规整化非 ApiError（frontend-
     // frontend-pages#P4 正确行为断言：
     //   1) toast 文案不得等于 "(undefined)"
     //   2) toast 文案不得包含 "(undefined)" 子串
-    //   3) requestId 不得被丢弃（应可追溯）
+    // 非 ApiError 本身可能没有 requestId；正确实现不应伪造追踪 ID。本用例只约束
+    // 错误必须被规整为稳定 code/message，而不是渲染 undefined。
     const lastCall = mocks.toast.toastError.mock.calls.at(-1)!;
     const message = lastCall[0] as string;
-    const requestId = lastCall[1];
 
     expect(message).not.toBe("(undefined)");
     expect(message).not.toContain("(undefined)");
-    expect(requestId).not.toBeUndefined();
   });
 });

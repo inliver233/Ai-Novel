@@ -82,6 +82,8 @@ def test_gemini_stream_readtimeout_mid_stream_is_wrapped() -> None:
     assert isinstance(raised, AppError), (
         f"httpx.ReadTimeout escaped bare (got {type(raised).__name__}); expected a wrapped AppError"
     )
+    assert raised.code == "LLM_TIMEOUT"
+    assert raised.status_code == 504
 
 
 @pytest.mark.known_issue  # H25
@@ -95,3 +97,5 @@ def test_gemini_stream_readtimeout_at_connect_is_wrapped() -> None:
     assert isinstance(raised, AppError), (
         f"httpx.ReadTimeout escaped bare (got {type(raised).__name__}); expected a wrapped AppError"
     )
+    assert raised.code == "LLM_TIMEOUT"
+    assert raised.status_code == 504

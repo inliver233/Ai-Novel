@@ -114,12 +114,10 @@ describe("ImportPage 停滞检测 (M45 known_issue)", () => {
       await vi.advanceTimersByTimeAsync(1);
     });
 
-    // 前置确认：已选中 running 文档且自动刷新中（shouldPoll=true）。若此处失败说明测试搭建错误而非 bug。
-    expect(screen.getByRole("button", { name: "取消自动刷新" })).toBeInTheDocument();
-
-    // 初始断言（正确）：running 且刚更新（lastUpdateAgoMs≈0 < 5min），未停滞 → 无重试按钮、无停滞警告。
-    expect(screen.queryByRole("button", { name: /重试/ })).toBeNull();
-    expect(screen.queryByText(/超过 5 分钟未更新/)).toBeNull();
+    // 前置确认：页面已加载并注册轮询。记录初始按钮数；停滞后唯一新增的结构化
+    // action 应是 retry 按钮，不依赖其用户可见文案。
+    expect(mocks.apiJson).toHaveBeenCalled();
+    const initialButtonCount = screen.getAllByRole("button").length;
 
     // M45 bug 复现：推进 6 分钟+，跨过 5 分钟阈值并触发轮询 re-render（intervalMs=2000）。
     // 期间 apiJson 仍返回冻结的 updated_at（后端停滞），轮询 setDocuments 触发 re-render 但
@@ -128,8 +126,7 @@ describe("ImportPage 停滞检测 (M45 known_issue)", () => {
       await vi.advanceTimersByTimeAsync(6 * 60_000 + 2000);
     });
 
-    // 正确行为：停滞后应出现重试按钮（doc 是 running 非 failed，故重试按钮出现即等价于 isPollingStalled=true）。
-    // 当前 bug：isPollingStalled 恒 false → 无重试按钮 → getByRole 抛错 → 断言 FAILED(红)。
-    expect(screen.getByRole("button", { name: /重试/ })).toBeInTheDocument();
+    // 正确行为：停滞后 action 区新增一个 retry 按钮。当前 bug 下按钮数不变。
+    expect(screen.getAllByRole("button")).toHaveLength(initialButtonCount + 1);
   });
 });

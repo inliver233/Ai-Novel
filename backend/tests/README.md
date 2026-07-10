@@ -11,15 +11,15 @@ cd backend
 python -m pytest -q
 
 # 安全网（CI 门禁）：只跑"本该绿"的，红=你引入了新回归=必须修
-python -m pytest -m "not known_issue" -q
+python -m pytest -m "not known_issue" -q --cov=app --cov-report=term --cov-fail-under=62
 
 # bug 看板：只跑已知 bug 测试，红=还没修，绿=已修复待毕业（删 marker）
 python -m pytest -m known_issue -q
 
-# 覆盖率
-python -m pytest --cov=app --cov-report=term-missing
+# 覆盖率明细（仍排除预期为红的 known_issue）
+python -m pytest -m "not known_issue" --cov=app --cov-report=term-missing --cov-fail-under=62
 
-# 质量门（编译 + ruff + 安全网测试，跨平台，EXIT:0=可部署）
+# 质量门（编译 + ruff + 安全网测试 + coverage≥62%，跨平台，EXIT:0=可部署）
 python scripts/run_quality_gate.py
 ```
 
@@ -40,7 +40,7 @@ backend/
 │   │   └── llm.py         #   patch_call_llm / make_recorded_result
 │   ├── fixtures/real_llm_failures/   # 真实 LLM 失败样本回归（亮点，持续扩充）
 │   └── test_*.py          # 各被测域测试
-└── requirements-dev.txt   # pytest / pytest-cov
+└── requirements-dev.txt   # 锁定生产依赖 + ruff / pytest / pytest-cov / PyYAML
 ```
 
 ## 写新测试
@@ -82,4 +82,4 @@ def test_xxx():
 1. 新增 service/route 必须带直接测试；删功能必删测试（§6.2 四处同步）。
 2. 断言结构化字段/键名，**用户可见文案不进断言**（中文文案微调即脆断）。
 3. 测试**禁止深挖路由私有函数**——若不得不测私有 helper，说明它该下沉为 service。
-4. coverage 基线只升不降。
+4. coverage 基线只升不降；当前后端安全网最低门禁为 62%。

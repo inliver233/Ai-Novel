@@ -95,13 +95,11 @@ describe("TaskOverrideSection", () => {
       extra: '{"foo":"bar"}',
     });
 
-    expect(html).toContain("更多参数");
     expect(html).toContain("top_p");
     expect(html).toContain("presence_penalty");
     expect(html).toContain("frequency_penalty");
-    expect(html).toContain("stop（逗号分隔）");
     expect(html).toContain("reasoning_effort");
-    expect(html).toContain("extra（JSON，高级扩展）");
+    expect(html).toContain("<textarea");
   });
 
   it("renders anthropic thinking controls in compact editor", () => {
@@ -112,9 +110,9 @@ describe("TaskOverrideSection", () => {
       anthropic_thinking_budget_tokens: "1024",
     });
 
-    expect(html).toContain("启用 thinking");
     expect(html).toContain("thinking.budget_tokens");
     expect(html).toContain("top_k");
+    expect(html).toContain('value="1024"');
   });
 
   it("renders gemini thinking controls in compact editor", () => {
@@ -128,5 +126,6 @@ describe("TaskOverrideSection", () => {
     expect(html).toContain("thinkingConfig.thinkingBudget");
     expect(html).toContain("thinkingConfig.includeThoughts");
     expect(html).toContain("top_k");
+    expect(html).toContain('value="2048"');
   });
 });

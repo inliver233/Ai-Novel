@@ -12,7 +12,7 @@ cd frontend
 npx vitest run
 
 # 安全网（CI 门禁）：只跑"本该绿"的，红=你引入了新回归=必须修
-npx vitest run --tagsFilter '!@known_issue'
+npx vitest run --coverage --tagsFilter '!@known_issue'
 
 # bug 看板：只跑已知 bug 测试，红=还没修，绿=已修复待毕业（删 tag）
 npx vitest run --tagsFilter '@known_issue'
@@ -20,11 +20,16 @@ npx vitest run --tagsFilter '@known_issue'
 # watch 模式（开发时）
 npx vitest
 
-# 覆盖率
-npx vitest run --coverage
+# 覆盖率门禁：statements≥16.5 / branches≥13.7 / functions≥14.2 / lines≥17.57
+npx vitest run --coverage --tagsFilter '!@known_issue'
 
 # 类型检查（测试文件夹，CI 也跑）
 npx tsc -p tsconfig.test.json --noEmit
+
+# 测试代码 lint/格式与生产构建（CI hard gate）
+npx eslint tests vitest.config.ts
+npx prettier --check tests vitest.config.ts tsconfig.test.json
+npm run build
 ```
 
 ## 目录结构
@@ -32,7 +37,7 @@ npx tsc -p tsconfig.test.json --noEmit
 ```
 frontend/
 ├── vitest.config.ts        # @/ 别名 / setupFiles / include tests/ / coverage
-├── tsconfig.test.json      # 测试专用 tsconfig（DOM lib + @/ paths + 测试 types）
+├── tsconfig.test.json      # extends app 严格选项 + @/ paths + 测试 types
 ├── tests/
 │   ├── setup.ts            # jest-dom 匹配器 + fetch/Response/SSE 流 mock 工具
 │   ├── services/           # 传输层：apiClient / sseClient（流式生成核心）
@@ -105,3 +110,4 @@ it("detects stall after 5min without progress update", { tags: ["@known_issue"] 
 - 导入统一用 `@/`（指向 `src/`），避免相对路径随文件挪动而脆断（§6.5 / M38）。
 - 传输层/状态层测试用 `setup.ts` 的共享 mock 工具，不要每个测试各自手搓 Response。
 - 新增组件/页面应补交互测试；断言结构/role/accessible-name，不锁死中文文案快照。
+- coverage 基线只升不降；当前安全网门禁为 statements 16.5 / branches 13.7 / functions 14.2 / lines 17.57。

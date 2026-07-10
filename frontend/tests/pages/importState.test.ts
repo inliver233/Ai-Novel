@@ -37,10 +37,17 @@ describe("importState", () => {
     expect(merged[0].progress).toBe(100);
   });
 
-  it("returns a clear disabled reason until import is done", () => {
-    expect(getImportProposalDisabledReason("queued")).toContain("导入完成后");
-    expect(getImportProposalDisabledReason("running")).toContain("导入完成后");
-    expect(getImportProposalDisabledReason("failed")).toContain("请先重试");
+  it("returns a disabled reason until import is done", () => {
+    const queuedReason = getImportProposalDisabledReason("queued");
+    const runningReason = getImportProposalDisabledReason("running");
+    const failedReason = getImportProposalDisabledReason("failed");
+    const unknownReason = getImportProposalDisabledReason("status-sentinel");
+
+    expect(queuedReason).toEqual(expect.any(String));
+    expect(runningReason).toBe(queuedReason);
+    expect(failedReason).toEqual(expect.any(String));
+    expect(failedReason).not.toBe(queuedReason);
+    expect(unknownReason).toContain("status-sentinel");
     expect(getImportProposalDisabledReason("done")).toBeNull();
   });
 });

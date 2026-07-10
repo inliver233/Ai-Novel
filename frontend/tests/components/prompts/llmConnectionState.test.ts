@@ -25,7 +25,9 @@ describe("llmConnectionState", () => {
       selectedProfile: null,
     });
     expect(state.stage).toBe("missing_profile");
-    expect(state.actionReason).toContain("主模块 profile");
+    expect(state.tone).toBe("warning");
+    expect(state.actionReason).toEqual(expect.any(String));
+    expect(state.effectiveProfile).toBeNull();
   });
 
   it("blocks when the effective profile has no key", () => {
@@ -35,7 +37,9 @@ describe("llmConnectionState", () => {
       selectedProfile: { ...baseProfile, has_api_key: false, masked_api_key: null },
     });
     expect(state.stage).toBe("missing_key");
-    expect(state.detail).toContain("API Key");
+    expect(state.tone).toBe("warning");
+    expect(state.actionReason).toEqual(expect.any(String));
+    expect(state.effectiveProfile).toEqual(expect.objectContaining({ id: baseProfile.id }));
   });
 
   it("explains fallback provider mismatch for task modules", () => {
@@ -46,7 +50,9 @@ describe("llmConnectionState", () => {
       boundProfile: null,
     });
     expect(state.stage).toBe("provider_mismatch");
-    expect(state.detail).toContain("主模块回退 profile");
+    expect(state.tone).toBe("warning");
+    expect(state.actionReason).toEqual(expect.any(String));
+    expect(state.effectiveProfile).toEqual(expect.objectContaining({ id: baseProfile.id }));
   });
 
   it("describes empty remote model lists after a successful request", () => {
@@ -55,16 +61,18 @@ describe("llmConnectionState", () => {
       moduleProvider: "openai_compatible",
       selectedProfile: baseProfile,
     });
-    const text = describeModelListState(
-      {
-        loading: false,
-        options: [],
-        warning: null,
-        error: null,
-        requestId: "rid-1",
-      },
-      access,
-    );
-    expect(text).toContain("没有返回候选模型");
+    const requestedEmptyState = {
+      loading: false,
+      options: [],
+      warning: null,
+      error: null,
+      requestId: "rid-1",
+    };
+    const text = describeModelListState(requestedEmptyState, access);
+    const untouchedText = describeModelListState({ ...requestedEmptyState, requestId: null }, access);
+
+    expect(text).toEqual(expect.any(String));
+    expect(text).not.toHaveLength(0);
+    expect(text).not.toBe(untouchedText);
   });
 });

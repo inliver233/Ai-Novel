@@ -57,8 +57,8 @@ class TestSearchQueryEndpoint(unittest.TestCase):
         )
         self.addCleanup(engine.dispose)
 
-        # query_project_search reads the business tables directly (Chapter, etc.),
-        # not the search_documents / FTS index, so the chapters table must exist.
+        # 当前实现读取 Chapter；未来切换 search_documents/FTS 后可调整 fixture，但本测试
+        # 只断言 HTTP 层的搜索结果与 source filter 语义，不锁内部 mode/SQL 路径。
         Base.metadata.create_all(
             engine,
             tables=[

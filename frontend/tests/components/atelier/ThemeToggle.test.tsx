@@ -6,7 +6,7 @@
  * toHaveAccessibleName）、userEvent 真实点击、vi.mock 服务桩。后续组件/页面交互测试
  * 可照此模板扩充。
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -20,23 +20,29 @@ vi.mock("@/services/theme", () => themeMocks);
 import { ThemeToggle } from "@/components/atelier/ThemeToggle";
 
 describe("ThemeToggle", () => {
-  it("渲染切换按钮，初始为亮色模式", () => {
+  beforeEach(() => {
+    themeMocks.writeThemeState.mockClear();
+    document.documentElement.classList.remove("dark");
+  });
+
+  it("渲染带可访问名称的主题切换按钮", () => {
     render(<ThemeToggle />);
-    // readThemeState 返回 null 且 documentElement 无 dark 类 → 默认亮色 → label "切换到暗色"
-    const btn = screen.getByRole("button", { name: "切换到暗色" });
+    const btn = screen.getByRole("button");
     expect(btn).toBeInTheDocument();
-    expect(btn).toHaveAccessibleName("切换到暗色");
+    expect(btn).toHaveAccessibleName();
+    expect(themeMocks.writeThemeState).not.toHaveBeenCalled();
   });
 
   it("点击切换到暗色并持久化（调用 writeThemeState）", async () => {
     const user = userEvent.setup();
     render(<ThemeToggle />);
-    const btn = screen.getByRole("button", { name: "切换到暗色" });
+    const btn = screen.getByRole("button");
+    const initialAccessibleName = btn.getAttribute("aria-label");
 
     await user.click(btn);
 
     expect(themeMocks.writeThemeState).toHaveBeenCalledWith(expect.objectContaining({ mode: "dark" }));
-    // 切换后按钮 label 应翻转为 "切换到亮色"
-    expect(screen.getByRole("button", { name: "切换到亮色" })).toBeInTheDocument();
+    expect(btn).toHaveAccessibleName();
+    expect(btn.getAttribute("aria-label")).not.toBe(initialAccessibleName);
   });
 });
