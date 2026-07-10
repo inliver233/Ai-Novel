@@ -265,6 +265,28 @@ docker compose down -v
 
 请按文档完成迁移。
 
+### 旧版已退役数据表归档（SQLite）
+
+升级到移除旧版结构化记忆、Worldbook、项目表格等已退役表的版本前，可先执行：
+
+```bash
+cd backend
+python scripts/archive_retired_tables.py --database-url sqlite:///./ainovel.db preflight
+python scripts/archive_retired_tables.py --database-url sqlite:///./ainovel.db archive --output ./retired-table-archive
+python scripts/archive_retired_tables.py --database-url sqlite:///./ainovel.db purge \
+  --archive ./retired-table-archive --confirm PURGE_RETIRED_TABLE_DATA
+```
+
+归档目录包含逐表规范化 JSON、行数与 SHA-256 校验清单。`purge` 会再次核对归档与实时数据库完全一致，
+并在单个事务中按外键顺序清空这些表；校验失败或存在并发写入时不会删除数据。若需要恢复，请先降级/重建兼容表结构，再执行：
+
+```bash
+python scripts/archive_retired_tables.py --database-url sqlite:///./ainovel.db restore \
+  --archive ./retired-table-archive
+```
+
+该工具只支持 SQLite。PostgreSQL 部署必须使用 `pg_dump` / `pg_restore` 做完整备份；后续清理迁移遇到非空退役表时会中止，禁止静默删除历史数据。
+
 ---
 
 ## 适用场景
