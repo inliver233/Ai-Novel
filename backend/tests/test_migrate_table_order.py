@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -44,12 +45,12 @@ def _active_model_table_names() -> set[str]:
     return tables
 
 
-def _upgrade_to_head(database_url: str) -> None:
+def _upgrade_to_revision(database_url: str, revision: str = "head") -> None:
     cfg = migrations._alembic_config(database_url=database_url)
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = database_url
     try:
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, revision)
     finally:
         if previous is None:
             os.environ.pop("DATABASE_URL", None)
@@ -91,38 +92,30 @@ def test_copy_plan_covers_every_portable_head_table_and_skips_sqlite_fts(
     module = _load_migrate_module()
     source_url = f"sqlite:///{(tmp_path / 'source.db').as_posix()}"
     target_url = f"sqlite:///{(tmp_path / 'target.db').as_posix()}"
-    _upgrade_to_head(source_url)
-    _upgrade_to_head(target_url)
+    _upgrade_to_revision(source_url)
+    _upgrade_to_revision(target_url)
 
     source_engine = sa.create_engine(source_url)
     target_engine = sa.create_engine(target_url)
     try:
-        table_order, source_tables, target_tables, skipped_tables = module._build_copy_plan(
-            src_engine=source_engine,
-            dst_engine=target_engine,
-        )
+        with source_engine.connect() as source_connection:
+            table_order, source_tables, target_tables, skipped_metadata, skipped_retired = module._build_copy_plan(
+                src_connection=source_connection,
+                dst_engine=target_engine,
+            )
         source_table_names = set(sa.inspect(source_engine).get_table_names())
     finally:
         source_engine.dispose()
         target_engine.dispose()
 
-    portable_source_tables = source_table_names - module._IGNORED_SOURCE_TABLES
+    portable_source_tables = source_table_names - module._IGNORED_SOURCE_TABLES - module._RETIRED_SOURCE_TABLES
     assert set(table_order) == portable_source_tables
     assert set(source_tables) == portable_source_tables
     assert set(target_tables) == portable_source_tables
-    assert set(skipped_tables) == source_table_names & module._IGNORED_SOURCE_TABLES
+    assert set(skipped_metadata) == source_table_names & module._IGNORED_SOURCE_TABLES
+    assert skipped_retired == []
     assert _active_model_table_names().issubset(table_order)
-    assert {
-        "entities",
-        "relations",
-        "memory_change_sets",
-        "memory_change_set_items",
-        "memory_tasks",
-        "project_tables",
-        "project_table_rows",
-        "worldbook_entries",
-        "plot_analysis",
-    }.issubset(table_order)
+    assert set(table_order).isdisjoint(module._RETIRED_SOURCE_TABLES)
     assert "search_index" not in table_order
     assert "vector_chunks" not in table_order
 
@@ -139,9 +132,116 @@ def test_copy_plan_rejects_source_application_table_missing_from_target() -> Non
             conn.execute(sa.text("CREATE TABLE users (id VARCHAR(64) PRIMARY KEY)"))
 
         with pytest.raises(RuntimeError, match="future_business_data"):
-            module._build_copy_plan(src_engine=source_engine, dst_engine=target_engine)
+            with source_engine.connect() as source_connection:
+                module._build_copy_plan(src_connection=source_connection, dst_engine=target_engine)
     finally:
         source_engine.dispose()
+        target_engine.dispose()
+
+
+def test_copy_plan_explicitly_skips_empty_legacy_retired_tables(tmp_path: Path) -> None:
+    module = _load_migrate_module()
+    source_url = f"sqlite:///{(tmp_path / 'legacy-source.db').as_posix()}"
+    target_url = f"sqlite:///{(tmp_path / 'current-target.db').as_posix()}"
+    _upgrade_to_revision(source_url, "9f3a7c2d1e4b")
+    _upgrade_to_revision(target_url)
+
+    source_engine = sa.create_engine(source_url)
+    target_engine = sa.create_engine(target_url)
+    try:
+        with module._locked_sqlite_source(source_engine) as source_connection:
+            table_order, _, _, _, skipped_retired = module._build_copy_plan(
+                src_connection=source_connection,
+                dst_engine=target_engine,
+            )
+    finally:
+        source_engine.dispose()
+        target_engine.dispose()
+
+    assert set(skipped_retired) == module._RETIRED_SOURCE_TABLES
+    assert set(table_order).isdisjoint(module._RETIRED_SOURCE_TABLES)
+
+
+def test_copy_plan_rejects_nonempty_legacy_retired_tables_before_copy(tmp_path: Path) -> None:
+    module = _load_migrate_module()
+    source_url = f"sqlite:///{(tmp_path / 'legacy-data-source.db').as_posix()}"
+    target_url = f"sqlite:///{(tmp_path / 'current-data-target.db').as_posix()}"
+    _upgrade_to_revision(source_url, "9f3a7c2d1e4b")
+    _upgrade_to_revision(target_url)
+
+    source_engine = sa.create_engine(source_url)
+    target_engine = sa.create_engine(target_url)
+    try:
+        with source_engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                INSERT INTO entities (
+                    id, project_id, entity_type, name, created_at, updated_at
+                ) VALUES (
+                    'legacy-entity', 'legacy-project', 'person', 'Legacy',
+                    '2026-07-11 00:00:00+00:00', '2026-07-11 00:00:00+00:00'
+                )
+                """
+            )
+
+        with pytest.raises(RuntimeError, match=r"entities=1.*archive_retired_tables\.py"):
+            with module._locked_sqlite_source(source_engine) as source_connection:
+                module._build_copy_plan(src_connection=source_connection, dst_engine=target_engine)
+    finally:
+        source_engine.dispose()
+        target_engine.dispose()
+
+
+def test_locked_source_blocks_retired_writer_through_copy_and_verification(tmp_path: Path) -> None:
+    module = _load_migrate_module()
+    source_url = f"sqlite:///{(tmp_path / 'locked-legacy-source.db').as_posix()}"
+    target_url = f"sqlite:///{(tmp_path / 'locked-current-target.db').as_posix()}"
+    _upgrade_to_revision(source_url, "9f3a7c2d1e4b")
+    _upgrade_to_revision(target_url)
+
+    source_engine = sa.create_engine(source_url)
+    writer_engine = sa.create_engine(source_url, connect_args={"timeout": 0.05})
+    target_engine = sa.create_engine(target_url)
+    writer_errors: list[BaseException] = []
+
+    def _write_retired_row() -> None:
+        try:
+            with writer_engine.begin() as connection:
+                connection.exec_driver_sql(
+                    """
+                    INSERT INTO entities (
+                        id, project_id, entity_type, name, created_at, updated_at
+                    ) VALUES (
+                        'racing-entity', 'legacy-project', 'person', 'Racing',
+                        '2026-07-11 00:00:00+00:00', '2026-07-11 00:00:00+00:00'
+                    )
+                    """
+                )
+        except BaseException as exc:
+            writer_errors.append(exc)
+
+    try:
+        with module._locked_sqlite_source(source_engine) as source_connection:
+            _, _, _, _, skipped_retired = module._build_copy_plan(
+                src_connection=source_connection,
+                dst_engine=target_engine,
+            )
+            assert set(skipped_retired) == module._RETIRED_SOURCE_TABLES
+
+            writer = threading.Thread(target=_write_retired_row)
+            writer.start()
+            writer.join(timeout=2)
+            assert not writer.is_alive()
+            assert len(writer_errors) == 1
+            assert "locked" in str(writer_errors[0]).lower()
+
+            # These reads represent the later copy and verification phases;
+            # the same connection still owns the writer lock throughout.
+            assert source_connection.exec_driver_sql("SELECT COUNT(*) FROM entities").scalar_one() == 0
+            assert source_connection.exec_driver_sql("SELECT COUNT(*) FROM users").scalar_one() == 0
+    finally:
+        source_engine.dispose()
+        writer_engine.dispose()
         target_engine.dispose()
 
 

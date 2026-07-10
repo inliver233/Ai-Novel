@@ -39,6 +39,12 @@ $env:DATABASE_URL = "postgresql://user:pass@host:5432/ainovel"
 - 源路径必须是已存在且包含 `users` / `projects` 的可识别 Ai-Novel SQLite 库，路径拼错或空库会立即失败；
 - 复制所有同时存在于 SQLite 源库与当前 PostgreSQL schema 的业务表；
 - 跳过可由 `search_documents` 重建的 SQLite FTS5 虚表/影子表；
+- 对旧库中的 14 张退役表单独执行数据保留门禁：任一表非空即在复制前失败，并要求先运行
+  `python scripts/archive_retired_tables.py --database-url <source-url> archive --output <archive-dir>`，再运行
+  `python scripts/archive_retired_tables.py --database-url <source-url> purge --archive <archive-dir> --confirm PURGE_RETIRED_TABLE_DATA`
+  完成校验和清空；只有已验证为空的退役表才会被显式跳过；
+- 退役表空检查、业务表复制和最终 count/hash 验证共用同一个 `BEGIN IMMEDIATE` SQLite 连接；这段时间
+  源库写入会被阻塞，避免空表检查后又写入退役数据而被静默漏迁；
 - PostgreSQL 专属 `vector_chunks` 不从 SQLite 复制，向量数据需按现有索引流程重建；
 - 若源库存在目标 schema 无法承接的业务表，会在写入任何业务数据前中止并列出表名；
 - 保留自增主键后会重置 PostgreSQL sequence，避免迁移后的新写入与旧 id 冲突。
@@ -74,7 +80,8 @@ cd backend
 
 脚本会写入 report（JSON）：
 
-- 实际 `table_order` 与源库中被跳过的元数据/SQLite 派生表；
+- 实际 `table_order`、`skipped_metadata_tables`，以及单独列出的
+  `skipped_empty_retired_tables`（后者必须仅包含已检查为空的旧退役表）；
 - 每表：`source_count` / `target_count`
 - 抽样：`sample_hash_source` / `sample_hash_target`
 - 外键抽检：`missing_fk_total`（应为 `0`）

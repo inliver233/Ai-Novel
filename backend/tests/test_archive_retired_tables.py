@@ -380,8 +380,8 @@ def test_purge_holds_sqlite_writer_lock_between_verification_and_delete(tmp_path
         engine.dispose()
 
 
-@pytest.mark.parametrize("revision", ["ee23bd2770fc", "head"])
-def test_alembic_legacy_and_head_schema_typed_archive_round_trip(
+@pytest.mark.parametrize("revision", ["ee23bd2770fc", "9f3a7c2d1e4b"])
+def test_alembic_legacy_and_pre_drop_schema_typed_archive_round_trip(
     tmp_path: Path,
     module: ModuleType,
     revision: str,

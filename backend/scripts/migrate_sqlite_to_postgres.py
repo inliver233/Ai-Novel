@@ -5,7 +5,8 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Table
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.sql.ddl import sort_tables
 
@@ -32,6 +33,29 @@ _IGNORED_SOURCE_TABLES = frozenset(
         "search_index_data",
         "search_index_docsize",
         "search_index_idx",
+    }
+)
+
+# Legacy databases can contain these retired application tables even though
+# the current target schema intentionally no longer does. They are not generic
+# metadata: data in any of them must be archived before migration, while empty
+# tables can be skipped explicitly.
+_RETIRED_SOURCE_TABLES = frozenset(
+    {
+        "entities",
+        "relations",
+        "events",
+        "foreshadows",
+        "evidence",
+        "memory_change_sets",
+        "memory_change_set_items",
+        "memory_tasks",
+        "project_tables",
+        "project_table_rows",
+        "worldbook_entries",
+        "glossary_terms",
+        "plot_analysis",
+        "fractal_memory",
     }
 )
 
@@ -86,11 +110,11 @@ def _require_existing_sqlite_source(source_url: str) -> Path:
     return source_path
 
 
-def _validate_source_schema(src_engine: Engine) -> None:
-    if src_engine.dialect.name != "sqlite":
-        raise RuntimeError(f"Source engine must be SQLite, got dialect={src_engine.dialect.name!r}")
+def _validate_source_schema(source: Connection | Engine) -> None:
+    if source.dialect.name != "sqlite":
+        raise RuntimeError(f"Source engine must be SQLite, got dialect={source.dialect.name!r}")
     try:
-        portable_tables = set(sa.inspect(src_engine).get_table_names()) - _IGNORED_SOURCE_TABLES
+        portable_tables = set(sa.inspect(source).get_table_names()) - _IGNORED_SOURCE_TABLES
     except sa.exc.SQLAlchemyError as exc:
         raise RuntimeError("Unable to read the SQLite source schema") from exc
 
@@ -116,15 +140,52 @@ def _sorted_table_names(tables: Iterable[Table]) -> list[str]:
     return [table.name for table in sort_tables(ordered_input, skip_fn=_is_deferred_project_outline_fk)]
 
 
+@contextmanager
+def _locked_sqlite_source(src_engine: Engine) -> Iterator[Connection]:
+    """Hold one SQLite writer lock from retired preflight through verification."""
+    if src_engine.dialect.name != "sqlite":
+        raise RuntimeError(f"Source engine must be SQLite, got dialect={src_engine.dialect.name!r}")
+    with src_engine.connect() as source_connection:
+        source_connection.commit()
+        source_connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            yield source_connection
+        except BaseException:
+            source_connection.rollback()
+            raise
+        else:
+            source_connection.commit()
+
+
 def _build_copy_plan(
     *,
-    src_engine: Engine,
+    src_connection: Connection,
     dst_engine: Engine,
-) -> tuple[list[str], dict[str, Table], dict[str, Table], list[str]]:
-    source_table_names = set(sa.inspect(src_engine).get_table_names())
+) -> tuple[list[str], dict[str, Table], dict[str, Table], list[str], list[str]]:
+    source_table_names = set(sa.inspect(src_connection).get_table_names())
     target_table_names = set(sa.inspect(dst_engine).get_table_names()) - {"alembic_version"}
-    skipped_source_tables = sorted(source_table_names & _IGNORED_SOURCE_TABLES)
-    portable_source_tables = source_table_names - _IGNORED_SOURCE_TABLES
+    skipped_metadata_tables = sorted(source_table_names & _IGNORED_SOURCE_TABLES)
+    skipped_retired_tables = sorted(source_table_names & _RETIRED_SOURCE_TABLES)
+
+    if skipped_retired_tables:
+        retired_counts: list[tuple[str, int]] = []
+        source_metadata = sa.MetaData()
+        source_metadata.reflect(bind=src_connection, only=skipped_retired_tables)
+        for table_name in skipped_retired_tables:
+            count = _count_rows(src_connection, source_metadata.tables[table_name])
+            if count:
+                retired_counts.append((table_name, count))
+        if retired_counts:
+            counts = ", ".join(f"{name}={count}" for name, count in retired_counts)
+            raise RuntimeError(
+                "SQLite source contains data in retired tables and migration aborted before copying "
+                f"({counts}). Run `python scripts/archive_retired_tables.py --database-url <source-url> archive "
+                "--output <archive-dir>` and then `python scripts/archive_retired_tables.py --database-url "
+                "<source-url> purge --archive <archive-dir> --confirm PURGE_RETIRED_TABLE_DATA`; retry only after "
+                "every retired source table is empty."
+            )
+
+    portable_source_tables = source_table_names - _IGNORED_SOURCE_TABLES - _RETIRED_SOURCE_TABLES
 
     unmigrated_source_tables = sorted(portable_source_tables - target_table_names)
     if unmigrated_source_tables:
@@ -138,13 +199,13 @@ def _build_copy_plan(
     dst_md = sa.MetaData()
     if copy_table_names:
         names = sorted(copy_table_names)
-        src_md.reflect(bind=src_engine, only=names)
+        src_md.reflect(bind=src_connection, only=names)
         dst_md.reflect(bind=dst_engine, only=names)
 
     src_tables = {name: src_md.tables[name] for name in copy_table_names}
     dst_tables = {name: dst_md.tables[name] for name in copy_table_names}
     table_order = _sorted_table_names(dst_tables.values())
-    return table_order, src_tables, dst_tables, skipped_source_tables
+    return table_order, src_tables, dst_tables, skipped_metadata_tables, skipped_retired_tables
 
 
 def _upgrade_to_head(cfg: Config, *, database_url: str) -> None:
@@ -355,56 +416,59 @@ def main(argv: list[str] | None = None) -> int:
             report["warnings"].append({"code": "PG_EXT_MISSING", "details": exts})
             print(f"[warn] postgres extensions missing: {exts}")
 
-    try:
+    with _locked_sqlite_source(src_engine) as src_conn:
         try:
-            table_order, src_tables, dst_tables, skipped_source_tables = _build_copy_plan(
-                src_engine=src_engine,
-                dst_engine=plan_target_engine,
-            )
-        except RuntimeError as exc:
-            raise SystemExit(str(exc)) from exc
-    finally:
-        if reference_engine is not None:
-            reference_engine.dispose()
+            try:
+                table_order, src_tables, dst_tables, skipped_metadata_tables, skipped_retired_tables = _build_copy_plan(
+                    src_connection=src_conn,
+                    dst_engine=plan_target_engine,
+                )
+            except RuntimeError as exc:
+                raise SystemExit(str(exc)) from exc
+        finally:
+            if reference_engine is not None:
+                reference_engine.dispose()
 
-    report["source"]["skipped_tables"] = skipped_source_tables
-    report["table_order"] = table_order
-    if skipped_source_tables:
-        print(f"[info] skipped source metadata/derived tables: {skipped_source_tables}")
+        report["source"]["skipped_metadata_tables"] = skipped_metadata_tables
+        report["source"]["skipped_empty_retired_tables"] = skipped_retired_tables
+        report["table_order"] = table_order
+        if skipped_metadata_tables:
+            print(f"[info] skipped source metadata/derived tables: {skipped_metadata_tables}")
+        if skipped_retired_tables:
+            print(f"[info] skipped verified-empty retired source tables: {skipped_retired_tables}")
 
-    # Safety check: by default require empty target so we don't duplicate real data.
-    if not args.resume and not args.dry_run:
-        with dst_engine.connect() as conn:
-            non_empty: list[tuple[str, int]] = []
-            for name in table_order:
-                cnt = _count_rows(conn, dst_tables[name])
-                if cnt:
-                    non_empty.append((name, cnt))
-            if non_empty:
-                raise SystemExit(
-                    "Target DB is not empty. Use --resume to continue a partial run.\n"
-                    + "\n".join([f"- {t} count={c}" for t, c in non_empty])
+        # Safety check: by default require empty target so we don't duplicate real data.
+        if not args.resume and not args.dry_run:
+            with dst_engine.connect() as conn:
+                non_empty: list[tuple[str, int]] = []
+                for name in table_order:
+                    cnt = _count_rows(conn, dst_tables[name])
+                    if cnt:
+                        non_empty.append((name, cnt))
+                if non_empty:
+                    raise SystemExit(
+                        "Target DB is not empty. Use --resume to continue a partial run.\n"
+                        + "\n".join([f"- {t} count={c}" for t, c in non_empty])
+                    )
+
+        # projects has a FK cycle with outlines via projects.active_outline_id (nullable).
+        projects_active_outline_by_project_id: dict[str, str] = {}
+
+        def _projects_post_insert_hook(conn: sa.Connection) -> None:
+            if not projects_active_outline_by_project_id:
+                return
+            t_projects = dst_tables["projects"]
+            for project_id, outline_id in projects_active_outline_by_project_id.items():
+                conn.execute(
+                    sa.update(t_projects).where(t_projects.c.id == project_id).values(active_outline_id=outline_id)
                 )
 
-    # projects has a FK cycle with outlines via projects.active_outline_id (nullable).
-    projects_active_outline_by_project_id: dict[str, str] = {}
+        if args.dry_run:
+            print("[plan] table copy order:")
+            for t in table_order:
+                print(f"  - {t}")
+            return 0
 
-    def _projects_post_insert_hook(conn: sa.Connection) -> None:
-        if not projects_active_outline_by_project_id:
-            return
-        t_projects = dst_tables["projects"]
-        for project_id, outline_id in projects_active_outline_by_project_id.items():
-            conn.execute(
-                sa.update(t_projects).where(t_projects.c.id == project_id).values(active_outline_id=outline_id)
-            )
-
-    if args.dry_run:
-        print("[plan] table copy order:")
-        for t in table_order:
-            print(f"  - {t}")
-        return 0
-
-    with src_engine.connect() as src_conn:
         for name in table_order:
             src_table = src_tables[name]
             dst_table = dst_tables[name]
@@ -457,34 +521,35 @@ def main(argv: list[str] | None = None) -> int:
             )
             report["tables"][name] = {"inserted": inserted}
 
-    # Verification report (counts / sample hashes / FK checks).
-    sample_limit = 20
-    with src_engine.connect() as sconn, dst_engine.connect() as dconn:
-        for name in table_order:
-            st = src_tables[name]
-            dt = dst_tables[name]
+        # Verification uses the same locked source connection as preflight and
+        # copy, so counts and hashes cannot observe a later writer's snapshot.
+        sample_limit = 20
+        with dst_engine.connect() as dconn:
+            for name in table_order:
+                st = src_tables[name]
+                dt = dst_tables[name]
 
-            src_count = _count_rows(sconn, st)
-            dst_count = _count_rows(dconn, dt)
+                src_count = _count_rows(src_conn, st)
+                dst_count = _count_rows(dconn, dt)
 
-            src_samples = _select_samples(sconn, st, limit=sample_limit)
-            dst_samples = _select_samples(dconn, dt, limit=sample_limit)
+                src_samples = _select_samples(src_conn, st, limit=sample_limit)
+                dst_samples = _select_samples(dconn, dt, limit=sample_limit)
 
-            table_report = report["tables"].setdefault(name, {})
-            table_report.update(
-                {
-                    "source_count": src_count,
-                    "target_count": dst_count,
-                    "sample_hash_source": _sample_hash(src_samples),
-                    "sample_hash_target": _sample_hash(dst_samples),
-                }
-            )
+                table_report = report["tables"].setdefault(name, {})
+                table_report.update(
+                    {
+                        "source_count": src_count,
+                        "target_count": dst_count,
+                        "sample_hash_source": _sample_hash(src_samples),
+                        "sample_hash_target": _sample_hash(dst_samples),
+                    }
+                )
 
-            fk_missing_total = 0
-            inspector = sa.inspect(dconn)
-            for fk in inspector.get_foreign_keys(name):
-                fk_missing_total += _missing_fk_count(dconn, dt, fk, dt.metadata)
-            table_report["missing_fk_total"] = fk_missing_total
+                fk_missing_total = 0
+                inspector = sa.inspect(dconn)
+                for fk in inspector.get_foreign_keys(name):
+                    fk_missing_total += _missing_fk_count(dconn, dt, fk, dt.metadata)
+                table_report["missing_fk_total"] = fk_missing_total
 
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     print(f"[ok] wrote report: {args.report}")
