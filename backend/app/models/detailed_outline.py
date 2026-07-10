@@ -19,7 +19,7 @@ class DetailedOutline(Base):
     volume_title: Mapped[str] = mapped_column(String(255), nullable=False)
     content_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     structure_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="planned")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="planned", server_default="planned")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

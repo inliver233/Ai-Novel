@@ -13,7 +13,7 @@ class VectorRagProfile(Base):
     __tablename__ = "vector_rag_profiles"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # Embedding fields

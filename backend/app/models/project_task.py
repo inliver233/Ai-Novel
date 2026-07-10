@@ -48,10 +48,12 @@ class ProjectTask(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
-    __table_args__ = (UniqueConstraint("project_id", "idempotency_key", name="uq_project_tasks_project_idempotency_key"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key", name="uq_project_tasks_project_idempotency_key"),
+    )
 
 
 Index("ix_project_tasks_project_id", ProjectTask.project_id)

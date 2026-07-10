@@ -30,4 +30,5 @@ class Project(Base):
 
 
 Index("ix_projects_owner_user_id", Project.owner_user_id)
+Index("ix_projects_active_outline_id", Project.active_outline_id)
 Index("ix_projects_llm_profile_id", Project.llm_profile_id)

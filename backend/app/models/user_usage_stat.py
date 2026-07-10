@@ -17,9 +17,9 @@ class UserUsageStat(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    total_generation_calls: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    total_generation_error_calls: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    total_generated_chars: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_generation_calls: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    total_generation_error_calls: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    total_generated_chars: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     last_generation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

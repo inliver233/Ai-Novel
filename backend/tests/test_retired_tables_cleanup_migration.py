@@ -16,6 +16,7 @@ from app.db import migrations
 
 PREVIOUS_REVISION = "9f3a7c2d1e4b"
 CLEANUP_REVISION = "b2d4e6f8a0c1"
+HEAD_REVISION = "c7e2a4f6b8d0"
 _ARCHIVE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "archive_retired_tables.py"
 
 
@@ -177,8 +178,8 @@ def test_cleanup_downgrade_recreates_exact_schema_and_reupgrades_to_head(tmp_pat
 
         _run_alembic(database_url, "head")
         config = migrations._alembic_config(database_url=database_url)
-        assert ScriptDirectory.from_config(config).get_heads() == [CLEANUP_REVISION]
-        assert _database_revision(engine) == CLEANUP_REVISION
+        assert ScriptDirectory.from_config(config).get_heads() == [HEAD_REVISION]
+        assert _database_revision(engine) == HEAD_REVISION
         assert set(sa.inspect(engine).get_table_names()).isdisjoint(archive_module.RETIRED_TABLES)
     finally:
         engine.dispose()
