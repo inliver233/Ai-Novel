@@ -8,6 +8,7 @@ import { useProjects } from "../../contexts/projects";
 import { useAutoSave } from "../../hooks/useAutoSave";
 import { usePersistentOutletIsActive } from "../../hooks/usePersistentOutlet";
 import { useProjectData } from "../../hooks/useProjectData";
+import { useQueuedSave } from "../../hooks/useQueuedSave";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
 import { ApiError, apiJson } from "../../services/apiClient";
@@ -52,11 +53,10 @@ export function useSettingsPageState(): SettingsPageState {
   const refreshWizard = wizard.refresh;
   const bumpWizardLocal = wizard.bumpLocal;
 
-  const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
-  const queuedSaveRef = useRef<null | { silent: boolean; snapshot?: SaveSnapshot }>(null);
   const wizardRefreshTimerRef = useRef<number | null>(null);
   const projectsRefreshTimerRef = useRef<number | null>(null);
+  const baselineProjectRef = useRef<Project | null>(null);
+  const baselineSettingsRef = useRef<ProjectSettings | null>(null);
   const [baselineProject, setBaselineProject] = useState<Project | null>(null);
   const [baselineSettings, setBaselineSettings] = useState<ProjectSettings | null>(null);
   const [loadError, setLoadError] = useState<null | { message: string; code: string; requestId?: string }>(null);
@@ -86,6 +86,8 @@ export function useSettingsPageState(): SettingsPageState {
     if (!settingsQuery.data) return;
     const { project, settings } = settingsQuery.data;
     const mapped = mapLoadedSettingsToForms(settingsQuery.data);
+    baselineProjectRef.current = project;
+    baselineSettingsRef.current = settings;
     setBaselineProject(project);
     setBaselineSettings(settings);
     setProjectForm(mapped.projectForm);
@@ -221,27 +223,25 @@ export function useSettingsPageState(): SettingsPageState {
     };
   }, []);
 
-  const save = useCallback(
+  const performSave = useCallback(
     async (opts?: { silent?: boolean; snapshot?: SaveSnapshot }): Promise<boolean> => {
       if (!projectId) return false;
-      if (savingRef.current) {
-        queuedSaveRef.current = { silent: Boolean(opts?.silent), snapshot: opts?.snapshot };
-        return false;
-      }
       const silent = Boolean(opts?.silent);
       const snapshot = opts?.snapshot;
       const nextProjectForm = snapshot?.projectForm ?? projectForm;
       const nextSettingsForm = snapshot?.settingsForm ?? settingsForm;
 
-      if (!baselineProject || !baselineSettings) return false;
+      const currentBaselineProject = baselineProjectRef.current;
+      const currentBaselineSettings = baselineSettingsRef.current;
+      if (!currentBaselineProject || !currentBaselineSettings) return false;
       const projectDirty =
-        nextProjectForm.name.trim() !== baselineProject.name ||
-        nextProjectForm.genre.trim() !== (baselineProject.genre ?? "") ||
-        nextProjectForm.logline.trim() !== (baselineProject.logline ?? "");
+        nextProjectForm.name.trim() !== currentBaselineProject.name ||
+        nextProjectForm.genre.trim() !== (currentBaselineProject.genre ?? "") ||
+        nextProjectForm.logline.trim() !== (currentBaselineProject.logline ?? "");
       const settingsDirty =
-        nextSettingsForm.world_setting !== baselineSettings.world_setting ||
-        nextSettingsForm.style_guide !== baselineSettings.style_guide ||
-        nextSettingsForm.constraints !== baselineSettings.constraints;
+        nextSettingsForm.world_setting !== currentBaselineSettings.world_setting ||
+        nextSettingsForm.style_guide !== currentBaselineSettings.style_guide ||
+        nextSettingsForm.constraints !== currentBaselineSettings.constraints;
       if (!projectDirty && !settingsDirty) return true;
 
       const scheduleWizardRefresh = () => {
@@ -253,8 +253,6 @@ export function useSettingsPageState(): SettingsPageState {
         projectsRefreshTimerRef.current = window.setTimeout(() => void refresh(), 1200);
       };
 
-      savingRef.current = true;
-      setSaving(true);
       try {
         const [pRes, sRes] = await Promise.all([
           projectDirty
@@ -279,8 +277,14 @@ export function useSettingsPageState(): SettingsPageState {
             : null,
         ]);
 
-        if (pRes) setBaselineProject(pRes.data.project);
-        if (sRes) setBaselineSettings(sRes.data.settings);
+        if (pRes) {
+          baselineProjectRef.current = pRes.data.project;
+          setBaselineProject(pRes.data.project);
+        }
+        if (sRes) {
+          baselineSettingsRef.current = sRes.data.settings;
+          setBaselineSettings(sRes.data.settings);
+        }
         markWizardProjectChanged(projectId);
         bumpWizardLocal();
         if (silent) {
@@ -296,27 +300,24 @@ export function useSettingsPageState(): SettingsPageState {
         const err = e as ApiError;
         toast.toastError(`${err.message} (${err.code})`, err.requestId);
         return false;
-      } finally {
-        setSaving(false);
-        savingRef.current = false;
-        if (queuedSaveRef.current) {
-          const queued = queuedSaveRef.current;
-          queuedSaveRef.current = null;
-          void save({ silent: queued.silent, snapshot: queued.snapshot });
-        }
       }
     },
-    [
-      baselineProject,
-      baselineSettings,
-      bumpWizardLocal,
-      projectForm,
-      projectId,
-      refresh,
-      refreshWizard,
-      settingsForm,
-      toast,
-    ],
+    [bumpWizardLocal, projectForm, projectId, refresh, refreshWizard, settingsForm, toast],
+  );
+
+  const { save: queueSettingsSave, saving } = useQueuedSave(performSave);
+  const save = useCallback(
+    (opts?: { silent?: boolean; snapshot?: SaveSnapshot }) => {
+      const snapshot = opts?.snapshot;
+      return queueSettingsSave({
+        silent: Boolean(opts?.silent),
+        snapshot: {
+          projectForm: { ...(snapshot?.projectForm ?? projectForm) },
+          settingsForm: { ...(snapshot?.settingsForm ?? settingsForm) },
+        },
+      });
+    },
+    [projectForm, queueSettingsSave, settingsForm],
   );
 
   useSaveHotkey(() => void save(), dirty);

@@ -2,9 +2,8 @@
 /**
  * useQueuedSave 并发保存队列（D 类 happy-path，断言当前正确行为，必须绿）。
  *
- * 背景：前端没有独立导出的 useQueuedSave hook。并发保存队列逻辑被【内联复制】在
- * 多个 page state hook 中（settings / prompts / outline / writing ...），其契约一致：
- *   - savingRef 守卫：保存进行中再次触发 → 写入【单槽】队列、立即返回 false
+ * 背景：多个页面通过共享 useQueuedSave hook 复用同一套并发保存契约：
+ *   - 保存进行中再次触发 → 写入【单槽】队列、立即返回 false
  *   - 单槽合并（merge-latest），【非】排队全部：新触发覆盖槽位，中间触发被丢弃
  *   - finally 排空：进行中的保存结束后，若槽非空，补存【一次】（不按触发数 fan-out）
  *
@@ -235,62 +234,87 @@ describe("useQueuedSave 并发保存队列（经 useOutlinePageState.save 暴露
     expect(mocks.apiJson).not.toHaveBeenCalled();
   });
 
-  it(
-    "进行中再次触发：单槽必须保存最新编辑而不是旧闭包快照",
-    { tags: ["@known_issue"] }, // H39/frontend-pages#5：复制队列已漂移并会丢最新编辑
-    async () => {
-      const { result } = renderHook(() => useOutlinePageState());
+  it("进行中再次触发：单槽必须保存最新编辑而不是旧闭包快照", async () => {
+    const { result } = renderHook(() => useOutlinePageState());
 
-      // 编辑并发起首次保存（挂起、进行中）
-      act(() => result.current.editorProps.onChange("A"));
-      let firstSave!: Promise<boolean>;
-      act(() => {
-        firstSave = result.current.wizardBarProps.onSave!();
-      });
-      await act(async () => {
-        await Promise.resolve();
-      });
+    // 编辑并发起首次保存（挂起、进行中）
+    act(() => result.current.editorProps.onChange("A"));
+    let firstSave!: Promise<boolean>;
+    act(() => {
+      firstSave = result.current.wizardBarProps.onSave!();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
 
-      // 进行中：仅一次请求、saving 为 true
-      expect(mocks.apiJson).toHaveBeenCalledTimes(1);
-      expect(calls[0].body.content_md).toBe("A");
-      expect(result.current.actionsBarProps.saving).toBe(true);
+    // 进行中：仅一次请求、saving 为 true
+    expect(mocks.apiJson).toHaveBeenCalledTimes(1);
+    expect(calls[0].body.content_md).toBe("A");
+    expect(result.current.actionsBarProps.saving).toBe(true);
 
-      // 在保存进行中编辑 B 并触发保存，再编辑 C 并触发保存：单槽应 merge-latest，
-      // 最终只补存 C。当前实现把 undefined 入槽，finally 又调用旧 save 闭包，补存 A。
-      act(() => result.current.editorProps.onChange("B"));
-      let secondResult: boolean | undefined;
-      let thirdResult: boolean | undefined;
-      await act(async () => {
-        secondResult = await result.current.wizardBarProps.onSave!();
-      });
-      act(() => result.current.editorProps.onChange("C"));
-      await act(async () => {
-        thirdResult = await result.current.wizardBarProps.onSave!();
-      });
+    // 在保存进行中编辑 B 并触发保存，再编辑 C 并触发保存：单槽应 merge-latest，最终只补存 C。
+    act(() => result.current.editorProps.onChange("B"));
+    let secondResult: boolean | undefined;
+    let thirdResult: boolean | undefined;
+    await act(async () => {
+      secondResult = await result.current.wizardBarProps.onSave!();
+    });
+    act(() => result.current.editorProps.onChange("C"));
+    await act(async () => {
+      thirdResult = await result.current.wizardBarProps.onSave!();
+    });
 
-      expect(secondResult).toBe(false);
-      expect(thirdResult).toBe(false);
-      // 守卫生效：进行中的请求未被并发打断，仍是那一次
-      expect(mocks.apiJson).toHaveBeenCalledTimes(1);
+    expect(secondResult).toBe(false);
+    expect(thirdResult).toBe(false);
+    // 守卫生效：进行中的请求未被并发打断，仍是那一次
+    expect(mocks.apiJson).toHaveBeenCalledTimes(1);
 
-      // 完成首次保存 → finally 排空单槽 → 补存一次（合并语义：3 次触发 → 共 2 次请求，而非 3 次）
-      await act(async () => {
-        resolveNextSave();
-        await firstSave;
-      });
-      // 排空触发的补存是在途的，再完成它
-      await act(async () => {
-        resolveNextSave();
-      });
-      await waitFor(() => expect(result.current.actionsBarProps.saving).toBe(false));
+    // 完成首次保存 → finally 排空单槽 → 补存一次（合并语义：3 次触发 → 共 2 次请求，而非 3 次）
+    await act(async () => {
+      resolveNextSave();
+      await firstSave;
+    });
+    expect(result.current.actionsBarProps.saving).toBe(true);
+    expect(mocks.apiJson).toHaveBeenCalledTimes(2);
+    // 排空触发的补存是在途的，再完成它
+    await act(async () => {
+      resolveNextSave();
+    });
+    await waitFor(() => expect(result.current.actionsBarProps.saving).toBe(false));
 
-      expect(mocks.apiJson).toHaveBeenCalledTimes(2);
-      // 正确行为：A 在途期间的 B 被 C 覆盖，网络写入应为 A → C。
-      // 当前 bug：第二次仍是旧闭包里的 A，导致最新编辑未持久化。
-      expect(calls.map((c) => c.body.content_md)).toEqual(["A", "C"]);
-    },
-  );
+    expect(mocks.apiJson).toHaveBeenCalledTimes(2);
+    // 正确行为：A 在途期间的 B 被 C 覆盖，网络写入应为 A → C。
+    expect(calls.map((c) => c.body.content_md)).toEqual(["A", "C"]);
+    expect(result.current.dirty).toBe(false);
+  });
+
+  it("进行中编辑回原基线：仍补存回退值而不是按旧基线误判为 no-op", async () => {
+    const { result } = renderHook(() => useOutlinePageState());
+
+    act(() => result.current.editorProps.onChange("A"));
+    let firstSave!: Promise<boolean>;
+    act(() => {
+      firstSave = result.current.wizardBarProps.onSave!();
+    });
+    expect(calls.map((call) => call.body.content_md)).toEqual(["A"]);
+
+    act(() => result.current.editorProps.onChange("baseline-content"));
+    await expect(result.current.wizardBarProps.onSave!()).resolves.toBe(false);
+
+    await act(async () => {
+      resolveNextSave();
+      await firstSave;
+    });
+
+    expect(result.current.actionsBarProps.saving).toBe(true);
+    expect(calls.map((call) => call.body.content_md)).toEqual(["A", "baseline-content"]);
+
+    await act(async () => {
+      resolveNextSave();
+    });
+    await waitFor(() => expect(result.current.actionsBarProps.saving).toBe(false));
+    expect(result.current.dirty).toBe(false);
+  });
 
   it("连续多个保存窗口按发起顺序执行、不丢失不乱序", async () => {
     const { result } = renderHook(() => useOutlinePageState());

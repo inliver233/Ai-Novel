@@ -9,6 +9,7 @@ import { useConfirm } from "../../components/ui/confirm";
 import { useToast } from "../../components/ui/toast";
 import { useAutoSave } from "../../hooks/useAutoSave";
 import { usePersistentOutletIsActive } from "../../hooks/usePersistentOutlet";
+import { useQueuedSave } from "../../hooks/useQueuedSave";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
 import { createRequestSeqGuard } from "../../lib/requestSeqGuard";
@@ -83,6 +84,13 @@ type PromptsPageState = {
   wizardBarProps: ComponentProps<typeof WizardNextBar>;
 };
 
+type PresetSaveRequest = {
+  profileId: string | null;
+  shouldSave: boolean;
+  silent: boolean;
+  snapshot: LlmForm;
+};
+
 export function usePromptsPageState(): PromptsPageState {
   const { projectId } = useParams();
   const navigate = useNavigate();
@@ -95,10 +103,7 @@ export function usePromptsPageState(): PromptsPageState {
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<null | { message: string; code: string; requestId?: string }>(null);
-  const [savingPreset, setSavingPreset] = useState(false);
   const [testing, setTesting] = useState(false);
-  const savingPresetRef = useRef(false);
-  const queuedPresetSaveRef = useRef<null | { silent: boolean; snapshot?: LlmForm }>(null);
   const wizardRefreshTimerRef = useRef<number | null>(null);
 
   const [project, setProject] = useState<Project | null>(null);
@@ -106,6 +111,7 @@ export function usePromptsPageState(): PromptsPageState {
   const [profileName, setProfileName] = useState("");
   const [profileBusy, setProfileBusy] = useState(false);
 
+  const baselinePresetRef = useRef<LLMPreset | null>(null);
   const [baselinePreset, setBaselinePreset] = useState<LLMPreset | null>(null);
   const [capabilities, setCapabilities] = useState<LlmCapabilities | null>(null);
   const capsGuardRef = useRef(createRequestSeqGuard());
@@ -180,6 +186,7 @@ export function usePromptsPageState(): PromptsPageState {
       setProfiles(profilesRes.data.profiles ?? []);
       setProfileName("");
 
+      baselinePresetRef.current = presetRes.data.llm_preset;
       setBaselinePreset(presetRes.data.llm_preset);
       setCapabilities({
         provider: presetRes.data.llm_preset.provider,
@@ -365,33 +372,30 @@ export function usePromptsPageState(): PromptsPageState {
     setSelectedAddTaskKey(addableTasks[0].key);
   }, [addableTasks, selectedAddTaskKey]);
 
-  const saveAll = useCallback(
-    async (opts?: { silent?: boolean; snapshot?: LlmForm }): Promise<boolean> => {
+  const performSaveAll = useCallback(
+    async (request: PresetSaveRequest): Promise<boolean> => {
       if (!projectId) return false;
-      const silent = Boolean(opts?.silent);
-      const snapshot = opts?.snapshot ?? llmForm;
-      if (!presetDirty && !opts?.snapshot) return true;
-      if (savingPresetRef.current) {
-        queuedPresetSaveRef.current = { silent, snapshot };
-        return false;
-      }
+      const { profileId, shouldSave, silent, snapshot } = request;
+      if (!shouldSave) return true;
 
       const payload = buildPresetPayload(snapshot);
       if (!payload.ok) {
         if (!silent) toast.toastError(payload.message);
         return false;
       }
+      const currentBaselinePreset = baselinePresetRef.current;
+      const savePreset = currentBaselinePreset
+        ? !payloadEquals(payload.payload, payloadFromPreset(currentBaselinePreset))
+        : false;
 
       const scheduleWizardRefresh = () => {
         if (wizardRefreshTimerRef.current !== null) window.clearTimeout(wizardRefreshTimerRef.current);
         wizardRefreshTimerRef.current = window.setTimeout(() => void refreshWizard(), 1200);
       };
 
-      savingPresetRef.current = true;
-      setSavingPreset(true);
       try {
-        if (selectedProfileId) {
-          const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${selectedProfileId}`, {
+        if (profileId) {
+          const res = await apiJson<{ profile: LLMProfile }>(`/api/llm_profiles/${profileId}`, {
             method: "PUT",
             body: JSON.stringify({
               provider: payload.payload.provider,
@@ -411,11 +415,12 @@ export function usePromptsPageState(): PromptsPageState {
           setProfiles((prev) => prev.map((p) => (p.id === res.data.profile.id ? res.data.profile : p)));
         }
 
-        if (presetDirty) {
+        if (savePreset) {
           const res = await apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${projectId}/llm_preset`, {
             method: "PUT",
             body: JSON.stringify(payload.payload),
           });
+          baselinePresetRef.current = res.data.llm_preset;
           setBaselinePreset(res.data.llm_preset);
 
           setLlmForm((current) => {
@@ -452,17 +457,23 @@ export function usePromptsPageState(): PromptsPageState {
         const err = e as ApiError;
         toast.toastError(`${err.message} (${err.code})`, err.requestId);
         return false;
-      } finally {
-        setSavingPreset(false);
-        savingPresetRef.current = false;
-        if (queuedPresetSaveRef.current) {
-          const queued = queuedPresetSaveRef.current;
-          queuedPresetSaveRef.current = null;
-          void saveAll({ silent: queued.silent, snapshot: queued.snapshot });
-        }
       }
     },
-    [bumpWizardLocal, llmForm, presetDirty, projectId, refreshWizard, selectedProfile, selectedProfileId, toast],
+    [bumpWizardLocal, projectId, refreshWizard, toast],
+  );
+
+  const { save: queuePresetSave, saving: savingPreset } = useQueuedSave(performSaveAll);
+  const saveAll = useCallback(
+    (opts?: { silent?: boolean; snapshot?: LlmForm }) => {
+      const hasExplicitSnapshot = opts?.snapshot !== undefined;
+      return queuePresetSave({
+        profileId: selectedProfileId,
+        shouldSave: presetDirty || hasExplicitSnapshot,
+        silent: Boolean(opts?.silent),
+        snapshot: { ...(opts?.snapshot ?? llmForm) },
+      });
+    },
+    [llmForm, presetDirty, queuePresetSave, selectedProfileId],
   );
 
   const updateTaskForm = useCallback((taskKey: string, updater: (prev: LlmForm) => LlmForm) => {

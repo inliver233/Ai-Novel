@@ -9,6 +9,7 @@ import { useToast } from "../components/ui/toast";
 import { useAutoSave } from "../hooks/useAutoSave";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useProjectData } from "../hooks/useProjectData";
+import { useQueuedSave } from "../hooks/useQueuedSave";
 import { useWizardProgress } from "../hooks/useWizardProgress";
 import { copyText } from "../lib/copyText";
 import { duration, transition } from "../lib/motion";
@@ -21,6 +22,14 @@ type EntryForm = {
   title: string;
   content: string;
   tags: string[];
+};
+
+type EntrySaveRequest = {
+  silent: boolean;
+  close: boolean;
+  snapshot: EntryForm;
+  sessionId: number;
+  targetId: string | null;
 };
 
 const ALL_TAG_LABEL = "全部";
@@ -125,9 +134,9 @@ export function EntriesPage() {
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Entry | null>(null);
-  const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
-  const queuedSaveRef = useRef<null | { silent: boolean; close: boolean; snapshot?: EntryForm }>(null);
+  const nextEditorSessionIdRef = useRef(0);
+  const editorSessionRef = useRef({ id: 0, targetId: null as string | null });
+  const createdTargetRef = useRef<{ sessionId: number; targetId: string } | null>(null);
   const wizardRefreshTimerRef = useRef<number | null>(null);
   const [baseline, setBaseline] = useState<EntryForm | null>(null);
   const [form, setForm] = useState<EntryForm>({ title: "", content: "", tags: [] });
@@ -167,6 +176,9 @@ export function EntriesPage() {
   const hasFilters = useMemo(() => Boolean(searchText.trim()) || activeTag !== ALL_TAG_LABEL, [activeTag, searchText]);
 
   const openNew = useCallback(() => {
+    const sessionId = nextEditorSessionIdRef.current + 1;
+    nextEditorSessionIdRef.current = sessionId;
+    editorSessionRef.current = { id: sessionId, targetId: null };
     setEditing(null);
     const next = toEntryForm(null);
     setForm(next);
@@ -176,6 +188,9 @@ export function EntriesPage() {
   }, []);
 
   const openEdit = useCallback((entry: Entry) => {
+    const sessionId = nextEditorSessionIdRef.current + 1;
+    nextEditorSessionIdRef.current = sessionId;
+    editorSessionRef.current = { id: sessionId, targetId: entry.id };
     setEditing(entry);
     const next = toEntryForm(entry);
     setForm(next);
@@ -218,19 +233,12 @@ export function EntriesPage() {
     setCustomTagInput("");
   }, [addTag, customTagInput]);
 
-  const saveEntry = useCallback(
-    async (opts?: { silent?: boolean; close?: boolean; snapshot?: EntryForm }) => {
+  const performSaveEntry = useCallback(
+    async (request: EntrySaveRequest) => {
       if (!projectId) return false;
-      const silent = Boolean(opts?.silent);
-      const close = Boolean(opts?.close);
-      const snapshot = opts?.snapshot ?? form;
+      const { close, sessionId, silent, snapshot } = request;
       const title = snapshot.title.trim();
       if (!title) return false;
-
-      if (savingRef.current) {
-        queuedSaveRef.current = { silent, close, snapshot };
-        return false;
-      }
 
       const scheduleWizardRefresh = () => {
         if (wizardRefreshTimerRef.current !== null) {
@@ -239,8 +247,6 @@ export function EntriesPage() {
         wizardRefreshTimerRef.current = window.setTimeout(() => void refreshWizard(), 1200);
       };
 
-      savingRef.current = true;
-      setSaving(true);
       try {
         const payload = {
           title,
@@ -248,40 +254,53 @@ export function EntriesPage() {
           tags: normalizeEntryTags(snapshot.tags),
         };
 
-        const saved = !editing ? await createEntry(projectId, payload) : await updateEntry(editing.id, payload);
+        const createdTarget = createdTargetRef.current;
+        const targetId = request.targetId ?? (createdTarget?.sessionId === sessionId ? createdTarget.targetId : null);
+        const saved = !targetId ? await createEntry(projectId, payload) : await updateEntry(targetId, payload);
 
-        setEditing(saved);
+        if (!targetId) createdTargetRef.current = { sessionId, targetId: saved.id };
         setEntries((previous) => {
           const list = previous ?? [];
           return [saved, ...list.filter((entry) => entry.id !== saved.id)];
         });
 
         const nextBaseline = toEntryForm(saved);
-        setBaseline(nextBaseline);
-        setForm((current) => (sameEntryForm(current, snapshot) ? nextBaseline : current));
+        if (editorSessionRef.current.id === sessionId) {
+          editorSessionRef.current = { id: sessionId, targetId: saved.id };
+          setEditing(saved);
+          setBaseline(nextBaseline);
+          setForm((current) => (sameEntryForm(current, snapshot) ? nextBaseline : current));
+        }
 
         markWizardProjectChanged(projectId);
         bumpWizardLocal();
         if (silent) scheduleWizardRefresh();
         else await refreshWizard();
         if (!silent) toast.toastSuccess("已保存");
-        if (close) setDrawerOpen(false);
+        if (close && editorSessionRef.current.id === sessionId) setDrawerOpen(false);
         return true;
       } catch (error) {
         const apiError = formatApiError(error);
         toast.toastError(apiError.message, apiError.requestId);
         return false;
-      } finally {
-        setSaving(false);
-        savingRef.current = false;
-        if (queuedSaveRef.current) {
-          const queued = queuedSaveRef.current;
-          queuedSaveRef.current = null;
-          void saveEntry({ silent: queued.silent, close: queued.close, snapshot: queued.snapshot });
-        }
       }
     },
-    [bumpWizardLocal, editing, form, projectId, refreshWizard, setEntries, toast],
+    [bumpWizardLocal, projectId, refreshWizard, setEntries, toast],
+  );
+
+  const { save: queueEntrySave, saving } = useQueuedSave(performSaveEntry);
+  const saveEntry = useCallback(
+    (opts?: { silent?: boolean; close?: boolean; snapshot?: EntryForm }) => {
+      const snapshot = opts?.snapshot ?? form;
+      return queueEntrySave({
+        silent: Boolean(opts?.silent),
+        close: Boolean(opts?.close),
+        snapshot: { ...snapshot, tags: [...snapshot.tags] },
+        sessionId: editorSessionRef.current.id,
+        targetId: editorSessionRef.current.targetId,
+      });
+    },
+    [form, queueEntrySave],
   );
 
   const handleDelete = useCallback(
@@ -300,6 +319,9 @@ export function EntriesPage() {
         setEntries((previous) => (previous ?? []).filter((item) => item.id !== entry.id));
 
         if (editing?.id === entry.id) {
+          const sessionId = nextEditorSessionIdRef.current + 1;
+          nextEditorSessionIdRef.current = sessionId;
+          editorSessionRef.current = { id: sessionId, targetId: null };
           setDrawerOpen(false);
           setEditing(null);
           setBaseline(null);

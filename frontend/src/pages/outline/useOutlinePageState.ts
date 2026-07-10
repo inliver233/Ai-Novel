@@ -9,6 +9,7 @@ import { useToast } from "../../components/ui/toast";
 import { useProjectData } from "../../hooks/useProjectData";
 import { useAutoSave } from "../../hooks/useAutoSave";
 import { usePersistentOutletIsActive } from "../../hooks/usePersistentOutlet";
+import { useQueuedSave } from "../../hooks/useQueuedSave";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
 import { ApiError, apiJson } from "../../services/apiClient";
@@ -71,7 +72,6 @@ export function useOutlinePageState(): OutlinePageState {
   const refreshWizard = wizard.refresh;
   const bumpWizardLocal = wizard.bumpLocal;
 
-  const [saving, setSaving] = useState(false);
   const [outlines, setOutlines] = useState<OutlineListItem[]>([]);
   const [activeOutline, setActiveOutline] = useState<Outline | null>(null);
   const [preset, setPreset] = useState<LLMPreset | null>(null);
@@ -85,13 +85,8 @@ export function useOutlinePageState(): OutlinePageState {
   });
 
   const wizardRefreshTimerRef = useRef<number | null>(null);
-  const savingRef = useRef(false);
+  const baselineRef = useRef("");
   const pendingDetailedSwitchOutlineIdRef = useRef<string | null>(null);
-  const queuedSaveRef = useRef<{
-    nextContent?: string;
-    nextStructure?: unknown;
-    opts?: { silent?: boolean; snapshotContent?: string };
-  } | null>(null);
 
   const outlineQuery = useProjectData<OutlineLoaded>(projectId, async (id) => {
     const [outlineResponse, presetResponse] = await Promise.all([
@@ -122,6 +117,7 @@ export function useOutlinePageState(): OutlinePageState {
           : outlineQuery.data.outline.structure,
     });
     setPreset(outlineQuery.data.preset);
+    baselineRef.current = normalizedStored.normalizedContentMd;
     setBaseline(normalizedStored.normalizedContentMd);
     setContent(normalizedStored.normalizedContentMd);
   }, [outlineQuery.data]);
@@ -137,28 +133,17 @@ export function useOutlinePageState(): OutlinePageState {
 
   const dirty = content !== baseline;
 
-  const save = useCallback<SaveOutline>(
+  const performSave = useCallback<SaveOutline>(
     async (nextContent, nextStructure, opts) => {
       if (!projectId) return false;
-      if (savingRef.current) {
-        queuedSaveRef.current = { nextContent, nextStructure, opts };
-        return false;
-      }
 
       const silent = Boolean(opts?.silent);
       const snapshotContent = opts?.snapshotContent;
       const toSave = snapshotContent ?? nextContent ?? content;
-      if (
-        nextContent === undefined &&
-        snapshotContent === undefined &&
-        nextStructure === undefined &&
-        toSave === baseline
-      ) {
+      if (nextStructure === undefined && toSave === baselineRef.current) {
         return true;
       }
 
-      savingRef.current = true;
-      setSaving(true);
       try {
         const scheduleWizardRefresh = () => {
           if (wizardRefreshTimerRef.current !== null) {
@@ -172,6 +157,7 @@ export function useOutlinePageState(): OutlinePageState {
           body: JSON.stringify({ content_md: toSave, structure: nextStructure }),
         });
         const savedContent = response.data.outline.content_md ?? "";
+        baselineRef.current = savedContent;
         setBaseline(savedContent);
         setContent((prev) => {
           if (nextContent !== undefined) return savedContent;
@@ -192,17 +178,18 @@ export function useOutlinePageState(): OutlinePageState {
         const err = error as ApiError;
         toast.toastError(`${err.message} (${err.code})`, err.requestId);
         return false;
-      } finally {
-        setSaving(false);
-        savingRef.current = false;
-        if (queuedSaveRef.current) {
-          const queued = queuedSaveRef.current;
-          queuedSaveRef.current = null;
-          void save(queued.nextContent, queued.nextStructure, queued.opts);
-        }
       }
     },
-    [baseline, bumpWizardLocal, content, projectId, refreshWizard, toast],
+    [bumpWizardLocal, content, projectId, refreshWizard, toast],
+  );
+
+  const { save: queueSave, saving } = useQueuedSave(performSave);
+  const save = useCallback<SaveOutline>(
+    (nextContent, nextStructure, opts) => {
+      const snapshotContent = opts?.snapshotContent ?? nextContent ?? content;
+      return queueSave(nextContent, nextStructure, { ...opts, snapshotContent });
+    },
+    [content, queueSave],
   );
 
   useSaveHotkey(() => void save(), dirty);
@@ -479,7 +466,9 @@ export function useOutlinePageState(): OutlinePageState {
       onOpenGenerate: () => generation.setOpen(true),
       onOpenParse: parsing.openParseModal,
       onSave: () => void save(),
-      onGoToDetailedTab: () => {/* handled by OutlinePage via setActiveTab */},
+      onGoToDetailedTab: () => {
+        /* handled by OutlinePage via setActiveTab */
+      },
     },
     editorProps: {
       content,
@@ -548,8 +537,8 @@ export function useOutlinePageState(): OutlinePageState {
       onTabChange: parsing.setActiveTab,
       onApplyOutline: () =>
         void (async () => {
-          const hasDetailed = Array.isArray(parsing.parseResult?.detailed_outlines) &&
-            parsing.parseResult.detailed_outlines.length > 0;
+          const hasDetailed =
+            Array.isArray(parsing.parseResult?.detailed_outlines) && parsing.parseResult.detailed_outlines.length > 0;
           const result = await parsing.applyOutline();
           const targetOutlineId = result.outlineId ?? activeOutlineId;
           if (!result.ok || !targetOutlineId) return;
@@ -573,8 +562,8 @@ export function useOutlinePageState(): OutlinePageState {
       onApplyEntries: () => void parsing.applyEntries(),
       onApplyAll: () =>
         void (async () => {
-          const hasDetailed = Array.isArray(parsing.parseResult?.detailed_outlines) &&
-            parsing.parseResult.detailed_outlines.length > 0;
+          const hasDetailed =
+            Array.isArray(parsing.parseResult?.detailed_outlines) && parsing.parseResult.detailed_outlines.length > 0;
           const result = await parsing.applyAll();
           const targetOutlineId = result.outlineId ?? activeOutlineId;
           if (!result.ok || !targetOutlineId) return;
@@ -614,7 +603,9 @@ export function useOutlinePageState(): OutlinePageState {
             ? {
                 label: "下一步：查看细纲并创建章节",
                 disabled: generation.generating || parsing.parsing || saving,
-                onClick: () => {/* handled by OutlinePage */},
+                onClick: () => {
+                  /* handled by OutlinePage */
+                },
               }
             : canCreateChapters
               ? {

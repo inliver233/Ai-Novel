@@ -13,12 +13,30 @@
  * - window.matchMedia：jsdom 不实现 matchMedia，polyfill 供 useReducedMotion / useIsMobile 使用。
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import type { Entry } from "@/types";
 import type { WizardProgress } from "@/services/wizard";
+
+type CapturedAutoSave = {
+  getSnapshot: () => unknown;
+  onSave: (snapshot: unknown) => Promise<void>;
+};
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+};
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>["resolve"];
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
 
 // vi.mock 工厂会被提升到文件顶部执行，故用 vi.hoisted 声明被引用的桩，避免 TDZ。
 const mocks = vi.hoisted(() => ({
@@ -37,6 +55,7 @@ const mocks = vi.hoisted(() => ({
   },
   wizardRefresh: vi.fn<() => Promise<void>>(),
   wizardBumpLocal: vi.fn(),
+  autoSaveOptions: null as CapturedAutoSave | null,
 }));
 
 vi.mock("@/services/entriesApi", () => ({
@@ -55,9 +74,12 @@ vi.mock("@/components/ui/confirm", () => ({
   useConfirm: () => mocks.confirm,
 }));
 
-// 关闭 useAutoSave 的 900ms 自动保存计时器，保证 create/edit 测试确定性。
+// 捕获最近一次配置但不启动计时器，既保证普通测试确定性，也允许并发用例显式触发 autosave。
 vi.mock("@/hooks/useAutoSave", () => ({
-  useAutoSave: () => ({ cancel: vi.fn(), flush: vi.fn() }),
+  useAutoSave: (options: CapturedAutoSave) => {
+    mocks.autoSaveOptions = options;
+    return { cancel: vi.fn(), flush: vi.fn() };
+  },
 }));
 
 // 提供稳定的最小向导 progress（nextStep.key="characters" → 触发 EntriesPage 的 primaryAction 分支，
@@ -170,6 +192,7 @@ describe("EntriesPage 核心 happy-path（D 类，应绿）", () => {
     mocks.confirm.confirm.mockReset().mockResolvedValue(true);
     mocks.wizardRefresh.mockReset().mockResolvedValue(undefined);
     mocks.wizardBumpLocal.mockClear();
+    mocks.autoSaveOptions = null;
   });
 
   it("列表加载后显示已有条目", async () => {
@@ -229,6 +252,88 @@ describe("EntriesPage 核心 happy-path（D 类，应绿）", () => {
     await waitFor(() => expect(screen.getByText("测试新条目")).toBeInTheDocument());
     expect(mocks.createEntry).toHaveBeenCalledWith(PROJECT_ID, expect.objectContaining({ title: "测试新条目" }));
     expect(mocks.toast.toastSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("新建保存进行中再次编辑：首次 POST 完成后合并为对新条目的 PUT", async () => {
+    mocks.listEntries.mockResolvedValue(pageList([entryA]));
+    const createPending = deferred<Entry>();
+    mocks.createEntry.mockReturnValue(createPending.promise);
+    mocks.updateEntry.mockImplementation(
+      async (entryId: string, body: { title?: string; content?: string; tags?: string[] }) =>
+        makeEntry(entryId, body.title ?? "", body.content ?? "", body.tags ?? []),
+    );
+
+    const user = userEvent.setup();
+    const { container } = renderPage();
+    await screen.findByText(entryA.title);
+    await user.click(getTopPrimaryAction(container));
+
+    const dialog = getOpenEntryDialog();
+    const titleInput = getDialogTitleInput(dialog);
+    await user.type(titleInput, "草稿 A");
+    await user.click(getDialogPrimaryAction(dialog));
+    await waitFor(() => expect(mocks.createEntry).toHaveBeenCalledTimes(1));
+
+    await user.clear(titleInput);
+    await user.type(titleInput, "草稿 C");
+    const autoSave = mocks.autoSaveOptions;
+    expect(autoSave).not.toBeNull();
+    await autoSave!.onSave(autoSave!.getSnapshot());
+    expect(mocks.updateEntry).not.toHaveBeenCalled();
+
+    await act(async () => {
+      createPending.resolve(makeEntry("e-new", "草稿 A", "", []));
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(mocks.updateEntry).toHaveBeenCalledWith("e-new", expect.objectContaining({ title: "草稿 C" })),
+    );
+    expect(mocks.createEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it("切换编辑会话时旧保存完成不能把新快照写回旧条目", async () => {
+    mocks.listEntries.mockResolvedValue(pageList([entryA, entryB]));
+    const firstUpdatePending = deferred<Entry>();
+    mocks.updateEntry
+      .mockReturnValueOnce(firstUpdatePending.promise)
+      .mockImplementationOnce(async (entryId: string, body: { title?: string; content?: string; tags?: string[] }) =>
+        makeEntry(entryId, body.title ?? "", body.content ?? "", body.tags ?? []),
+      );
+
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(entryA.title);
+
+    await user.click(screen.getByText(entryA.title));
+    let dialog = getOpenEntryDialog();
+    let titleInput = getDialogTitleInput(dialog);
+    await user.clear(titleInput);
+    await user.type(titleInput, "A 保存中");
+    await user.click(getDialogPrimaryAction(dialog));
+    await waitFor(() => expect(mocks.updateEntry).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await user.click(screen.getByText(entryB.title));
+
+    dialog = getOpenEntryDialog();
+    titleInput = getDialogTitleInput(dialog);
+    await user.clear(titleInput);
+    await user.type(titleInput, "B 最新编辑");
+    const autoSave = mocks.autoSaveOptions;
+    expect(autoSave).not.toBeNull();
+    await autoSave!.onSave(autoSave!.getSnapshot());
+
+    await act(async () => {
+      firstUpdatePending.resolve(makeEntry(entryA.id, "A 保存中", entryA.content, entryA.tags));
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(mocks.updateEntry).toHaveBeenNthCalledWith(2, entryB.id, expect.objectContaining({ title: "B 最新编辑" })),
+    );
+    expect(getDialogTitleInput(getOpenEntryDialog())).toHaveValue("B 最新编辑");
   });
 
   it("编辑条目：改字段保存后更新反映", async () => {

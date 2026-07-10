@@ -9,6 +9,7 @@ import { useToast } from "../components/ui/toast";
 import { useAutoSave } from "../hooks/useAutoSave";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useProjectData } from "../hooks/useProjectData";
+import { useQueuedSave } from "../hooks/useQueuedSave";
 import { useWizardProgress } from "../hooks/useWizardProgress";
 import { copyText } from "../lib/copyText";
 import { duration, transition } from "../lib/motion";
@@ -21,6 +22,14 @@ type CharacterForm = {
   role: string;
   profile: string;
   notes: string;
+};
+
+type CharacterSaveRequest = {
+  silent: boolean;
+  close: boolean;
+  snapshot: CharacterForm;
+  sessionId: number;
+  targetId: string | null;
 };
 
 export function CharactersPage() {
@@ -54,9 +63,9 @@ export function CharactersPage() {
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Character | null>(null);
-  const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
-  const queuedSaveRef = useRef<null | { silent: boolean; close: boolean; snapshot?: CharacterForm }>(null);
+  const nextEditorSessionIdRef = useRef(0);
+  const editorSessionRef = useRef({ id: 0, targetId: null as string | null });
+  const createdTargetRef = useRef<{ sessionId: number; targetId: string } | null>(null);
   const wizardRefreshTimerRef = useRef<number | null>(null);
   const [baseline, setBaseline] = useState<CharacterForm | null>(null);
   const [form, setForm] = useState<CharacterForm>({ name: "", role: "", profile: "", notes: "" });
@@ -92,6 +101,9 @@ export function CharactersPage() {
   }, []);
 
   const openNew = () => {
+    const sessionId = nextEditorSessionIdRef.current + 1;
+    nextEditorSessionIdRef.current = sessionId;
+    editorSessionRef.current = { id: sessionId, targetId: null };
     setEditing(null);
     const next = { name: "", role: "", profile: "", notes: "" };
     setForm(next);
@@ -100,6 +112,9 @@ export function CharactersPage() {
   };
 
   const openEdit = (c: Character) => {
+    const sessionId = nextEditorSessionIdRef.current + 1;
+    nextEditorSessionIdRef.current = sessionId;
+    editorSessionRef.current = { id: sessionId, targetId: c.id };
     setEditing(c);
     const next = {
       name: c.name ?? "",
@@ -126,28 +141,21 @@ export function CharactersPage() {
     setDrawerOpen(false);
   };
 
-  const saveCharacter = useCallback(
-    async (opts?: { silent?: boolean; close?: boolean; snapshot?: CharacterForm }) => {
+  const performSaveCharacter = useCallback(
+    async (request: CharacterSaveRequest) => {
       if (!projectId) return false;
-      const silent = Boolean(opts?.silent);
-      const close = Boolean(opts?.close);
-      const snapshot = opts?.snapshot ?? form;
+      const { close, sessionId, silent, snapshot } = request;
       if (!snapshot.name.trim()) return false;
-
-      if (savingRef.current) {
-        queuedSaveRef.current = { silent, close, snapshot };
-        return false;
-      }
 
       const scheduleWizardRefresh = () => {
         if (wizardRefreshTimerRef.current !== null) window.clearTimeout(wizardRefreshTimerRef.current);
         wizardRefreshTimerRef.current = window.setTimeout(() => void refreshWizard(), 1200);
       };
 
-      savingRef.current = true;
-      setSaving(true);
       try {
-        const res = !editing
+        const createdTarget = createdTargetRef.current;
+        const targetId = request.targetId ?? (createdTarget?.sessionId === sessionId ? createdTarget.targetId : null);
+        const res = !targetId
           ? await apiJson<{ character: Character }>(`/api/projects/${projectId}/characters`, {
               method: "POST",
               body: JSON.stringify({
@@ -157,7 +165,7 @@ export function CharactersPage() {
                 notes: snapshot.notes || null,
               }),
             })
-          : await apiJson<{ character: Character }>(`/api/characters/${editing.id}`, {
+          : await apiJson<{ character: Character }>(`/api/characters/${targetId}`, {
               method: "PUT",
               body: JSON.stringify({
                 name: snapshot.name.trim(),
@@ -168,7 +176,7 @@ export function CharactersPage() {
             });
 
         const saved = res.data.character;
-        setEditing(saved);
+        if (!targetId) createdTargetRef.current = { sessionId, targetId: saved.id };
         setCharacters((prev) => {
           const list = prev ?? [];
           const idx = list.findIndex((c) => c.id === saved.id);
@@ -182,41 +190,50 @@ export function CharactersPage() {
           profile: saved.profile ?? "",
           notes: saved.notes ?? "",
         };
-        setBaseline(nextBaseline);
-        setForm((prev) => {
-          if (
-            prev.name === snapshot.name &&
-            prev.role === snapshot.role &&
-            prev.profile === snapshot.profile &&
-            prev.notes === snapshot.notes
-          ) {
-            return nextBaseline;
-          }
-          return prev;
-        });
+        if (editorSessionRef.current.id === sessionId) {
+          editorSessionRef.current = { id: sessionId, targetId: saved.id };
+          setEditing(saved);
+          setBaseline(nextBaseline);
+          setForm((prev) => {
+            if (
+              prev.name === snapshot.name &&
+              prev.role === snapshot.role &&
+              prev.profile === snapshot.profile &&
+              prev.notes === snapshot.notes
+            ) {
+              return nextBaseline;
+            }
+            return prev;
+          });
+        }
 
         markWizardProjectChanged(projectId);
         bumpWizardLocal();
         if (silent) scheduleWizardRefresh();
         else await refreshWizard();
         if (!silent) toast.toastSuccess("已保存");
-        if (close) setDrawerOpen(false);
+        if (close && editorSessionRef.current.id === sessionId) setDrawerOpen(false);
         return true;
       } catch (err) {
         const apiErr = err as ApiError;
         toast.toastError(`${apiErr.message} (${apiErr.code})`, apiErr.requestId);
         return false;
-      } finally {
-        setSaving(false);
-        savingRef.current = false;
-        if (queuedSaveRef.current) {
-          const queued = queuedSaveRef.current;
-          queuedSaveRef.current = null;
-          void saveCharacter({ silent: queued.silent, close: queued.close, snapshot: queued.snapshot });
-        }
       }
     },
-    [bumpWizardLocal, editing, form, projectId, refreshWizard, setCharacters, toast],
+    [bumpWizardLocal, projectId, refreshWizard, setCharacters, toast],
+  );
+
+  const { save: queueCharacterSave, saving } = useQueuedSave(performSaveCharacter);
+  const saveCharacter = useCallback(
+    (opts?: { silent?: boolean; close?: boolean; snapshot?: CharacterForm }) =>
+      queueCharacterSave({
+        silent: Boolean(opts?.silent),
+        close: Boolean(opts?.close),
+        snapshot: { ...(opts?.snapshot ?? form) },
+        sessionId: editorSessionRef.current.id,
+        targetId: editorSessionRef.current.targetId,
+      }),
+    [form, queueCharacterSave],
   );
 
   useAutoSave({
