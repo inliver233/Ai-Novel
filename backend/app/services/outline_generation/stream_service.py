@@ -11,10 +11,22 @@ from app.core.logging import log_event
 from app.llm.client import call_llm_stream_messages
 from app.schemas.outline_generate import OutlineGenerateRequest
 from app.services.generation_service import call_llm_and_record, with_param_overrides
+from app.services.outline_generation.chapter_ops import (
+    _clone_outline_chapters,
+    _dedupe_warnings,
+    _enforce_outline_chapter_coverage,
+    _normalize_outline_chapters,
+)
 from app.services.outline_generation.fill_service import _fill_outline_missing_chapters_with_llm
 from app.services.outline_generation.models import PreparedOutlineGeneration
+from app.services.outline_generation.policy import (
+    OUTLINE_FILL_HEARTBEAT_INTERVAL_SECONDS,
+    OUTLINE_FILL_POLL_INTERVAL_SECONDS,
+    _outline_fill_progress_message,
+    _outline_segment_progress_message,
+    _should_use_outline_segmented_mode,
+)
 from app.services.outline_generation.prepare_service import _write_outline_segmented_aggregate_run
-from app.services.outline_generation.route_bridge import _outline_route
 from app.services.outline_generation.stream_finalize_service import (
     finalize_outline_stream_result,
     finalize_segmented_outline_stream_result,
@@ -47,7 +59,6 @@ def generate_outline_stream_events(
     user_id: str,
     prepared: PreparedOutlineGeneration,
 ):
-    outline_route = _outline_route()
 
     yield sse_progress(message="准备生成...", progress=0)
 
@@ -61,7 +72,7 @@ def generate_outline_stream_events(
     run_params_extra_json = prepared.run_params_extra_json
     run_params_json = prepared.run_params_json
 
-    if outline_route._should_use_outline_segmented_mode(target_chapter_count):
+    if _should_use_outline_segmented_mode(target_chapter_count):
         if target_chapter_count is None:
             yield sse_error(error="长篇分段模式参数异常", code=500)
             yield sse_done()
@@ -94,9 +105,9 @@ def generate_outline_stream_events(
                 future=future,
                 progress_events=segment_progress_events,
                 progress_lock=segment_progress_lock,
-                heartbeat_interval=outline_route.OUTLINE_FILL_HEARTBEAT_INTERVAL_SECONDS,
-                poll_interval=outline_route.OUTLINE_FILL_POLL_INTERVAL_SECONDS,
-                progress_message_builder=outline_route._outline_segment_progress_message,
+                heartbeat_interval=OUTLINE_FILL_HEARTBEAT_INTERVAL_SECONDS,
+                poll_interval=OUTLINE_FILL_POLL_INTERVAL_SECONDS,
+                progress_message_builder=_outline_segment_progress_message,
             )
 
             segmented = future.result()
@@ -120,7 +131,7 @@ def generate_outline_stream_events(
         result_data = finalize_segmented_outline_stream_result(
             segmented=segmented,
             aggregate_run_id=aggregate_run_id,
-            dedupe_warnings=outline_route._dedupe_warnings,
+            dedupe_warnings=_dedupe_warnings,
         )
 
         yield sse_progress(message="完成", progress=100, status="success")
@@ -262,18 +273,18 @@ def generate_outline_stream_events(
                 warnings.append("outline_fix_json_failed")
 
         if parse_error is None:
-            data, coverage_warnings = outline_route._enforce_outline_chapter_coverage(
+            data, coverage_warnings = _enforce_outline_chapter_coverage(
                 data=data,
                 target_chapter_count=target_chapter_count,
             )
             warnings.extend(coverage_warnings)
             preview_outline_md = str(data.get("outline_md") or "")
-            preview_chapters, _preview_warnings = outline_route._normalize_outline_chapters(data.get("chapters"))
+            preview_chapters, _preview_warnings = _normalize_outline_chapters(data.get("chapters"))
             if preview_chapters:
                 yield sse_result(
                     {
                         "outline_md": preview_outline_md,
-                        "chapters": outline_route._clone_outline_chapters(preview_chapters),
+                        "chapters": _clone_outline_chapters(preview_chapters),
                     }
                 )
             if target_chapter_count:
@@ -304,9 +315,9 @@ def generate_outline_stream_events(
                     future=fill_future,
                     progress_events=fill_progress_events,
                     progress_lock=fill_progress_lock,
-                    heartbeat_interval=outline_route.OUTLINE_FILL_HEARTBEAT_INTERVAL_SECONDS,
-                    poll_interval=outline_route.OUTLINE_FILL_POLL_INTERVAL_SECONDS,
-                    progress_message_builder=outline_route._outline_fill_progress_message,
+                    heartbeat_interval=OUTLINE_FILL_HEARTBEAT_INTERVAL_SECONDS,
+                    poll_interval=OUTLINE_FILL_POLL_INTERVAL_SECONDS,
+                    progress_message_builder=_outline_fill_progress_message,
                     preview_outline_md=preview_outline_md,
                 )
 
@@ -326,7 +337,7 @@ def generate_outline_stream_events(
             latency_ms=latency_ms,
             dropped_params=dropped_params,
             generation_run_id=generation_run_id,
-            dedupe_warnings=outline_route._dedupe_warnings,
+            dedupe_warnings=_dedupe_warnings,
         )
 
         yield sse_progress(message="完成", progress=100, status="success")

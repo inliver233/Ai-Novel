@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 
-from app.api.routes.outline_route_chapter_helpers import (
+from app.services.outline_generation.chapter_ops import (
     _build_missing_neighbor_context,
     _build_outline_segment_chapter_index,
     _build_outline_segment_recent_window,
@@ -12,7 +12,7 @@ from app.api.routes.outline_route_chapter_helpers import (
     _outline_fill_detail_rule,
     _outline_fill_style_samples,
 )
-from app.api.routes.outline_route_policy import OUTLINE_STREAM_RAW_PREVIEW_MAX_CHARS
+from app.services.outline_generation.policy import OUTLINE_STREAM_RAW_PREVIEW_MAX_CHARS
 from app.services.output_parsers import extract_json_value, likely_truncated_json
 
 

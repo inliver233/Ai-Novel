@@ -4,9 +4,28 @@ import logging
 
 from app.core.errors import AppError
 from app.services.generation_service import PreparedLlmCall, call_llm_and_record, with_param_overrides
+from app.services.outline_generation.chapter_ops import (
+    _clone_outline_chapters,
+    _dedupe_warnings,
+    _enforce_outline_chapter_coverage,
+    _extract_outline_chapter_numbers,
+    _format_chapter_number_ranges,
+    _merge_segment_chapters,
+)
 from app.services.outline_generation.fill_service import _fill_outline_missing_chapters_with_llm
 from app.services.outline_generation.models import OutlineSegmentGenerationResult, OutlineSegmentProgressHook
-from app.services.outline_generation.route_bridge import _outline_route
+from app.services.outline_generation.policy import (
+    OUTLINE_SEGMENT_STAGNANT_ATTEMPTS_LIMIT,
+    _outline_segment_batch_size_for_target,
+    _outline_segment_batches,
+    _outline_segment_max_attempts_for_batch,
+    _recommend_outline_segment_max_tokens,
+)
+from app.services.outline_generation.prompt_builder import (
+    _build_outline_segment_prompts,
+    _build_outline_stream_raw_preview,
+    _parse_outline_batch_output,
+)
 from app.services.output_contracts import contract_for_task
 
 logger = logging.getLogger("ainovel")
@@ -25,8 +44,6 @@ def _generate_outline_segmented_with_llm(
     run_params_extra_json: dict[str, object] | None,
     progress_hook: OutlineSegmentProgressHook | None = None,
 ) -> OutlineSegmentGenerationResult:
-    outline_route = _outline_route()
-
     warnings: list[str] = ["outline_segment_mode_enabled"]
     run_ids: list[str] = []
     dropped_params: list[str] = []
@@ -34,8 +51,8 @@ def _generate_outline_segmented_with_llm(
     latency_ms_total = 0
     outline_md = ""
     chapters_by_number: dict[int, dict[str, object]] = {}
-    batch_size = outline_route._outline_segment_batch_size_for_target(target_chapter_count)
-    batches = outline_route._outline_segment_batches(target_chapter_count, batch_size=batch_size)
+    batch_size = _outline_segment_batch_size_for_target(target_chapter_count)
+    batches = _outline_segment_batches(target_chapter_count, batch_size=batch_size)
     batch_count = len(batches)
     parse_error: dict[str, object] | None = None
 
@@ -62,7 +79,7 @@ def _generate_outline_segmented_with_llm(
         missing_numbers = [n for n in batch if n not in chapters_by_number]
         if not missing_numbers:
             continue
-        max_attempts = outline_route._outline_segment_max_attempts_for_batch(len(batch))
+        max_attempts = _outline_segment_max_attempts_for_batch(len(batch))
         stagnant_attempts = 0
         attempt = 0
         last_failure_reason: str | None = None
@@ -70,7 +87,7 @@ def _generate_outline_segmented_with_llm(
 
         while missing_numbers and attempt < max_attempts:
             attempt += 1
-            range_text = outline_route._format_chapter_number_ranges(batch)
+            range_text = _format_chapter_number_ranges(batch)
             _emit_progress(
                 {
                     "event": "batch_attempt_start",
@@ -86,7 +103,7 @@ def _generate_outline_segmented_with_llm(
                 }
             )
             existing = [chapters_by_number[n] for n in sorted(chapters_by_number.keys())]
-            segment_system, segment_user = outline_route._build_outline_segment_prompts(
+            segment_system, segment_user = _build_outline_segment_prompts(
                 base_prompt_system=prompt_system,
                 base_prompt_user=prompt_user,
                 target_chapter_count=target_chapter_count,
@@ -101,7 +118,7 @@ def _generate_outline_segmented_with_llm(
 
             current_max_tokens = llm_call.params.get("max_tokens")
             current_max_tokens_int = int(current_max_tokens) if isinstance(current_max_tokens, int) else None
-            segment_max_tokens = outline_route._recommend_outline_segment_max_tokens(
+            segment_max_tokens = _recommend_outline_segment_max_tokens(
                 requested_count=len(missing_numbers),
                 provider=llm_call.provider,
                 model=llm_call.model,
@@ -154,7 +171,7 @@ def _generate_outline_segmented_with_llm(
                         + int(min(1.0, len(chapters_by_number) / max(1, target_chapter_count)) * 70),
                     }
                 )
-                if stagnant_attempts >= outline_route.OUTLINE_SEGMENT_STAGNANT_ATTEMPTS_LIMIT:
+                if stagnant_attempts >= OUTLINE_SEGMENT_STAGNANT_ATTEMPTS_LIMIT:
                     break
                 continue
 
@@ -166,10 +183,10 @@ def _generate_outline_segmented_with_llm(
             for item in segment_res.dropped_params:
                 if item not in dropped_params:
                     dropped_params.append(item)
-            segment_raw_preview = outline_route._build_outline_stream_raw_preview(segment_res.text)
+            segment_raw_preview = _build_outline_stream_raw_preview(segment_res.text)
             segment_raw_chars = len(segment_res.text or "")
 
-            parsed_data, parsed_warnings, parsed_error = outline_route._parse_outline_batch_output(
+            parsed_data, parsed_warnings, parsed_error = _parse_outline_batch_output(
                 text=segment_res.text,
                 finish_reason=segment_res.finish_reason,
                 fallback_outline_md=outline_md,
@@ -200,7 +217,7 @@ def _generate_outline_segmented_with_llm(
                     }
                 )
                 stagnant_attempts += 1
-                if stagnant_attempts >= outline_route.OUTLINE_SEGMENT_STAGNANT_ATTEMPTS_LIMIT:
+                if stagnant_attempts >= OUTLINE_SEGMENT_STAGNANT_ATTEMPTS_LIMIT:
                     break
                 continue
 
@@ -210,8 +227,8 @@ def _generate_outline_segmented_with_llm(
 
             incoming = parsed_data.get("chapters")
             incoming_chapters = incoming if isinstance(incoming, list) else []
-            incoming_numbers = outline_route._extract_outline_chapter_numbers(incoming_chapters, limit=120)
-            accepted, accepted_numbers = outline_route._merge_segment_chapters(
+            incoming_numbers = _extract_outline_chapter_numbers(incoming_chapters, limit=120)
+            accepted, accepted_numbers = _merge_segment_chapters(
                 by_number=chapters_by_number,
                 incoming=incoming_chapters,
                 allowed_numbers=set(missing_numbers),
@@ -236,7 +253,7 @@ def _generate_outline_segmented_with_llm(
                         "max_attempts": max_attempts,
                         "range": range_text,
                         "incoming_numbers": incoming_numbers,
-                        "incoming_numbers_text": outline_route._format_chapter_number_ranges(incoming_numbers),
+                        "incoming_numbers_text": _format_chapter_number_ranges(incoming_numbers),
                         "target_chapter_count": target_chapter_count,
                         "completed_count": len(chapters_by_number),
                         "remaining_count": target_chapter_count - len(chapters_by_number),
@@ -248,7 +265,7 @@ def _generate_outline_segmented_with_llm(
                     }
                 )
                 stagnant_attempts += 1
-                if stagnant_attempts >= outline_route.OUTLINE_SEGMENT_STAGNANT_ATTEMPTS_LIMIT:
+                if stagnant_attempts >= OUTLINE_SEGMENT_STAGNANT_ATTEMPTS_LIMIT:
                     break
                 continue
 
@@ -257,7 +274,7 @@ def _generate_outline_segmented_with_llm(
             last_output_numbers = None
             stagnant_attempts = 0
             missing_numbers = [n for n in batch if n not in chapters_by_number]
-            chapters_snapshot = outline_route._clone_outline_chapters(
+            chapters_snapshot = _clone_outline_chapters(
                 [chapters_by_number[n] for n in sorted(chapters_by_number.keys())]
             )
             _emit_progress(
@@ -284,7 +301,7 @@ def _generate_outline_segmented_with_llm(
 
         if missing_numbers:
             warnings.append("outline_segment_batch_incomplete")
-            chapters_snapshot = outline_route._clone_outline_chapters(
+            chapters_snapshot = _clone_outline_chapters(
                 [chapters_by_number[n] for n in sorted(chapters_by_number.keys())]
             )
             _emit_progress(
@@ -292,7 +309,7 @@ def _generate_outline_segmented_with_llm(
                     "event": "batch_incomplete",
                     "batch_index": batch_index,
                     "batch_count": batch_count,
-                    "range": outline_route._format_chapter_number_ranges(batch),
+                    "range": _format_chapter_number_ranges(batch),
                     "target_chapter_count": target_chapter_count,
                     "completed_count": len(chapters_snapshot),
                     "remaining_count": target_chapter_count - len(chapters_snapshot),
@@ -305,7 +322,7 @@ def _generate_outline_segmented_with_llm(
         outline_md = "## AI 大纲\n\n- 分段生成完成，请按需要补充总纲摘要。"
         warnings.append("outline_segment_outline_md_fallback")
     data: dict[str, object] = {"outline_md": outline_md, "chapters": chapters_now}
-    data, coverage_warnings = outline_route._enforce_outline_chapter_coverage(
+    data, coverage_warnings = _enforce_outline_chapter_coverage(
         data=data, target_chapter_count=target_chapter_count
     )
     warnings.extend(coverage_warnings)
@@ -376,7 +393,7 @@ def _generate_outline_segmented_with_llm(
     }
     return OutlineSegmentGenerationResult(
         data=data,
-        warnings=outline_route._dedupe_warnings(warnings),
+        warnings=_dedupe_warnings(warnings),
         parse_error=parse_error,
         run_ids=run_ids,
         latency_ms=latency_ms_total,

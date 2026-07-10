@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from app.api.routes.outline_route_policy import (
+from app.services.outline_generation.policy import (
     OUTLINE_SEGMENT_INDEX_MAX_CHARS,
     OUTLINE_SEGMENT_INDEX_MAX_ITEMS,
     OUTLINE_SEGMENT_RECENT_CONTEXT_WINDOW,

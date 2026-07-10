@@ -4,11 +4,31 @@ import logging
 
 from app.core.errors import AppError
 from app.services.generation_service import call_llm_and_record, with_param_overrides
+from app.services.outline_generation.chapter_ops import (
+    _chapter_score,
+    _clone_outline_chapters,
+    _collect_missing_chapter_numbers,
+    _dedupe_warnings,
+    _enforce_outline_chapter_coverage,
+    _extract_outline_chapter_numbers,
+    _format_chapter_number_ranges,
+    _normalize_outline_chapters,
+)
 from app.services.outline_generation.gap_repair_final_sweep_service import (
     _repair_outline_remaining_gaps_final_sweep_with_llm,
 )
 from app.services.outline_generation.models import OutlineFillProgressHook
-from app.services.outline_generation.route_bridge import _outline_route
+from app.services.outline_generation.policy import (
+    OUTLINE_GAP_REPAIR_BATCH_SIZE,
+    OUTLINE_GAP_REPAIR_MAX_MISSING,
+    OUTLINE_GAP_REPAIR_STAGNANT_LIMIT,
+    _outline_gap_repair_max_attempts,
+    _recommend_outline_segment_max_tokens,
+)
+from app.services.outline_generation.prompt_builder import (
+    _build_outline_gap_repair_prompts,
+    _build_outline_stream_raw_preview,
+)
 from app.services.output_contracts import contract_for_task
 
 logger = logging.getLogger("ainovel")
@@ -26,15 +46,13 @@ def _repair_outline_remaining_gaps_with_llm(
     run_params_extra_json: dict[str, object] | None,
     progress_hook: OutlineFillProgressHook | None = None,
 ) -> tuple[dict[str, object], list[str], list[str]]:
-    outline_route = _outline_route()
-
     if not target_chapter_count or target_chapter_count <= 0:
         return data, [], []
-    chapters_now, normalize_warnings = outline_route._normalize_outline_chapters(data.get("chapters"))
+    chapters_now, normalize_warnings = _normalize_outline_chapters(data.get("chapters"))
     if not chapters_now:
         return data, normalize_warnings, []
 
-    missing_numbers = outline_route._collect_missing_chapter_numbers(
+    missing_numbers = _collect_missing_chapter_numbers(
         chapters_now, target_chapter_count=target_chapter_count
     )
     if not missing_numbers:
@@ -42,11 +60,11 @@ def _repair_outline_remaining_gaps_with_llm(
 
     warnings: list[str] = list(normalize_warnings)
     run_ids: list[str] = []
-    if len(missing_numbers) > outline_route.OUTLINE_GAP_REPAIR_MAX_MISSING:
+    if len(missing_numbers) > OUTLINE_GAP_REPAIR_MAX_MISSING:
         warnings.append("outline_gap_repair_skipped_too_many_missing")
-        return data, outline_route._dedupe_warnings(warnings), run_ids
+        return data, _dedupe_warnings(warnings), run_ids
 
-    max_attempts = outline_route._outline_gap_repair_max_attempts(len(missing_numbers))
+    max_attempts = _outline_gap_repair_max_attempts(len(missing_numbers))
     contract = contract_for_task("outline_generate")
     attempt = 0
     stagnant_rounds = 0
@@ -64,13 +82,13 @@ def _repair_outline_remaining_gaps_with_llm(
         )
 
     while attempt < max_attempts:
-        missing_numbers = outline_route._collect_missing_chapter_numbers(
+        missing_numbers = _collect_missing_chapter_numbers(
             chapters_now, target_chapter_count=target_chapter_count
         )
         if not missing_numbers:
             break
         attempt += 1
-        batch_missing = missing_numbers[: outline_route.OUTLINE_GAP_REPAIR_BATCH_SIZE]
+        batch_missing = missing_numbers[: OUTLINE_GAP_REPAIR_BATCH_SIZE]
         if progress_hook is not None:
             progress_hook(
                 {
@@ -79,11 +97,11 @@ def _repair_outline_remaining_gaps_with_llm(
                     "max_attempts": max_attempts,
                     "batch_size": len(batch_missing),
                     "remaining_count": len(missing_numbers),
-                    "range": outline_route._format_chapter_number_ranges(batch_missing),
+                    "range": _format_chapter_number_ranges(batch_missing),
                 }
             )
 
-        repair_system, repair_user = outline_route._build_outline_gap_repair_prompts(
+        repair_system, repair_user = _build_outline_gap_repair_prompts(
             target_chapter_count=target_chapter_count,
             batch_missing=batch_missing,
             existing_chapters=chapters_now,
@@ -96,7 +114,7 @@ def _repair_outline_remaining_gaps_with_llm(
 
         current_max_tokens = llm_call.params.get("max_tokens")
         current_max_tokens_int = int(current_max_tokens) if isinstance(current_max_tokens, int) else None
-        repair_max_tokens = outline_route._recommend_outline_segment_max_tokens(
+        repair_max_tokens = _recommend_outline_segment_max_tokens(
             requested_count=len(batch_missing),
             provider=llm_call.provider,
             model=llm_call.model,
@@ -140,12 +158,12 @@ def _repair_outline_remaining_gaps_with_llm(
                         "remaining_count": len(missing_numbers),
                     }
                 )
-            if stagnant_rounds >= outline_route.OUTLINE_GAP_REPAIR_STAGNANT_LIMIT:
+            if stagnant_rounds >= OUTLINE_GAP_REPAIR_STAGNANT_LIMIT:
                 break
             continue
 
         run_ids.append(repaired.run_id)
-        raw_preview = outline_route._build_outline_stream_raw_preview(repaired.text)
+        raw_preview = _build_outline_stream_raw_preview(repaired.text)
         raw_chars = len(repaired.text or "")
         repaired_parsed = contract.parse(repaired.text, finish_reason=repaired.finish_reason)
         repaired_data, repaired_warnings, repaired_error = (
@@ -170,19 +188,19 @@ def _repair_outline_remaining_gaps_with_llm(
                         "raw_output_chars": raw_chars,
                     }
                 )
-            if stagnant_rounds >= outline_route.OUTLINE_GAP_REPAIR_STAGNANT_LIMIT:
+            if stagnant_rounds >= OUTLINE_GAP_REPAIR_STAGNANT_LIMIT:
                 break
             continue
 
-        incoming, incoming_warnings = outline_route._normalize_outline_chapters(repaired_data.get("chapters"))
+        incoming, incoming_warnings = _normalize_outline_chapters(repaired_data.get("chapters"))
         warnings.extend(incoming_warnings)
-        incoming_numbers = outline_route._extract_outline_chapter_numbers(incoming, limit=120)
+        incoming_numbers = _extract_outline_chapter_numbers(incoming, limit=120)
         if not incoming:
             warnings.append("outline_gap_repair_empty")
             last_failure_reason = "未输出可识别章节"
             last_output_numbers = incoming_numbers
             stagnant_rounds += 1
-            if stagnant_rounds >= outline_route.OUTLINE_GAP_REPAIR_STAGNANT_LIMIT:
+            if stagnant_rounds >= OUTLINE_GAP_REPAIR_STAGNANT_LIMIT:
                 break
             continue
 
@@ -202,7 +220,7 @@ def _repair_outline_remaining_gaps_with_llm(
                 accepted += 1
                 accepted_numbers.append(number)
                 continue
-            if outline_route._chapter_score(chapter) > outline_route._chapter_score(previous):
+            if _chapter_score(chapter) > _chapter_score(previous):
                 by_number[number] = chapter
 
         if accepted <= 0:
@@ -222,10 +240,10 @@ def _repair_outline_remaining_gaps_with_llm(
                         "remaining_count": len(missing_numbers),
                         "raw_output_preview": raw_preview,
                         "raw_output_chars": raw_chars,
-                        "incoming_numbers_text": outline_route._format_chapter_number_ranges(incoming_numbers),
+                        "incoming_numbers_text": _format_chapter_number_ranges(incoming_numbers),
                     }
                 )
-            if stagnant_rounds >= outline_route.OUTLINE_GAP_REPAIR_STAGNANT_LIMIT:
+            if stagnant_rounds >= OUTLINE_GAP_REPAIR_STAGNANT_LIMIT:
                 break
             continue
 
@@ -235,7 +253,7 @@ def _repair_outline_remaining_gaps_with_llm(
         last_output_numbers = None
         chapters_now = [by_number[n] for n in sorted(by_number.keys())]
         remaining = len(
-            outline_route._collect_missing_chapter_numbers(
+            _collect_missing_chapter_numbers(
                 chapters_now, target_chapter_count=target_chapter_count
             )
         )
@@ -247,7 +265,7 @@ def _repair_outline_remaining_gaps_with_llm(
                     "max_attempts": max_attempts,
                     "accepted": accepted,
                     "accepted_numbers": accepted_numbers,
-                    "chapters_snapshot": outline_route._clone_outline_chapters(chapters_now),
+                    "chapters_snapshot": _clone_outline_chapters(chapters_now),
                     "chapter_count": len(chapters_now),
                     "remaining_count": remaining,
                     "raw_output_preview": raw_preview,
@@ -256,7 +274,7 @@ def _repair_outline_remaining_gaps_with_llm(
             )
 
     data["chapters"] = chapters_now
-    data, coverage_warnings = outline_route._enforce_outline_chapter_coverage(
+    data, coverage_warnings = _enforce_outline_chapter_coverage(
         data=data, target_chapter_count=target_chapter_count
     )
     warnings.extend(coverage_warnings)
@@ -281,7 +299,7 @@ def _repair_outline_remaining_gaps_with_llm(
             if run_id not in run_ids:
                 run_ids.append(run_id)
         data["chapters"] = chapters_now
-        data, final_coverage_warnings = outline_route._enforce_outline_chapter_coverage(
+        data, final_coverage_warnings = _enforce_outline_chapter_coverage(
             data=data, target_chapter_count=target_chapter_count
         )
         warnings.extend(final_coverage_warnings)
@@ -303,4 +321,4 @@ def _repair_outline_remaining_gaps_with_llm(
                 "remaining_count": remaining_count,
             }
         )
-    return data, outline_route._dedupe_warnings(warnings), run_ids
+    return data, _dedupe_warnings(warnings), run_ids

@@ -9,22 +9,26 @@ from unittest.mock import patch
 
 import pytest
 
-from app.api.routes.outline import (
-    OUTLINE_SEGMENT_INDEX_MAX_CHARS,
-    _build_outline_missing_chapters_prompts,
+from app.services.outline_generation.chapter_ops import (
     _build_outline_segment_chapter_index,
-    _build_outline_segment_prompts,
-    _build_outline_generation_guidance,
     _enforce_outline_chapter_coverage,
-    _extract_target_chapter_count,
     _format_chapter_number_ranges,
+)
+from app.services.outline_generation.policy import (
+    OUTLINE_SEGMENT_INDEX_MAX_CHARS,
+    _build_outline_generation_guidance,
+    _extract_target_chapter_count,
     _outline_fill_batch_size_for_missing,
     _outline_fill_max_attempts_for_missing,
     _outline_segment_batch_size_for_target,
-    _parse_outline_batch_output,
     _recommend_outline_max_tokens,
-    _strip_segment_conflicting_prompt_sections,
     _should_use_outline_segmented_mode,
+)
+from app.services.outline_generation.prompt_builder import (
+    _build_outline_missing_chapters_prompts,
+    _build_outline_segment_prompts,
+    _parse_outline_batch_output,
+    _strip_segment_conflicting_prompt_sections,
 )
 from app.core.errors import AppError
 from app.llm.capabilities import max_output_tokens_limit

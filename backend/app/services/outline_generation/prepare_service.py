@@ -13,7 +13,11 @@ from app.schemas.outline_generate import OutlineGenerateRequest
 from app.services.generation_service import PreparedLlmCall, build_run_params_json, with_param_overrides
 from app.services.llm_task_preset_resolver import resolve_task_llm_config
 from app.services.outline_generation.models import PreparedOutlineGeneration
-from app.services.outline_generation.route_bridge import _outline_route
+from app.services.outline_generation.policy import (
+    _build_outline_generation_guidance,
+    _extract_target_chapter_count,
+    _recommend_outline_max_tokens,
+)
 from app.services.prompt_presets import render_preset_for_task
 from app.services.prompt_store import format_characters
 from app.services.run_store import write_generation_run
@@ -29,7 +33,6 @@ def prepare_outline_generation(
     x_llm_provider: str | None,
     x_llm_api_key: str | None,
 ) -> PreparedOutlineGeneration:
-    outline_route = _outline_route()
 
     with SessionLocal() as db:
         project = require_project_editor(db, project_id=project_id, user_id=user_id)
@@ -73,8 +76,8 @@ def prepare_outline_generation(
         if body.context.include_characters:
             chars = db.execute(select(Character).where(Character.project_id == project_id)).scalars().all()
         characters_text = format_characters(chars)
-        target_chapter_count = outline_route._extract_target_chapter_count(body.requirements)
-        guidance = outline_route._build_outline_generation_guidance(target_chapter_count)
+        target_chapter_count = _extract_target_chapter_count(body.requirements)
+        guidance = _build_outline_generation_guidance(target_chapter_count)
 
         requirements_text = json.dumps(body.requirements or {}, ensure_ascii=False, indent=2)
         values: dict[str, object] = {
@@ -110,7 +113,7 @@ def prepare_outline_generation(
         llm_call = resolved_outline.llm_call
         current_max_tokens = llm_call.params.get("max_tokens")
         current_max_tokens_int = int(current_max_tokens) if isinstance(current_max_tokens, int) else None
-        wanted_max_tokens = outline_route._recommend_outline_max_tokens(
+        wanted_max_tokens = _recommend_outline_max_tokens(
             target_chapter_count=target_chapter_count,
             provider=llm_call.provider,
             model=llm_call.model,

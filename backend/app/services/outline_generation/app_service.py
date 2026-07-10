@@ -5,14 +5,15 @@ import logging
 from app.core.errors import AppError
 from app.schemas.outline_generate import OutlineGenerateRequest
 from app.services.generation_service import call_llm_and_record, with_param_overrides
+from app.services.outline_generation.chapter_ops import _dedupe_warnings, _enforce_outline_chapter_coverage
 from app.services.outline_generation.fill_service import _fill_outline_missing_chapters_with_llm
 from app.services.outline_generation.models import OutlineSegmentGenerationResult, PreparedOutlineGeneration
+from app.services.outline_generation.policy import _should_use_outline_segmented_mode
 from app.services.outline_generation.prepare_service import (
     _build_outline_segment_aggregate_output_text,
     _write_outline_segmented_aggregate_run,
     prepare_outline_generation,
 )
-from app.services.outline_generation.route_bridge import _outline_route
 from app.services.outline_generation.segment_service import _generate_outline_segmented_with_llm
 from app.services.outline_generation.stream_service import generate_outline_stream_events
 from app.services.output_contracts import build_repair_prompt_for_task, contract_for_task
@@ -29,7 +30,6 @@ def generate_outline(
     x_llm_provider: str | None,
     x_llm_api_key: str | None,
 ) -> dict[str, object]:
-    outline_route = _outline_route()
     prepared = prepare_outline_generation(
         project_id=project_id,
         body=body,
@@ -39,7 +39,7 @@ def generate_outline(
         x_llm_api_key=x_llm_api_key,
     )
 
-    if outline_route._should_use_outline_segmented_mode(prepared.target_chapter_count):
+    if _should_use_outline_segmented_mode(prepared.target_chapter_count):
         assert prepared.target_chapter_count is not None
         segmented = _generate_outline_segmented_with_llm(
             request_id=request_id,
@@ -69,7 +69,7 @@ def generate_outline(
             meta=segmented.meta,
         )
         data = dict(segmented.data)
-        warnings = outline_route._dedupe_warnings(segmented.warnings)
+        warnings = _dedupe_warnings(segmented.warnings)
         if warnings:
             data["warnings"] = warnings
         if segmented.parse_error is not None:
@@ -151,7 +151,7 @@ def generate_outline(
             warnings.append("outline_fix_json_failed")
 
     if parse_error is None:
-        data, coverage_warnings = outline_route._enforce_outline_chapter_coverage(
+        data, coverage_warnings = _enforce_outline_chapter_coverage(
             data=data,
             target_chapter_count=prepared.target_chapter_count,
         )
@@ -173,7 +173,7 @@ def generate_outline(
                 coverage["fill_run_ids"] = fill_run_ids
                 data["chapter_coverage"] = coverage
 
-    warnings = outline_route._dedupe_warnings(warnings)
+    warnings = _dedupe_warnings(warnings)
     if warnings:
         data["warnings"] = warnings
     if parse_error is not None:
