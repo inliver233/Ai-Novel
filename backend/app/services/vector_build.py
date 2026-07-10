@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-import math
 import logging
 import re
 import time
@@ -29,6 +28,15 @@ from app.services.embedding_service import (
     resolve_embedding_config,
 )
 from app.services.project_task_event_service import emit_and_enqueue_project_task, reset_project_task_to_queued
+from app.services.vector_chroma_fallback import (
+    _INMEMORY_CHROMA,
+    _INMEMORY_CHROMADB,
+    _InMemoryChromaModule,
+    _InMemoryClient,
+    _InMemoryCollection,
+    _cosine_distance,
+    load_chromadb_or_fallback as _import_chromadb,
+)
 
 logger = logging.getLogger("ainovel")
 VectorSource = Literal["worldbook", "outline", "chapter", "story_memory"]
@@ -237,171 +245,6 @@ def schedule_vector_rebuild_task(
     finally:
         if owns_session:
             db.close()
-
-
-def _import_chromadb() -> Any:
-    try:
-        import chromadb  # type: ignore[import-not-found]
-
-        return chromadb
-    except Exception:  # pragma: no cover - env dependent
-        return _INMEMORY_CHROMADB
-
-
-def _cosine_distance(a: list[float], b: list[float]) -> float:
-    if not a or not b:
-        return 1.0
-    n = min(len(a), len(b))
-    if n <= 0:
-        return 1.0
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for i in range(n):
-        av = float(a[i])
-        bv = float(b[i])
-        dot += av * bv
-        na += av * av
-        nb += bv * bv
-    if na <= 0.0 or nb <= 0.0:
-        return 1.0
-    sim = dot / (math.sqrt(na) * math.sqrt(nb))
-    if sim > 1.0:
-        sim = 1.0
-    if sim < -1.0:
-        sim = -1.0
-    return 1.0 - sim
-
-
-class _InMemoryCollection:
-    def __init__(self, *, name: str, metadata: dict[str, Any] | None = None):
-        self._name = str(name)
-        self._metadata = dict(metadata or {})
-        self._docs: dict[str, str] = {}
-        self._metas: dict[str, dict[str, Any]] = {}
-        self._embs: dict[str, list[float]] = {}
-
-    def upsert(
-        self,
-        *,
-        ids: list[str],
-        documents: list[str] | None = None,
-        metadatas: list[dict[str, Any]] | None = None,
-        embeddings: list[list[float]] | None = None,
-    ) -> None:
-        documents = documents or []
-        metadatas = metadatas or []
-        embeddings = embeddings or []
-        for idx, raw_id in enumerate(ids or []):
-            doc = documents[idx] if idx < len(documents) else ""
-            meta = metadatas[idx] if idx < len(metadatas) and isinstance(metadatas[idx], dict) else {}
-            emb = embeddings[idx] if idx < len(embeddings) else []
-            rid = str(raw_id)
-            self._docs[rid] = str(doc or "")
-            self._metas[rid] = dict(meta)
-            self._embs[rid] = [float(x) for x in (emb or [])]
-
-    def query(
-        self,
-        *,
-        query_embeddings: list[list[float]],
-        n_results: int,
-        where: dict[str, Any] | None = None,
-        include: list[str] | None = None,
-    ) -> dict[str, Any]:
-        q = query_embeddings[0] if query_embeddings else []
-        where = where or {}
-
-        def _meta_match(meta: dict[str, Any]) -> bool:
-            for k, v in where.items():
-                if str(meta.get(k)) != str(v):
-                    return False
-            return True
-
-        scored: list[tuple[float, str]] = []
-        for rid, emb in self._embs.items():
-            meta = self._metas.get(rid) or {}
-            if where and not _meta_match(meta):
-                continue
-            dist = _cosine_distance(q, emb)
-            scored.append((dist, rid))
-
-        scored.sort(key=lambda x: x[0])
-        top = scored[: max(0, int(n_results))]
-
-        ids = [rid for _, rid in top]
-        docs = [self._docs.get(rid, "") for rid in ids]
-        metas = [self._metas.get(rid, {}) for rid in ids]
-        dists = [float(dist) for dist, _ in top]
-
-        return {
-            "ids": [ids],
-            "documents": [docs],
-            "metadatas": [metas],
-            "distances": [dists],
-        }
-
-    def get(
-        self,
-        *,
-        include: list[str] | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> dict[str, Any]:
-        ids = list(self._docs.keys())
-        off = max(0, int(offset or 0))
-        lim = int(limit) if limit is not None else None
-        sliced = ids[off : off + lim] if lim is not None else ids[off:]
-
-        out: dict[str, Any] = {"ids": sliced}
-        inc = set(include or [])
-        if not include or "documents" in inc:
-            out["documents"] = [self._docs.get(rid, "") for rid in sliced]
-        if not include or "metadatas" in inc:
-            out["metadatas"] = [self._metas.get(rid, {}) for rid in sliced]
-        if not include or "embeddings" in inc:
-            out["embeddings"] = [self._embs.get(rid, []) for rid in sliced]
-        return out
-
-
-_INMEMORY_CHROMA: dict[str, dict[str, _InMemoryCollection]] = {}
-
-
-class _InMemoryClient:
-    def __init__(self, *, path: str):
-        self._path = str(path or "inmemory")
-        _INMEMORY_CHROMA.setdefault(self._path, {})
-
-    def get_or_create_collection(self, *, name: str, metadata: dict[str, Any] | None = None) -> _InMemoryCollection:
-        store = _INMEMORY_CHROMA.setdefault(self._path, {})
-        key = str(name)
-        col = store.get(key)
-        if col is None:
-            col = _InMemoryCollection(name=key, metadata=metadata)
-            store[key] = col
-        return col
-
-    def get_collection(self, *, name: str) -> _InMemoryCollection:
-        store = _INMEMORY_CHROMA.get(self._path) or {}
-        key = str(name)
-        col = store.get(key)
-        if col is None:
-            raise ValueError("collection does not exist")
-        return col
-
-    def delete_collection(self, *, name: str) -> None:
-        store = _INMEMORY_CHROMA.get(self._path) or {}
-        key = str(name)
-        if key not in store:
-            raise ValueError("collection does not exist")
-        del store[key]
-
-
-class _InMemoryChromaModule:
-    PersistentClient = _InMemoryClient
-
-
-_INMEMORY_CHROMADB = _InMemoryChromaModule()
 
 
 def _normalize_kb_id(kb_id: str | None) -> str:
