@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 // catalog: frontend-pages#P4
-// known_issue：usePromptsPageState.saveAll 的 catch 块对抛出值【不做 instanceof 判定】直接
-// 当作 ApiError 解构，导致非 ApiError 抛出（如上游 TypeError / 未规整化的网络失败）时
-// err.code / err.requestId 为 undefined → toast 文案变成 "boom (undefined)"；而且存在
-// requestId 的异常也可能因裸断言丢失追溯信息。
+// 回归：usePromptsPageState.saveAll 的 catch 块必须先规整化 unknown 错误，禁止直接
+// 当作 ApiError 解构，导致非 ApiError 抛出（如编程错误或其它未规整化异常）时
+// err.code / err.requestId 字段不存在 → toast 文案变成 "boom (undefined)"。规整化必须
+// 为非 ApiError 提供稳定兜底，同时原样保留真实 ApiError 的 code/requestId。
 //
-// 证据：frontend/src/pages/prompts/usePromptsPageState.ts:451-453
+// 修复前证据：performSaveAll catch 曾直接执行以下裸断言：
 //   } catch (e) {
 //     const err = e as ApiError;                                   // ← 裸断言，无 instanceof
 //     toast.toastError(`${err.message} (${err.code})`, err.requestId);
@@ -13,7 +13,8 @@
 //   }
 //
 // 正确行为：任何抛出值必须先规整化为 ApiError（或安全兜底）再取字段，使 toast 永不出现
-// "(undefined)" 子串。TypeError 本身没有 requestId，本测试不要求伪造追踪 ID。
+// "(undefined)" 子串。非 ApiError 没有真实 requestId，规整化只使用 sentinel `unknown`，
+// 不伪造可追溯的请求 ID。
 //
 // 隔离策略（参考 tests/hooks/useQueuedSave.test.tsx 的同款 page-state hook 挂载模式）：
 // heavy 依赖（router/toast/confirm/wizard/autoSave/saveHotkey/persistentOutlet）全部 vi.mock
@@ -82,6 +83,7 @@ vi.mock("@/hooks/useSaveHotkey", () => ({ useSaveHotkey: () => {} }));
 
 import { usePromptsPageState } from "@/pages/prompts/usePromptsPageState";
 import type { LlmForm } from "@/components/prompts/types";
+import { ApiError } from "@/services/apiClient";
 
 // ---- 加载期 GET fixture（reloadAll 一次性并发 6 个 GET）----
 const PRESET_FIXTURE = {
@@ -100,17 +102,18 @@ const PRESET_FIXTURE = {
   extra: {} as Record<string, unknown>,
 };
 
-// 控制位：是否让 PUT /llm_preset 抛出非 ApiError。默认加载期 GET 全成功。
+// 控制位：是否让 PUT /llm_preset 抛出指定错误。默认加载期 GET 全成功。
 let presetPutShouldFail = false;
+let presetPutError: unknown = new TypeError("boom");
 
 function installControlledApiJson() {
   mocks.apiJson.mockImplementation(async (url: string, init?: { method?: string }) => {
     const method = (init?.method ?? "GET").toUpperCase();
     const u = String(url);
 
-    // 触发 bug 的路径：保存时 PUT /llm_preset 抛【非 ApiError】（TypeError）。
+    // 保存失败路径：PUT /llm_preset 抛出当前用例指定的错误。
     if (method === "PUT" && u.includes("/llm_preset")) {
-      if (presetPutShouldFail) throw new TypeError("boom");
+      if (presetPutShouldFail) throw presetPutError;
       return { data: { llm_preset: PRESET_FIXTURE }, request_id: "rid-save-ok" };
     }
 
@@ -132,6 +135,7 @@ function installControlledApiJson() {
 
 beforeEach(() => {
   presetPutShouldFail = false;
+  presetPutError = new TypeError("boom");
   mocks.apiJson.mockReset();
   installControlledApiJson();
   mocks.toast.toastSuccess.mockClear();
@@ -139,50 +143,68 @@ beforeEach(() => {
   mocks.toast.toastError.mockClear();
 });
 
-describe("usePromptsPageState.saveAll catch 应规整化非 ApiError（frontend-pages#P4 known_issue）", () => {
-  it("PUT 抛 TypeError 时，toast 文案不应含 '(undefined)'", { tags: ["@known_issue"] }, async () => {
-    const { result } = renderHook(() => usePromptsPageState());
+async function saveDirtyPresetWithError(error: unknown) {
+  const { result } = renderHook(() => usePromptsPageState());
 
-    // 前置：加载完成（6 个 GET 落定），baseline 已置位。
-    await waitFor(() => {
-      expect(result.current.loading).toBe(false);
-    });
+  await waitFor(() => {
+    expect(result.current.loading).toBe(false);
+  });
 
-    // 制造脏态：把 main 表单 model 改成与 baseline 不同值 → presetDirty 为 true，
-    // 使 saveAll 真正发出 PUT /llm_preset（否则 presetDirty 为假会直接 no-op 返回）。
-    act(() => {
-      result.current.llmPresetPanelProps.setLlmForm((prev: LlmForm) => ({
-        ...prev,
-        model: "dirty-model",
-      }));
-    });
-    await waitFor(() => {
-      expect(result.current.llmPresetPanelProps.presetDirty).toBe(true);
-    });
+  act(() => {
+    result.current.llmPresetPanelProps.setLlmForm((prev: LlmForm) => ({
+      ...prev,
+      model: "dirty-model",
+    }));
+  });
+  await waitFor(() => {
+    expect(result.current.llmPresetPanelProps.presetDirty).toBe(true);
+  });
 
-    // 触发 bug：保存时 PUT 抛【非 ApiError】。
-    presetPutShouldFail = true;
+  presetPutShouldFail = true;
+  presetPutError = error;
 
-    // wizardBarProps.onSave 即 saveAll 本体（return 值直接暴露）。
-    let ok: boolean | undefined;
-    await act(async () => {
-      ok = await result.current.wizardBarProps.onSave!();
-    });
+  let ok: boolean | undefined;
+  await act(async () => {
+    ok = await result.current.wizardBarProps.onSave!();
+  });
 
-    // 前置确认：失败路径确已触发——catch 命中、toastError 被调用、saveAll 返回 false。
-    // 若此处失败说明测试搭建错误而非 bug。
-    expect(ok).toBe(false);
-    expect(mocks.toast.toastError).toHaveBeenCalled();
+  expect(ok).toBe(false);
+  expect(mocks.toast.toastError).toHaveBeenCalled();
+  expect(mocks.apiJson).toHaveBeenCalledWith("/api/projects/p1/llm_preset", expect.objectContaining({ method: "PUT" }));
+  return mocks.toast.toastError.mock.calls.at(-1)!;
+}
 
-    // frontend-pages#P4 正确行为断言：
-    //   1) toast 文案不得等于 "(undefined)"
-    //   2) toast 文案不得包含 "(undefined)" 子串
-    // 非 ApiError 本身可能没有 requestId；正确实现不应伪造追踪 ID。本用例只约束
-    // 错误必须被规整为稳定 code/message，而不是渲染 undefined。
-    const lastCall = mocks.toast.toastError.mock.calls.at(-1)!;
+describe("usePromptsPageState.saveAll error normalization", () => {
+  it("PUT 抛 TypeError 时显示稳定 UNKNOWN 错误", async () => {
+    const lastCall = await saveDirtyPresetWithError(new TypeError("boom"));
     const message = lastCall[0] as string;
 
-    expect(message).not.toBe("(undefined)");
-    expect(message).not.toContain("(undefined)");
+    expect(message).toBe("boom (UNKNOWN)");
+    expect(lastCall[1]).toBe("unknown");
+  });
+
+  it("保留真实 ApiError 的 code 与 requestId", async () => {
+    const lastCall = await saveDirtyPresetWithError(
+      new ApiError({
+        code: "CONFLICT",
+        message: "保存冲突",
+        requestId: "rid-conflict",
+        status: 409,
+      }),
+    );
+
+    expect(lastCall).toEqual(["保存冲突 (CONFLICT)", "rid-conflict"]);
+  });
+
+  it("空抛出值使用稳定兜底文案", async () => {
+    const lastCall = await saveDirtyPresetWithError(null);
+
+    expect(lastCall).toEqual(["请求失败 (UNKNOWN)", "unknown"]);
+  });
+
+  it("字符串抛出值去除首尾空白后保留消息", async () => {
+    const lastCall = await saveDirtyPresetWithError("  string boom  ");
+
+    expect(lastCall).toEqual(["string boom (UNKNOWN)", "unknown"]);
   });
 });
