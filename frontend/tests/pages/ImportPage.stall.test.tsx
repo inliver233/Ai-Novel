@@ -1,10 +1,6 @@
 // @vitest-environment jsdom
-// M45 known_issue：ImportPage 停滞检测失效。
-// ImportPage.tsx:135-138 的 lastUpdateAgoMs = useMemo(() => Date.now() - lastUpdateMs, [lastUpdateMs])，
-// memo deps 仅 [lastUpdateMs]。当后端停滞（status 停在 "running" 但 updated_at 不再更新），lastUpdateMs 恒定
-// → 该 memo 不重算 → Date.now() - lastUpdateMs 只在首次计算（≈0）→ isPollingStalled（:139-143，判断
-// lastUpdateAgoMs >= 5*60_000）永不触发 → 停滞提示/重试按钮永不出现。
-// 本测试断言【正确行为】：running 且 updated_at 超 5 分钟未更新时应出现重试按钮。当前实现有 bug 故 FAILED(红)。
+// M45 回归：ImportPage 必须在 running 文档的 updated_at 停止变化后继续推进墙钟，
+// 并在超过 5 分钟时自动显示停滞告警与重试入口。
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -75,7 +71,7 @@ const detailPayload = {
   story_memory_proposal: null,
 };
 
-describe("ImportPage 停滞检测 (M45 known_issue)", () => {
+describe("ImportPage 停滞检测", () => {
   beforeEach(() => {
     // 用 fake timer 锁定基准时间，使 Date.now() 可控。
     vi.useFakeTimers({ now: BASE_MS });
@@ -97,7 +93,7 @@ describe("ImportPage 停滞检测 (M45 known_issue)", () => {
     vi.useRealTimers();
   });
 
-  it("status=running 且 updated_at 停滞超 5 分钟后应显示重试按钮", { tags: ["@known_issue"] }, async () => {
+  it("status=running 且 updated_at 停滞超 5 分钟后应显示告警与重试按钮", async () => {
     // selectedId 机制：ImportPage 通过 ?docId= 查询参数在挂载 effect 内自动 selectDocAndLoad
     // （见 ImportPage.tsx:319-329）。projectId 来自 useParams（非 prop）。
     render(
@@ -119,14 +115,14 @@ describe("ImportPage 停滞检测 (M45 known_issue)", () => {
     expect(mocks.apiJson).toHaveBeenCalled();
     const initialButtonCount = screen.getAllByRole("button").length;
 
-    // M45 bug 复现：推进 6 分钟+，跨过 5 分钟阈值并触发轮询 re-render（intervalMs=2000）。
-    // 期间 apiJson 仍返回冻结的 updated_at（后端停滞），轮询 setDocuments 触发 re-render 但
-    // lastUpdateAgoMs memo deps=[lastUpdateMs] 不变 → memo 不重算 → 值仍为首次的 ≈0。
+    // 推进 6 分钟+，跨过 5 分钟阈值；期间后端始终返回冻结的 updated_at。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6 * 60_000 + 2000);
     });
 
-    // 正确行为：停滞后 action 区新增一个 retry 按钮。当前 bug 下按钮数不变。
+    // 停滞后 action 区新增 retry 按钮，并显示明确告警。
     expect(screen.getAllByRole("button")).toHaveLength(initialButtonCount + 1);
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+    expect(screen.getByText(/超过 5 分钟未更新进度/)).toBeInTheDocument();
   });
 });

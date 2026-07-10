@@ -66,6 +66,7 @@ export function ImportPage() {
   const [applyStoryMemoryLoading, setApplyStoryMemoryLoading] = useState(false);
 
   const [pollPaused, setPollPaused] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const autoOpenedDocIdRef = useRef<string | null>(null);
   const lastPolledRef = useRef<{ id: string; status: string } | null>(null);
@@ -134,8 +135,8 @@ export function ImportPage() {
   }, [statusDoc?.created_at, statusDoc?.updated_at]);
   const lastUpdateAgoMs = useMemo(() => {
     if (!lastUpdateMs) return null;
-    return Date.now() - lastUpdateMs;
-  }, [lastUpdateMs]);
+    return nowMs - lastUpdateMs;
+  }, [lastUpdateMs, nowMs]);
   const isPollingStalled = useMemo(() => {
     if (pollStatus !== "queued" && pollStatus !== "running") return false;
     if (lastUpdateAgoMs == null) return false;
@@ -332,6 +333,7 @@ export function ImportPage() {
     if (!shouldPoll) return;
     const intervalMs = 2000;
     const timerId = window.setInterval(() => {
+      setNowMs(Date.now());
       void loadList();
     }, intervalMs);
     return () => window.clearInterval(timerId);
