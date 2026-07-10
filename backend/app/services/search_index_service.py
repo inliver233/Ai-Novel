@@ -28,6 +28,7 @@ logger = logging.getLogger("ainovel")
 _MAX_TITLE_CHARS = 400
 _MAX_CONTENT_CHARS = 6000
 _MAX_QUERY_TERMS = 8
+_MAX_SEARCH_OFFSET = 10_000
 
 _SAFE_FTS_TERM_RE = re.compile(r"^[0-9A-Za-z_]+$")
 
@@ -483,15 +484,14 @@ def query_project_search(
     limit: int,
     offset: int,
 ) -> dict[str, Any]:
-    # NOTE: This path intentionally does NOT depend on `search_documents` / FTS tables.
-    # Some deployments/projects might have an empty search_documents table (or never rebuilt),
-    # and we still want the UI search to be usable.
+    # Keep the direct path usable even when search_documents was never rebuilt. Every
+    # source query is bounded so matching ORM rows are not loaded into Python without limit.
 
     pid = str(project_id or "").strip()
     q_raw = str(q or "").strip()
     sources_norm = [str(s or "").strip() for s in (sources or []) if str(s or "").strip()]
     limit = max(1, min(int(limit or 20), 200))
-    offset = max(0, int(offset or 0))
+    offset = max(0, min(int(offset or 0), _MAX_SEARCH_OFFSET))
 
     if not pid:
         return {"items": [], "next_offset": None, "mode": "none", "fts_enabled": False}
@@ -516,7 +516,7 @@ def query_project_search(
         search_types = all_types
 
     # Local import to keep the change scoped to this function.
-    from sqlalchemy import func  # type: ignore
+    from sqlalchemy import String, case, cast, func, literal  # type: ignore
 
     def _escape_like(term: str) -> str:
         # Escape LIKE wildcards to keep search behaviour closer to "contains" semantics.
@@ -529,9 +529,25 @@ def query_project_search(
             conds.append(expr_l.like(f"%{_escape_like(t)}%", escape="\\"))
         return conds
 
+    candidate_limit = offset + limit + 1
+    primary_like_pattern = f"%{_escape_like(q_primary.lower())}%"
+
+    def _bounded_candidates(stmt: Any, *, title_expr: Any, updated_at: Any, source_id: Any) -> Any:
+        title_hit_rank = case(
+            (func.lower(title_expr).like(primary_like_pattern, escape="\\"), 0),
+            else_=1,
+        )
+        return stmt.order_by(title_hit_rank.asc(), updated_at.desc(), source_id.asc()).limit(candidate_limit)
+
     ranked: list[dict[str, Any]] = []
 
     if "chapter" in search_types:
+        chapter_title_expr = (
+            literal("第 ")
+            + cast(Chapter.number, String)
+            + literal(" 章：")
+            + func.coalesce(Chapter.title, "")
+        )
         chapter_expr = (
             func.coalesce(Chapter.title, "")
             + "\n\n"
@@ -543,9 +559,12 @@ def query_project_search(
         )
         chapters = (
             db.execute(
-                select(Chapter)
-                .where(Chapter.project_id == pid, *_like_all_terms(chapter_expr))
-                .order_by(Chapter.updated_at.desc(), Chapter.id.desc())
+                _bounded_candidates(
+                    select(Chapter).where(Chapter.project_id == pid, *_like_all_terms(chapter_expr)),
+                    title_expr=chapter_title_expr,
+                    updated_at=Chapter.updated_at,
+                    source_id=Chapter.id,
+                )
             )
             .scalars()
             .all()
@@ -588,9 +607,12 @@ def query_project_search(
         )
         characters = (
             db.execute(
-                select(Character)
-                .where(Character.project_id == pid, *_like_all_terms(character_expr))
-                .order_by(Character.updated_at.desc(), Character.id.desc())
+                _bounded_candidates(
+                    select(Character).where(Character.project_id == pid, *_like_all_terms(character_expr)),
+                    title_expr=func.coalesce(Character.name, ""),
+                    updated_at=Character.updated_at,
+                    source_id=Character.id,
+                )
             )
             .scalars()
             .all()
@@ -633,9 +655,16 @@ def query_project_search(
         )
         memories = (
             db.execute(
-                select(StoryMemory)
-                .where(StoryMemory.project_id == pid, *_like_all_terms(memory_expr))
-                .order_by(StoryMemory.updated_at.desc(), StoryMemory.id.desc())
+                _bounded_candidates(
+                    select(StoryMemory).where(StoryMemory.project_id == pid, *_like_all_terms(memory_expr)),
+                    title_expr=func.coalesce(
+                        func.nullif(func.trim(StoryMemory.title), ""),
+                        func.nullif(func.trim(StoryMemory.memory_type), ""),
+                        "story_memory",
+                    ),
+                    updated_at=StoryMemory.updated_at,
+                    source_id=StoryMemory.id,
+                )
             )
             .scalars()
             .all()
@@ -675,9 +704,12 @@ def query_project_search(
         outline_expr = func.coalesce(Outline.title, "") + "\n\n" + func.coalesce(Outline.content_md, "")
         outlines = (
             db.execute(
-                select(Outline)
-                .where(Outline.project_id == pid, *_like_all_terms(outline_expr))
-                .order_by(Outline.updated_at.desc(), Outline.id.desc())
+                _bounded_candidates(
+                    select(Outline).where(Outline.project_id == pid, *_like_all_terms(outline_expr)),
+                    title_expr=func.coalesce(func.nullif(func.trim(Outline.title), ""), "大纲"),
+                    updated_at=Outline.updated_at,
+                    source_id=Outline.id,
+                )
             )
             .scalars()
             .all()
@@ -715,9 +747,18 @@ def query_project_search(
         )
         docs = (
             db.execute(
-                select(ProjectSourceDocument)
-                .where(ProjectSourceDocument.project_id == pid, *_like_all_terms(doc_expr))
-                .order_by(ProjectSourceDocument.updated_at.desc(), ProjectSourceDocument.id.desc())
+                _bounded_candidates(
+                    select(ProjectSourceDocument).where(
+                        ProjectSourceDocument.project_id == pid,
+                        *_like_all_terms(doc_expr),
+                    ),
+                    title_expr=func.coalesce(
+                        func.nullif(func.trim(ProjectSourceDocument.filename), ""),
+                        "导入文档",
+                    ),
+                    updated_at=ProjectSourceDocument.updated_at,
+                    source_id=ProjectSourceDocument.id,
+                )
             )
             .scalars()
             .all()
@@ -755,9 +796,12 @@ def query_project_search(
         )
         entries = (
             db.execute(
-                select(Entry)
-                .where(Entry.project_id == pid, *_like_all_terms(entry_expr))
-                .order_by(Entry.updated_at.desc(), Entry.id.desc())
+                _bounded_candidates(
+                    select(Entry).where(Entry.project_id == pid, *_like_all_terms(entry_expr)),
+                    title_expr=func.coalesce(func.nullif(func.trim(Entry.title), ""), "条目"),
+                    updated_at=Entry.updated_at,
+                    source_id=Entry.id,
+                )
             )
             .scalars()
             .all()
