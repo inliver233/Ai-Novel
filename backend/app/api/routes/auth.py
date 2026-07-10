@@ -459,7 +459,7 @@ def linuxdo_oidc_callback(request: Request, db: DbDep, code: str | None = None, 
         )
         access_token = str(token_res.get("access_token") or "").strip()
         if not access_token:
-            return response
+            return _fail("OIDC_TOKEN_MISSING")
 
         userinfo = _linuxdo_fetch_userinfo(userinfo_endpoint=discovery["userinfo_endpoint"], access_token=access_token)
         subject = str(userinfo.get("sub") or "").strip()
