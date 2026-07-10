@@ -12,7 +12,7 @@ name: CI
 
 on:
   push:
-    branches: [main, lite]
+    branches: [dev, main, lite]
   pull_request:
 
 concurrency:
@@ -46,6 +46,13 @@ jobs:
       - name: Ruff (lint)
         run: python -m ruff check app tests scripts conftest.py
 
+      - name: SQLite schema contract (hard gate)
+        shell: bash
+        run: |
+          contract_db="$(mktemp "${RUNNER_TEMP}/ainovel-alembic-contract.XXXXXX.db")"
+          trap 'rm -f "$contract_db" "$contract_db-shm" "$contract_db-wal"' EXIT
+          python scripts/check_alembic.py --database-url "sqlite:///$contract_db"
+
       - name: Pytest + coverage baseline (safety net — must stay green)
         run: python -m pytest -m "not known_issue" -q --cov=app --cov-report=term --cov-fail-under=62
         env:
@@ -56,6 +63,58 @@ jobs:
         continue-on-error: true
         env:
           AINOVEL_APP_ENV: test
+
+  postgres-schema:
+    name: PostgreSQL + pgvector schema contract
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ainovel
+          POSTGRES_PASSWORD: ainovel
+          POSTGRES_DB: ainovel_schema_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ainovel -d ainovel_schema_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql+psycopg2://ainovel:ainovel@localhost:5432/ainovel_schema_ci
+      TEST_POSTGRES_URL: postgresql+psycopg2://ainovel:ainovel@localhost:5432/ainovel_schema_ci
+      AINOVEL_POSTGRES_INTEGRATION: "1"
+      AINOVEL_POSTGRES_INTEGRATION_SENTINEL: "I_UNDERSTAND_THIS_DROPS_PUBLIC_SCHEMA"
+      AINOVEL_APP_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.lock.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: PostgreSQL cleanup + reconciliation integration (hard gate)
+        run: python -m pytest tests/test_alembic_postgres_integration.py -q
+
+      - name: Reset integration schema
+        run: python -c "import os, sqlalchemy as sa; e=sa.create_engine(os.environ['DATABASE_URL']); c=e.connect().execution_options(isolation_level='AUTOCOMMIT'); c.exec_driver_sql('DROP SCHEMA IF EXISTS public CASCADE'); c.exec_driver_sql('CREATE SCHEMA public'); c.close(); e.dispose()"
+
+      - name: PostgreSQL schema contract (hard gate)
+        run: python scripts/check_alembic.py --database-url "$DATABASE_URL"
 
   frontend:
     name: Frontend (vitest + tsc + eslint)
