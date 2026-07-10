@@ -108,7 +108,26 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: PostgreSQL cleanup + reconciliation integration (hard gate)
-        run: python -m pytest tests/test_alembic_postgres_integration.py -q
+        run: python -m pytest tests/test_alembic_postgres_integration.py -q --junitxml="$RUNNER_TEMP/postgres-schema.xml"
+
+      - name: Report PostgreSQL integration failure
+        if: failure()
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          report = pathlib.Path(os.environ["RUNNER_TEMP"]) / "postgres-schema.xml"
+          if report.exists():
+              root = ET.parse(report).getroot()
+              for case in root.iter("testcase"):
+                  for node in list(case):
+                      if node.tag not in {"failure", "error"}:
+                          continue
+                      message = (node.get("message") or node.text or "PostgreSQL integration failed").replace("\n", "%0A")
+                      print(f"::error title={case.get('name', 'PostgreSQL integration')}::{message}")
+          PY
 
       - name: Reset integration schema
         run: python -c "import os, sqlalchemy as sa; e=sa.create_engine(os.environ['DATABASE_URL']); c=e.connect().execution_options(isolation_level='AUTOCOMMIT'); c.exec_driver_sql('DROP SCHEMA IF EXISTS public CASCADE'); c.exec_driver_sql('CREATE SCHEMA public'); c.close(); e.dispose()"
