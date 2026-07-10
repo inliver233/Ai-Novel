@@ -12,9 +12,7 @@ import { resolveRouteMeta } from "../../lib/routes";
 import { UI_COPY } from "../../lib/uiCopy";
 import { fadeUpVariants, transition } from "../../lib/motion";
 import { getCurrentUserId } from "../../services/currentUser";
-import {
-  sidebarCollapsedStorageKey,
-} from "../../services/uiState";
+import { sidebarCollapsedStorageKey } from "../../services/uiState";
 import {
   APP_SHELL_PRIMARY_PROJECT_NAV_GROUPS,
   APP_SHELL_PROJECT_NAV_GROUP_TITLES,
@@ -33,7 +31,6 @@ function useSidebarCollapsed(): [boolean, (v: boolean) => void] {
     },
   ];
 }
-
 
 function SidebarLink(props: {
   to: string;
@@ -228,6 +225,7 @@ export function AppShell() {
   const mainMaxWidth =
     routeMeta.layout === "home" ? "max-w-5xl" : routeMeta.layout === "paper" ? "max-w-4xl" : "max-w-screen-xl";
   const sessionExpireAtText = auth.session?.expireAt ? new Date(auth.session.expireAt * 1000).toLocaleString() : null;
+  const canManageUsers = auth.status === "authenticated" && auth.user?.isAdmin === true;
   const mobileNavOpen = mobileNavOpenForPath === pathname;
 
   const CollapseIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
@@ -306,23 +304,26 @@ export function AppShell() {
                             })}
                           </div>
                         ))}
-
                       </>
                     ) : (
                       <div className="rounded-atelier border border-border bg-canvas p-3 text-xs text-subtext">
                         {UI_COPY.nav.chooseProjectHint}
                       </div>
                     )}
-                    <div className="my-2 h-px bg-border" />
-                    <div className="px-3 pt-2 text-[11px] font-medium text-subtext">{UI_COPY.nav.groupAdmin}</div>
-                    <SidebarLink
-                      collapsed={false}
-                      icon={<UserCog size={18} />}
-                      label={UI_COPY.nav.adminUsers}
-                      ariaLabel="用户管理 (nav_admin_users)"
-                      to="/admin/users"
-                      onClick={closeMobileNav}
-                    />
+                    {canManageUsers ? (
+                      <>
+                        <div className="my-2 h-px bg-border" />
+                        <div className="px-3 pt-2 text-[11px] font-medium text-subtext">{UI_COPY.nav.groupAdmin}</div>
+                        <SidebarLink
+                          collapsed={false}
+                          icon={<UserCog size={18} />}
+                          label={UI_COPY.nav.adminUsers}
+                          ariaLabel="用户管理 (nav_admin_users)"
+                          to="/admin/users"
+                          onClick={closeMobileNav}
+                        />
+                      </>
+                    ) : null}
                   </nav>
                 </LayoutGroup>
               </motion.aside>
@@ -382,7 +383,6 @@ export function AppShell() {
                       })}
                     </div>
                   ))}
-
                 </>
               ) : (
                 <div
@@ -394,17 +394,21 @@ export function AppShell() {
                   {UI_COPY.nav.chooseProjectHint}
                 </div>
               )}
-              <div className="my-2 h-px bg-border" />
-              {collapsed ? null : (
-                <div className="px-3 pt-2 text-[11px] font-medium text-subtext">{UI_COPY.nav.groupAdmin}</div>
-              )}
-              <SidebarLink
-                collapsed={collapsed}
-                icon={<UserCog size={18} />}
-                label={UI_COPY.nav.adminUsers}
-                ariaLabel="用户管理 (nav_admin_users)"
-                to="/admin/users"
-              />
+              {canManageUsers ? (
+                <>
+                  <div className="my-2 h-px bg-border" />
+                  {collapsed ? null : (
+                    <div className="px-3 pt-2 text-[11px] font-medium text-subtext">{UI_COPY.nav.groupAdmin}</div>
+                  )}
+                  <SidebarLink
+                    collapsed={collapsed}
+                    icon={<UserCog size={18} />}
+                    label={UI_COPY.nav.adminUsers}
+                    ariaLabel="用户管理 (nav_admin_users)"
+                    to="/admin/users"
+                  />
+                </>
+              ) : null}
             </nav>
           </LayoutGroup>
         </aside>
@@ -463,12 +467,7 @@ export function AppShell() {
                     </NavLink>
                   )}
 
-                  <a
-                    className="btn btn-secondary"
-                    href="https://linux.do"
-                    rel="noreferrer"
-                    target="_blank"
-                  >
+                  <a className="btn btn-secondary" href="https://linux.do" rel="noreferrer" target="_blank">
                     {UI_COPY.auth.linuxdoFriendLink}
                   </a>
 

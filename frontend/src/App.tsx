@@ -2,6 +2,7 @@ import { Suspense, lazy } from "react";
 import { Navigate, RouterProvider, createBrowserRouter } from "react-router-dom";
 
 import { AuthGuard } from "./components/layout/AuthGuard";
+import { AdminGuard } from "./components/layout/AdminGuard";
 import { ProjectProviderGuard } from "./components/layout/ProjectProviderGuard";
 import { AppShell } from "./components/layout/AppShell";
 import { ConfirmProvider } from "./components/ui/ConfirmProvider";
@@ -130,8 +131,13 @@ const router = createBrowserRouter([
             element: <DashboardPage />,
           },
           {
-            path: "admin/users",
-            element: <AdminUsersPage />,
+            element: <AdminGuard />,
+            children: [
+              {
+                path: "admin/users",
+                element: <AdminUsersPage />,
+              },
+            ],
           },
           {
             path: "projects/:projectId",

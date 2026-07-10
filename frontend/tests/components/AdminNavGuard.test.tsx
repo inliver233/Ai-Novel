@@ -1,10 +1,7 @@
 // @vitest-environment jsdom
-// M42 known_issue：/admin/users 路由无路由级权限守卫，侧边栏"用户管理"导航入口对所有登录用户无条件渲染。
-// AppShell.tsx 桌面侧边栏（:401-407）与移动端导航（:318-325）均无条件渲染 to="/admin/users" 的
-// SidebarLink，仅靠 AdminUsersPage 页面层 + 后端 server-side 检查拦截，缺 defense-in-depth。
-// 正确行为：非 admin 用户不应看到"用户管理"导航入口。当前实现有 bug → 本测试必须 FAILED(红)。
-import { describe, expect, it, vi } from "vitest";
-import { render } from "@testing-library/react";
+// M42/frontend-arch#11 回归：侧边栏管理入口必须与当前认证用户的 isAdmin 权限一致。
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 // 非 admin 用户桩：is_admin=false。vi.mock 工厂提升执行，用 vi.hoisted 声明避免 TDZ（参考 ThemeToggle.test.tsx）。
@@ -34,10 +31,15 @@ vi.mock("@/components/atelier/ThemeToggle", () => ({
 }));
 
 import { AppShell } from "@/components/layout/AppShell";
+import { UI_COPY } from "@/lib/uiCopy";
 
-describe("AdminNavGuard (M42 known_issue)", () => {
-  it("非 admin 用户不应看到'用户管理'导航入口", { tags: ["@known_issue"] }, () => {
-    const { container } = render(
+beforeEach(() => {
+  nonAdminAuth.user.isAdmin = false;
+});
+
+describe("admin navigation visibility", () => {
+  it("非 admin 用户不渲染用户管理入口", () => {
+    const view = render(
       <MemoryRouter initialEntries={["/"]}>
         <AppShell />
       </MemoryRouter>,
@@ -46,8 +48,23 @@ describe("AdminNavGuard (M42 known_issue)", () => {
     // 正确行为：非 admin 用户根本不应渲染 /admin/users 导航入口（defense-in-depth，
     // 即便页面层/后端有校验，导航层也应在非 admin 用户下屏蔽该入口）。
     // 按 href 断言（不锁中文文案，§6.6 规则 2）：该入口不应进入 DOM。
-    const adminUsersLinks = container.querySelectorAll('a[href="/admin/users"]');
+    const adminUsersLinks = view.container.querySelectorAll('a[href="/admin/users"]');
 
     expect(adminUsersLinks).toHaveLength(0);
+    fireEvent.click(view.getByRole("button", { name: UI_COPY.nav.openNav }));
+    expect(view.container.querySelectorAll('a[href="/admin/users"]')).toHaveLength(0);
+  });
+
+  it("admin 用户渲染用户管理入口", () => {
+    nonAdminAuth.user.isAdmin = true;
+    const view = render(
+      <MemoryRouter initialEntries={["/"]}>
+        <AppShell />
+      </MemoryRouter>,
+    );
+
+    expect(view.container.querySelectorAll('a[href="/admin/users"]')).toHaveLength(1);
+    fireEvent.click(view.getByRole("button", { name: UI_COPY.nav.openNav }));
+    expect(view.container.querySelectorAll('a[href="/admin/users"]')).toHaveLength(2);
   });
 });

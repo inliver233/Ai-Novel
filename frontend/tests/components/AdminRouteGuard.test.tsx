@@ -3,7 +3,10 @@
 // 不能先挂载 AdminUsersPage 再依赖页面内部自查。
 import type { ReactNode } from "react";
 import { render, waitFor } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { beforeEach, expect, it, vi } from "vitest";
+
+const adminUsersPageRender = vi.hoisted(() => vi.fn());
 
 const nonAdminAuth = vi.hoisted(() => ({
   status: "authenticated" as const,
@@ -37,11 +40,21 @@ vi.mock("@/components/layout/AppShell", async () => {
   return { AppShell: () => <Outlet /> };
 });
 vi.mock("@/pages/AdminUsersPage", () => ({
-  AdminUsersPage: () => <div data-testid="admin-users-page" />,
+  AdminUsersPage: () => {
+    adminUsersPageRender();
+    return <div data-testid="admin-users-page" />;
+  },
 }));
 vi.mock("@/pages/DashboardPage", () => ({ DashboardPage: () => <div data-testid="dashboard-page" /> }));
 
-it("redirects a non-admin direct visit before mounting the admin page", { tags: ["@known_issue"] }, async () => {
+import { AdminGuard } from "@/components/layout/AdminGuard";
+
+beforeEach(() => {
+  nonAdminAuth.user.isAdmin = false;
+  adminUsersPageRender.mockClear();
+});
+
+it("redirects a non-admin direct visit before mounting the admin page", async () => {
   window.history.replaceState({}, "", "/admin/users");
   const { default: App } = await import("@/App");
 
@@ -49,4 +62,22 @@ it("redirects a non-admin direct visit before mounting the admin page", { tags: 
 
   await waitFor(() => expect(window.location.pathname).toBe("/"));
   expect(view.queryByTestId("admin-users-page")).not.toBeInTheDocument();
+  expect(adminUsersPageRender).not.toHaveBeenCalled();
+});
+
+it("renders the guarded child for an authenticated admin", () => {
+  nonAdminAuth.user.isAdmin = true;
+  const view = render(
+    <MemoryRouter initialEntries={["/admin/users"]}>
+      <Routes>
+        <Route element={<AdminGuard />}>
+          <Route path="admin/users" element={<div data-testid="guarded-admin-page" />} />
+        </Route>
+        <Route path="/" element={<div data-testid="home-page" />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  expect(view.getByTestId("guarded-admin-page")).toBeInTheDocument();
+  expect(view.queryByTestId("home-page")).not.toBeInTheDocument();
 });
