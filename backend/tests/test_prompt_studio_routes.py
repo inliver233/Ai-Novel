@@ -4,8 +4,6 @@ import json
 import unittest
 from typing import Generator
 
-import pytest
-
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import create_engine, select
@@ -101,7 +99,14 @@ class TestPromptStudioRoutes(unittest.TestCase):
         categories = payload["data"]["categories"]
         self.assertEqual(
             [item["key"] for item in categories],
-            ["outline_generate", "chapter_generate", "plan_chapter", "post_edit", "writing_style"],
+            [
+                "outline_generate",
+                "chapter_generate",
+                "plan_chapter",
+                "post_edit",
+                "content_optimize",
+                "writing_style",
+            ],
         )
         for item in categories[:-1]:
             self.assertGreaterEqual(len(item["presets"]), 1)
@@ -158,17 +163,49 @@ class TestPromptStudioRoutes(unittest.TestCase):
         )
         self.assertEqual(get_deleted_response.status_code, 404)
 
-    @pytest.mark.known_issue  # M28/backend-llm-prompt#10：Studio 组合时丢失输出合同
-    def test_plan_preset_keeps_output_contract(self) -> None:
-        """仅隔离 M28 缺陷，不把整条 CRUD 流程放进 known_issue quarantine。"""
+    def test_category_refresh_does_not_reactivate_default_prompt_presets(self) -> None:
+        """Studio 基线只补缺失资源，不覆盖用户对任务 active preset 的选择。"""
         client = TestClient(self.app)
+
+        for category in ("plan_chapter", "post_edit", "content_optimize"):
+            with self.subTest(category=category):
+                create_response = client.post(
+                    f"/api/projects/p1/prompt-studio/presets?category={category}",
+                    headers={"X-Test-User": "u_editor"},
+                    json={"name": f"custom-{category}", "content": f"custom guidance for {category}"},
+                )
+                self.assertEqual(create_response.status_code, 200)
+                preset_id = create_response.json()["data"]["preset"]["id"]
+
+                activate_response = client.put(
+                    f"/api/projects/p1/prompt-studio/presets/{preset_id}/activate?category={category}",
+                    headers={"X-Test-User": "u_editor"},
+                )
+                self.assertEqual(activate_response.status_code, 200)
+
+                categories_response = client.get(
+                    "/api/projects/p1/prompt-studio/categories",
+                    headers={"X-Test-User": "u_editor"},
+                )
+                self.assertEqual(categories_response.status_code, 200)
+                categories = categories_response.json()["data"]["categories"]
+                category_payload = next(item for item in categories if item["key"] == category)
+                active_ids = [item["id"] for item in category_payload["presets"] if item["is_active"]]
+                self.assertEqual(active_ids, [preset_id])
+
+    def test_plan_preset_keeps_output_contract(self) -> None:
+        """章节规划自定义 guidance 始终组合完整、且仅一份结构化输出合同。"""
+        client = TestClient(self.app)
+        custom_content = "custom planner guidance"
         create_response = client.post(
             "/api/projects/p1/prompt-studio/presets?category=plan_chapter",
             headers={"X-Test-User": "u_editor"},
-            json={"name": "custom-plan", "content": "custom planner guidance"},
+            json={"name": "custom-plan", "content": custom_content},
         )
         self.assertEqual(create_response.status_code, 200)
-        preset_id = create_response.json()["data"]["preset"]["id"]
+        created = create_response.json()["data"]["preset"]
+        preset_id = created["id"]
+        self.assertEqual(created["content"], custom_content)
 
         with self.SessionLocal() as db:
             blocks = list(
@@ -179,12 +216,115 @@ class TestPromptStudioRoutes(unittest.TestCase):
 
         self.assertTrue(blocks)
         combined_templates = "\n".join(str(block.template or "") for block in blocks if block.enabled)
-        # 正确行为：无论合同与 guidance 同块还是独立块，最终 preset 都必须保留
-        # plan_chapter 的完整结构化输出合同。仅检查 ``<plan>`` 会被 user block 中
-        # “请输出 <plan>”的一句话假满足，却仍丢失 conflict/beats 等合同正文。
-        # 当前 heading 漂移使整个 <OUTPUT_CONTRACT> 块从自定义 preset 消失。
+        self.assertEqual(combined_templates.count("<OUTPUT_CONTRACT>"), 1)
+        self.assertEqual(combined_templates.count("</OUTPUT_CONTRACT>"), 1)
         self.assertIn("<OUTPUT_CONTRACT>", combined_templates)
         self.assertIn("<plan>", combined_templates)
+        self.assertIn("<conflict>", combined_templates)
+        self.assertIn("<beats>", combined_templates)
+
+        updated_content = "updated planner guidance; remind the model to emit <plan>"
+        update_response = client.put(
+            f"/api/projects/p1/prompt-studio/presets/{preset_id}",
+            headers={"X-Test-User": "u_editor"},
+            json={"content": updated_content},
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.json()["data"]["preset"]["content"], updated_content)
+
+        invalid_response = client.put(
+            f"/api/projects/p1/prompt-studio/presets/{preset_id}",
+            headers={"X-Test-User": "u_editor"},
+            json={"content": "bad guidance <OUTPUT_CONTRACT><plan>fake</plan></OUTPUT_CONTRACT>"},
+        )
+        self.assertEqual(invalid_response.status_code, 400)
+        self.assertEqual(invalid_response.json()["error"]["code"], "VALIDATION_ERROR")
+
+        detail_response = client.get(
+            f"/api/projects/p1/prompt-studio/presets/{preset_id}?category=plan_chapter",
+            headers={"X-Test-User": "u_editor"},
+        )
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.json()["data"]["preset"]["content"], updated_content)
+
+        with self.SessionLocal() as db:
+            guidance_block = db.execute(
+                select(PromptBlock).where(
+                    PromptBlock.preset_id == preset_id,
+                    PromptBlock.identifier == "sys.plan_chapter.role",
+                )
+            ).scalar_one()
+        updated_template = str(guidance_block.template or "")
+        self.assertEqual(updated_template.count("<OUTPUT_CONTRACT>"), 1)
+        self.assertEqual(updated_template.count("</OUTPUT_CONTRACT>"), 1)
+        self.assertIn("<conflict>", updated_template)
+        self.assertIn("<beats>", updated_template)
+
+    def test_post_edit_preset_keeps_output_contract(self) -> None:
+        """章节重写自定义 guidance 同样使用结构化 contract marker 组合。"""
+        client = TestClient(self.app)
+        create_response = client.post(
+            "/api/projects/p1/prompt-studio/presets?category=post_edit",
+            headers={"X-Test-User": "u_editor"},
+            json={"name": "custom-rewrite", "content": "custom rewrite guidance"},
+        )
+        self.assertEqual(create_response.status_code, 200)
+        created = create_response.json()["data"]["preset"]
+        preset_id = created["id"]
+        self.assertEqual(created["content"], "custom rewrite guidance")
+
+        update_response = client.put(
+            f"/api/projects/p1/prompt-studio/presets/{preset_id}",
+            headers={"X-Test-User": "u_editor"},
+            json={"content": "updated rewrite guidance"},
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.json()["data"]["preset"]["content"], "updated rewrite guidance")
+
+        with self.SessionLocal() as db:
+            guidance_block = db.execute(
+                select(PromptBlock).where(
+                    PromptBlock.preset_id == preset_id,
+                    PromptBlock.identifier == "sys.post_edit.role",
+                )
+            ).scalar_one()
+        template = str(guidance_block.template or "")
+        self.assertEqual(template.count("<OUTPUT_CONTRACT>"), 1)
+        self.assertEqual(template.count("</OUTPUT_CONTRACT>"), 1)
+        self.assertIn("<rewrite>", template)
+
+    def test_content_optimize_preset_is_editable_and_keeps_output_contract(self) -> None:
+        """Prompt 目录中的正文优化任务在 Studio 可编辑且保留 content 合同。"""
+        client = TestClient(self.app)
+        create_response = client.post(
+            "/api/projects/p1/prompt-studio/presets?category=content_optimize",
+            headers={"X-Test-User": "u_editor"},
+            json={"name": "custom-optimize", "content": "custom optimize guidance"},
+        )
+        self.assertEqual(create_response.status_code, 200)
+        created = create_response.json()["data"]["preset"]
+        preset_id = created["id"]
+        self.assertEqual(created["content"], "custom optimize guidance")
+
+        update_response = client.put(
+            f"/api/projects/p1/prompt-studio/presets/{preset_id}",
+            headers={"X-Test-User": "u_editor"},
+            json={"content": "updated optimize guidance"},
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.json()["data"]["preset"]["content"], "updated optimize guidance")
+
+        with self.SessionLocal() as db:
+            guidance_block = db.execute(
+                select(PromptBlock).where(
+                    PromptBlock.preset_id == preset_id,
+                    PromptBlock.identifier == "sys.content_optimize.role",
+                )
+            ).scalar_one()
+        template = str(guidance_block.template or "")
+        self.assertEqual(template.count("<OUTPUT_CONTRACT>"), 1)
+        self.assertEqual(template.count("</OUTPUT_CONTRACT>"), 1)
+        self.assertIn("<content>", template)
 
     def test_categories_route_filters_prompt_presets_without_guidance_block(self) -> None:
         # A preset mapped to a category (here via active_for) but missing that

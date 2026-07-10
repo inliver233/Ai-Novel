@@ -592,8 +592,8 @@ def test_prompt_studio_list_categories_returns_ok_with_category_keys() -> None:
 def test_prompt_studio_create_preset_returns_preset_detail() -> None:
     """POST /api/projects/{project_id}/prompt-studio/presets 创建 Studio preset。
 
-    用 outline_generate 分类：该分类无 output_contract_heading/wrapper_tag，
-    不触发 test_prompt_studio_routes.py 中标记为 known_issue 的中文 find 切分 bug。
+    用 outline_generate 分类：该分类没有独立的结构化输出合同区，整段 guidance
+    可编辑；带合同的 plan/post-edit/content-optimize 路径由专门 round-trip 测试覆盖。
     """
     client, factory = _new_client_and_factory()
     _seed_project(factory, project_id="p1")

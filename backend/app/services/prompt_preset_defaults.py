@@ -130,16 +130,31 @@ def _ensure_default_preset_from_resource(
     return preset
 
 
-def ensure_default_plan_preset(db: Session, *, project_id: str) -> PromptPreset:
-    return _ensure_default_preset_from_resource(db, project_id=project_id, resource_key="plan_chapter_v1", activate=True)
+def ensure_default_plan_preset(db: Session, *, project_id: str, activate: bool = True) -> PromptPreset:
+    return _ensure_default_preset_from_resource(
+        db,
+        project_id=project_id,
+        resource_key="plan_chapter_v1",
+        activate=activate,
+    )
 
 
-def ensure_default_post_edit_preset(db: Session, *, project_id: str) -> PromptPreset:
-    return _ensure_default_preset_from_resource(db, project_id=project_id, resource_key="post_edit_v1", activate=True)
+def ensure_default_post_edit_preset(db: Session, *, project_id: str, activate: bool = True) -> PromptPreset:
+    return _ensure_default_preset_from_resource(
+        db,
+        project_id=project_id,
+        resource_key="post_edit_v1",
+        activate=activate,
+    )
 
 
-def ensure_default_content_optimize_preset(db: Session, *, project_id: str) -> PromptPreset:
-    return _ensure_default_preset_from_resource(db, project_id=project_id, resource_key="content_optimize_v1", activate=True)
+def ensure_default_content_optimize_preset(db: Session, *, project_id: str, activate: bool = True) -> PromptPreset:
+    return _ensure_default_preset_from_resource(
+        db,
+        project_id=project_id,
+        resource_key="content_optimize_v1",
+        activate=activate,
+    )
 
 
 def ensure_default_outline_preset(db: Session, *, project_id: str, activate: bool = False) -> PromptPreset:

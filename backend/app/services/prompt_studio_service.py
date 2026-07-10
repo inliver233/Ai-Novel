@@ -23,11 +23,13 @@ from app.schemas.prompt_studio import (
 from app.services.prompt_preset_resources import load_preset_resource
 from app.services.prompt_presets import (
     ensure_default_chapter_preset,
+    ensure_default_content_optimize_preset,
     ensure_default_outline_preset,
     ensure_default_plan_preset,
     ensure_default_post_edit_preset,
     parse_json_list,
 )
+from app.services.prompt_task_catalog import PROMPT_TASK_SET
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +39,8 @@ class PromptStudioPromptCategoryConfig:
     task: str
     resource_key: str
     guidance_identifier: str
-    output_contract_heading: str | None = None
+    output_contract_start_marker: str | None = None
+    output_contract_end_marker: str | None = None
     output_wrapper_tag: str | None = None
 
 
@@ -62,7 +65,8 @@ _PROMPT_STUDIO_PROMPT_CATEGORIES: tuple[PromptStudioPromptCategoryConfig, ...] =
         task="plan_chapter",
         resource_key="plan_chapter_v1",
         guidance_identifier="sys.plan_chapter.role",
-        output_contract_heading="输出要求：",
+        output_contract_start_marker="<OUTPUT_CONTRACT>",
+        output_contract_end_marker="</OUTPUT_CONTRACT>",
         output_wrapper_tag="<plan>",
     ),
     PromptStudioPromptCategoryConfig(
@@ -71,11 +75,31 @@ _PROMPT_STUDIO_PROMPT_CATEGORIES: tuple[PromptStudioPromptCategoryConfig, ...] =
         task="post_edit",
         resource_key="post_edit_v1",
         guidance_identifier="sys.post_edit.role",
-        output_contract_heading="输出要求：",
+        output_contract_start_marker="<OUTPUT_CONTRACT>",
+        output_contract_end_marker="</OUTPUT_CONTRACT>",
         output_wrapper_tag="<rewrite>",
+    ),
+    PromptStudioPromptCategoryConfig(
+        key="content_optimize",
+        label="正文优化",
+        task="content_optimize",
+        resource_key="content_optimize_v1",
+        guidance_identifier="sys.content_optimize.role",
+        output_contract_start_marker="<OUTPUT_CONTRACT>",
+        output_contract_end_marker="</OUTPUT_CONTRACT>",
+        output_wrapper_tag="<content>",
     ),
 )
 _PROMPT_STUDIO_PROMPT_CATEGORY_BY_KEY = {item.key: item for item in _PROMPT_STUDIO_PROMPT_CATEGORIES}
+PROMPT_STUDIO_PROMPT_TASK_SET: frozenset[str] = frozenset(
+    item.task for item in _PROMPT_STUDIO_PROMPT_CATEGORIES
+)
+_UNKNOWN_PROMPT_TASKS = PROMPT_STUDIO_PROMPT_TASK_SET - PROMPT_TASK_SET
+_MISSING_STUDIO_TASKS = PROMPT_TASK_SET - PROMPT_STUDIO_PROMPT_TASK_SET
+if _UNKNOWN_PROMPT_TASKS or _MISSING_STUDIO_TASKS:
+    unknown = ", ".join(sorted(_UNKNOWN_PROMPT_TASKS)) or "none"
+    missing = ", ".join(sorted(_MISSING_STUDIO_TASKS)) or "none"
+    raise RuntimeError(f"Prompt Studio task catalog mismatch (unknown: {unknown}; missing: {missing})")
 _PROMPT_STUDIO_WRITING_STYLE_KEY = "writing_style"
 _PROMPT_STUDIO_WRITING_STYLE_LABEL = "写作风格"
 
@@ -83,8 +107,9 @@ _PROMPT_STUDIO_WRITING_STYLE_LABEL = "写作风格"
 def _ensure_prompt_studio_baseline(db: Session, *, project_id: str) -> None:
     ensure_default_outline_preset(db, project_id=project_id, activate=False)
     ensure_default_chapter_preset(db, project_id=project_id, activate=False)
-    ensure_default_plan_preset(db, project_id=project_id)
-    ensure_default_post_edit_preset(db, project_id=project_id)
+    ensure_default_plan_preset(db, project_id=project_id, activate=False)
+    ensure_default_post_edit_preset(db, project_id=project_id, activate=False)
+    ensure_default_content_optimize_preset(db, project_id=project_id, activate=False)
 
 
 def _require_category_config(category: str) -> PromptStudioPromptCategoryConfig:
@@ -179,44 +204,70 @@ def _load_guidance_template_from_resource(config: PromptStudioPromptCategoryConf
     return str(block.template or "").strip()
 
 
-def _output_contract_suffix(config: PromptStudioPromptCategoryConfig) -> str:
-    if not config.output_contract_heading or not config.output_wrapper_tag:
+def _output_contract_bounds(config: PromptStudioPromptCategoryConfig, text: str) -> tuple[int, int] | None:
+    start_marker = config.output_contract_start_marker
+    end_marker = config.output_contract_end_marker
+    if not start_marker or not end_marker or not config.output_wrapper_tag:
+        return None
+    start = text.rfind(start_marker)
+    if start < 0:
+        return None
+    end = text.find(end_marker, start + len(start_marker))
+    if end < 0:
+        return None
+    end += len(end_marker)
+    if config.output_wrapper_tag not in text[start:end]:
+        return None
+    return start, end
+
+
+def _output_contract_block(config: PromptStudioPromptCategoryConfig) -> str:
+    if not config.output_contract_start_marker or not config.output_contract_end_marker:
         return ""
     template = _load_guidance_template_from_resource(config)
-    marker = template.find(config.output_contract_heading)
-    if marker < 0:
-        return ""
-    suffix = template[marker:].strip()
-    if config.output_wrapper_tag not in suffix:
-        return ""
-    return suffix
+    bounds = _output_contract_bounds(config, template)
+    if bounds is None:
+        raise AppError(
+            code="PROMPT_STUDIO_RESOURCE_INVALID",
+            message="Prompt Studio 默认资源缺少结构化输出合同",
+            status_code=500,
+            details={
+                "resource_key": config.resource_key,
+                "identifier": config.guidance_identifier,
+                "start_marker": config.output_contract_start_marker,
+                "end_marker": config.output_contract_end_marker,
+            },
+        )
+    start, end = bounds
+    return template[start:end].strip()
 
 
 def _extract_editable_content(config: PromptStudioPromptCategoryConfig, template: str | None) -> str:
     text = str(template or "").strip()
     if not text:
         return ""
-    if not config.output_contract_heading or not config.output_wrapper_tag:
+    if not config.output_contract_start_marker or not config.output_contract_end_marker:
         return text
 
-    marker = text.find(config.output_contract_heading)
-    if marker >= 0:
-        suffix = text[marker:]
-        if config.output_wrapper_tag in suffix:
-            return text[:marker].rstrip()
-
-    suffix = _output_contract_suffix(config)
-    if suffix and text.endswith(suffix):
-        return text[: len(text) - len(suffix)].rstrip()
+    bounds = _output_contract_bounds(config, text)
+    if bounds is not None:
+        start, end = bounds
+        return "\n\n".join(part for part in (text[:start].strip(), text[end:].strip()) if part)
     return text
 
 
 def _compose_guidance_template(config: PromptStudioPromptCategoryConfig, content: str) -> str:
     editable_content = str(content or "").strip()
-    suffix = _output_contract_suffix(config)
-    if not suffix:
+    reserved_markers = (
+        config.output_contract_start_marker,
+        config.output_contract_end_marker,
+    )
+    if any(marker and marker in editable_content for marker in reserved_markers):
+        raise AppError.validation(message="自定义提示词不能包含保留的输出合同标记")
+    contract = _output_contract_block(config)
+    if not contract:
         return editable_content
-    return f"{editable_content}\n\n{suffix}".strip()
+    return f"{editable_content}\n\n{contract}".strip()
 
 
 def _build_prompt_block_from_resource(

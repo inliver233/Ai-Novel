@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.services.llm_task_catalog import LLM_TASK_KEY_SET
+
 
 @dataclass(frozen=True, slots=True)
 class PromptTaskCatalogItem:
@@ -40,6 +42,11 @@ PROMPT_TASK_CATALOG: tuple[PromptTaskCatalogItem, ...] = (
 
 PROMPT_TASK_KEYS: tuple[str, ...] = tuple(item.key for item in PROMPT_TASK_CATALOG)
 PROMPT_TASK_SET: frozenset[str] = frozenset(PROMPT_TASK_KEYS)
+
+_UNKNOWN_LLM_TASKS = PROMPT_TASK_SET - LLM_TASK_KEY_SET
+if _UNKNOWN_LLM_TASKS:
+    unknown = ", ".join(sorted(_UNKNOWN_LLM_TASKS))
+    raise RuntimeError(f"Prompt task catalog contains unsupported LLM tasks: {unknown}")
 
 
 def is_supported_prompt_task(task: str) -> bool:

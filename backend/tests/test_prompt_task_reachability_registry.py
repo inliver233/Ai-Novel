@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from app.services.prompt_task_catalog import PROMPT_TASK_CATALOG, PROMPT_TASK_KEYS
+from app.services.llm_task_catalog import LLM_TASK_KEY_SET
+from app.services.prompt_studio_service import PROMPT_STUDIO_PROMPT_TASK_SET
+from app.services.prompt_task_catalog import PROMPT_TASK_CATALOG, PROMPT_TASK_KEYS, PROMPT_TASK_SET
 
 
 class TestPromptTaskReachabilityRegistry(unittest.TestCase):
@@ -16,6 +18,12 @@ class TestPromptTaskReachabilityRegistry(unittest.TestCase):
     def test_backend_catalog_keys_unique(self) -> None:
         self.assertGreater(len(PROMPT_TASK_KEYS), 0)
         self.assertEqual(len(PROMPT_TASK_KEYS), len(set(PROMPT_TASK_KEYS)))
+
+    def test_prompt_tasks_are_registered_llm_tasks(self) -> None:
+        self.assertLessEqual(PROMPT_TASK_SET, LLM_TASK_KEY_SET)
+
+    def test_prompt_studio_tasks_are_registered_prompt_tasks(self) -> None:
+        self.assertEqual(PROMPT_STUDIO_PROMPT_TASK_SET, PROMPT_TASK_SET)
 
     def test_frontend_prompt_task_catalog_covers_backend_tasks(self) -> None:
         text = self.frontend_catalog_path.read_text(encoding="utf-8")
