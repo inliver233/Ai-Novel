@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal, Protocol
 
+from sqlalchemy.orm import Session
+
+from app.db.session import SessionLocal
+from app.models.project import Project
 from app.services.chapter_context_service import build_post_edit_render_values
 from app.services.generation_service import PreparedLlmCall, call_llm_and_record, with_param_overrides
-from app.models.project import Project
-from app.services.mcp.service import McpResearchConfig, McpToolCallResult, run_mcp_research_and_record
-from app.services.post_edit_validation import validate_content_optimize_output, validate_post_edit_output
-from app.services.output_contracts import contract_for_task
 from app.services.llm_task_preset_resolver import resolve_task_llm_config
+from app.services.mcp.service import McpResearchConfig, McpToolCallResult, run_mcp_research_and_record
+from app.services.output_contracts import contract_for_task
+from app.services.post_edit_validation import validate_content_optimize_output, validate_post_edit_output
 from app.services.prompt_presets import ensure_default_content_optimize_preset, ensure_default_post_edit_preset, render_preset_for_task
-from app.db.session import SessionLocal
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +64,19 @@ class McpResearchStepResult:
     warnings: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class _RewriteStepResult:
+    applied: bool
+    run_id: str
+    content_md: str
+    warnings: list[str]
+    parse_error: dict[str, object] | None
+
+
+class _EnsurePreset(Protocol):
+    def __call__(self, db: Session, *, project_id: str) -> object: ...
+
+
 def run_mcp_research_step(
     *,
     logger: logging.Logger,
@@ -96,6 +113,107 @@ def run_mcp_research_step(
         )
 
 
+def _run_rewrite_step(
+    *,
+    logger: logging.Logger,
+    request_id: str,
+    actor_user_id: str,
+    project_id: str,
+    chapter_id: str | None,
+    api_key: str,
+    llm_call: PreparedLlmCall,
+    render_values: dict[str, object],
+    raw_content: str,
+    macro_seed: str,
+    task_key: Literal["post_edit", "content_optimize"],
+    temperature: float,
+    ensure_preset: _EnsurePreset,
+    validate_output: Callable[[str, str], list[str]],
+    run_type: str,
+    render_value_overrides: dict[str, object] | None = None,
+    run_params_extra_json: dict[str, object] | None = None,
+) -> _RewriteStepResult:
+    effective_llm_call = llm_call
+    effective_api_key = str(api_key)
+    config_warnings: list[str] = []
+    with SessionLocal() as db:
+        project = db.get(Project, project_id)
+        if project is not None:
+            try:
+                resolved = resolve_task_llm_config(
+                    db,
+                    project=project,
+                    user_id=actor_user_id,
+                    task_key=task_key,
+                    header_api_key=None,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "llm_config_resolve_failed task=%s error_type=%s",
+                    task_key,
+                    type(exc).__name__,
+                )
+                config_warnings.append("llm_config_resolve_failed")
+                resolved = None
+            if resolved is not None:
+                effective_llm_call = resolved.llm_call
+                effective_api_key = str(resolved.api_key)
+
+        ensure_preset(db, project_id=project_id)
+        values = build_post_edit_render_values(render_values, raw_content=raw_content)
+        if render_value_overrides:
+            values.update(render_value_overrides)
+
+        prompt_system, prompt_user, prompt_messages, _, _, _, render_log = render_preset_for_task(
+            db,
+            project_id=project_id,
+            task=task_key,
+            values=values,  # type: ignore[arg-type]
+            macro_seed=macro_seed,
+            provider=effective_llm_call.provider,
+        )
+    render_log_json = json.dumps(render_log, ensure_ascii=False)
+
+    rewrite_call = with_param_overrides(effective_llm_call, {"temperature": temperature})
+    rewrite_result = call_llm_and_record(
+        logger=logger,
+        request_id=request_id,
+        actor_user_id=actor_user_id,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        run_type=run_type,
+        api_key=effective_api_key,
+        prompt_system=prompt_system,
+        prompt_user=prompt_user,
+        prompt_messages=prompt_messages,
+        prompt_render_log_json=render_log_json,
+        llm_call=rewrite_call,
+        run_params_extra_json=run_params_extra_json,
+    )
+
+    contract = contract_for_task(task_key)
+    parsed = contract.parse(rewrite_result.text, finish_reason=rewrite_result.finish_reason)
+    warnings = [*config_warnings, *parsed.warnings]
+    parse_error = parsed.parse_error
+    content = str(parsed.data.get("content_md") or "").strip()
+    applied = parse_error is None and bool(content)
+    if applied:
+        extra_warnings = validate_output(raw_content, content)
+        if extra_warnings:
+            warnings.extend(extra_warnings)
+            applied = False
+    if not applied:
+        warnings.append(f"{task_key}_failed")
+
+    return _RewriteStepResult(
+        applied=applied,
+        run_id=rewrite_result.run_id,
+        content_md=content,
+        warnings=warnings,
+        parse_error=parse_error,
+    )
+
+
 def run_post_edit_step(
     *,
     logger: logging.Logger,
@@ -111,76 +229,34 @@ def run_post_edit_step(
     post_edit_sanitize: bool = False,
     run_params_extra_json: dict[str, object] | None = None,
 ) -> PostEditStepResult:
-    effective_llm_call = llm_call
-    effective_api_key = str(api_key)
-    with SessionLocal() as db:
-        project = db.get(Project, project_id)
-        if project is not None:
-            try:
-                resolved = resolve_task_llm_config(
-                    db,
-                    project=project,
-                    user_id=actor_user_id,
-                    task_key="post_edit",
-                    header_api_key=None,
-                )
-            except Exception:
-                resolved = None
-            if resolved is not None:
-                effective_llm_call = resolved.llm_call
-                effective_api_key = str(resolved.api_key)
-
-        ensure_default_post_edit_preset(db, project_id=project_id)
-        post_values = build_post_edit_render_values(render_values, raw_content=raw_content)
-        post_values["post_edit_sanitize"] = bool(post_edit_sanitize)
-
-        post_system, post_user, post_messages, _, _, _, post_render_log = render_preset_for_task(
-            db,
-            project_id=project_id,
-            task="post_edit",
-            values=post_values,  # type: ignore[arg-type]
-            macro_seed=macro_seed,
-            provider=effective_llm_call.provider,
-        )
-    post_render_log_json = json.dumps(post_render_log, ensure_ascii=False)
-
-    post_call = with_param_overrides(effective_llm_call, {"temperature": 0.4})
-    post_result = call_llm_and_record(
+    result = _run_rewrite_step(
         logger=logger,
         request_id=request_id,
         actor_user_id=actor_user_id,
         project_id=project_id,
         chapter_id=chapter_id,
+        api_key=api_key,
+        llm_call=llm_call,
+        render_values=render_values,
+        raw_content=raw_content,
+        macro_seed=macro_seed,
+        task_key="post_edit",
+        temperature=0.4,
+        ensure_preset=ensure_default_post_edit_preset,
+        validate_output=lambda source, output: validate_post_edit_output(
+            raw_content=source,
+            edited_content=output,
+        ),
+        render_value_overrides={"post_edit_sanitize": bool(post_edit_sanitize)},
         run_type="post_edit_sanitize" if post_edit_sanitize else "post_edit",
-        api_key=effective_api_key,
-        prompt_system=post_system,
-        prompt_user=post_user,
-        prompt_messages=post_messages,
-        prompt_render_log_json=post_render_log_json,
-        llm_call=post_call,
         run_params_extra_json=run_params_extra_json,
     )
-
-    post_contract = contract_for_task("post_edit")
-    post_parsed = post_contract.parse(post_result.text, finish_reason=post_result.finish_reason)
-    warnings = list(post_parsed.warnings)
-    parse_error = post_parsed.parse_error
-    edited = str(post_parsed.data.get("content_md") or "").strip()
-    applied = parse_error is None and bool(edited)
-    if applied:
-        extra_warnings = validate_post_edit_output(raw_content=raw_content, edited_content=edited)
-        if extra_warnings:
-            warnings.extend(extra_warnings)
-            applied = False
-    if not applied:
-        warnings.append("post_edit_failed")
-
     return PostEditStepResult(
-        applied=applied,
-        run_id=post_result.run_id,
-        edited_content_md=edited,
-        warnings=warnings,
-        parse_error=parse_error,
+        applied=result.applied,
+        run_id=result.run_id,
+        edited_content_md=result.content_md,
+        warnings=result.warnings,
+        parse_error=result.parse_error,
     )
 
 
@@ -198,75 +274,33 @@ def run_content_optimize_step(
     macro_seed: str,
     run_params_extra_json: dict[str, object] | None = None,
 ) -> ContentOptimizeStepResult:
-    effective_llm_call = llm_call
-    effective_api_key = str(api_key)
-    with SessionLocal() as db:
-        project = db.get(Project, project_id)
-        if project is not None:
-            try:
-                resolved = resolve_task_llm_config(
-                    db,
-                    project=project,
-                    user_id=actor_user_id,
-                    task_key="content_optimize",
-                    header_api_key=None,
-                )
-            except Exception:
-                resolved = None
-            if resolved is not None:
-                effective_llm_call = resolved.llm_call
-                effective_api_key = str(resolved.api_key)
-
-        ensure_default_content_optimize_preset(db, project_id=project_id)
-        values = build_post_edit_render_values(render_values, raw_content=raw_content)
-
-        opt_system, opt_user, opt_messages, _, _, _, opt_render_log = render_preset_for_task(
-            db,
-            project_id=project_id,
-            task="content_optimize",
-            values=values,  # type: ignore[arg-type]
-            macro_seed=macro_seed,
-            provider=effective_llm_call.provider,
-        )
-    opt_render_log_json = json.dumps(opt_render_log, ensure_ascii=False)
-
-    opt_call = with_param_overrides(effective_llm_call, {"temperature": 0.35})
-    opt_result = call_llm_and_record(
+    result = _run_rewrite_step(
         logger=logger,
         request_id=request_id,
         actor_user_id=actor_user_id,
         project_id=project_id,
         chapter_id=chapter_id,
+        api_key=api_key,
+        llm_call=llm_call,
+        render_values=render_values,
+        raw_content=raw_content,
+        macro_seed=macro_seed,
+        task_key="content_optimize",
+        temperature=0.35,
+        ensure_preset=ensure_default_content_optimize_preset,
+        validate_output=lambda source, output: validate_content_optimize_output(
+            raw_content=source,
+            optimized_content=output,
+        ),
         run_type="content_optimize",
-        api_key=effective_api_key,
-        prompt_system=opt_system,
-        prompt_user=opt_user,
-        prompt_messages=opt_messages,
-        prompt_render_log_json=opt_render_log_json,
-        llm_call=opt_call,
         run_params_extra_json=run_params_extra_json,
     )
-
-    opt_contract = contract_for_task("content_optimize")
-    opt_parsed = opt_contract.parse(opt_result.text, finish_reason=opt_result.finish_reason)
-    warnings = list(opt_parsed.warnings)
-    parse_error = opt_parsed.parse_error
-    optimized = str(opt_parsed.data.get("content_md") or "").strip()
-    applied = parse_error is None and bool(optimized)
-    if applied:
-        extra_warnings = validate_content_optimize_output(raw_content=raw_content, optimized_content=optimized)
-        if extra_warnings:
-            warnings.extend(extra_warnings)
-            applied = False
-    if not applied:
-        warnings.append("content_optimize_failed")
-
     return ContentOptimizeStepResult(
-        applied=applied,
-        run_id=opt_result.run_id,
-        optimized_content_md=optimized,
-        warnings=warnings,
-        parse_error=parse_error,
+        applied=result.applied,
+        run_id=result.run_id,
+        optimized_content_md=result.content_md,
+        warnings=result.warnings,
+        parse_error=result.parse_error,
     )
 
 

@@ -478,6 +478,7 @@ def run_batch_generation_task(*, task_id: str) -> None:
                 run_params_extra_json=run_params_extra_json,
             )
             data = gen_step.data
+            rewrite_warnings: dict[str, list[str]] = {}
 
             if params.post_edit:
                 raw_content = str(data.get("content_md") or "").strip()
@@ -496,6 +497,8 @@ def run_batch_generation_task(*, task_id: str) -> None:
                         post_edit_sanitize=bool(params.post_edit_sanitize),
                         run_params_extra_json={**run_params_extra_json, "post_edit_sanitize": bool(params.post_edit_sanitize)},
                     )
+                    if step.warnings:
+                        rewrite_warnings["post_edit"] = list(step.warnings)
                     if step.applied:
                         data["content_md"] = step.edited_content_md
 
@@ -515,6 +518,8 @@ def run_batch_generation_task(*, task_id: str) -> None:
                         macro_seed=f"{chapter_request_id}:content_optimize",
                         run_params_extra_json={**run_params_extra_json, "content_optimize": True},
                     )
+                    if step.warnings:
+                        rewrite_warnings["content_optimize"] = list(step.warnings)
                     if step.applied:
                         data["content_md"] = step.optimized_content_md
 
@@ -535,16 +540,19 @@ def run_batch_generation_task(*, task_id: str) -> None:
                 item.last_request_id = chapter_request_id
                 item.finished_at = utc_now()
                 recalculate_batch_generation_counts(db, batch_task=task)
+                success_payload: dict[str, object] = {
+                    "reason": "chapter_succeeded",
+                    "step": build_batch_step_payload(item),
+                    "checkpoint": build_batch_generation_checkpoint(task),
+                }
+                if rewrite_warnings:
+                    success_payload["rewrite_warnings"] = rewrite_warnings
                 append_batch_project_task_event(
                     db,
                     batch_task=task,
                     event_type="step_succeeded",
                     source="batch_generation_worker",
-                    payload={
-                        "reason": "chapter_succeeded",
-                        "step": build_batch_step_payload(item),
-                        "checkpoint": build_batch_generation_checkpoint(task),
-                    },
+                    payload=success_payload,
                 )
                 if task.pause_requested:
                     pause_batch_generation(

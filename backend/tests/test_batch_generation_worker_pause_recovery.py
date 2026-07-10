@@ -178,3 +178,92 @@ class TestBatchGenerationWorkerPauseRecovery(unittest.TestCase):
                 .order_by(ProjectTaskEvent.seq.asc())
             ).scalars().all()
             self.assertEqual(event_types, ["running", "step_started", "step_failed", "paused"])
+
+    def test_worker_success_event_preserves_rewrite_warnings(self) -> None:
+        with self.SessionLocal() as db:
+            task = db.get(BatchGenerationTask, "task-1")
+            assert task is not None
+            params = json.loads(str(task.params_json or "{}"))
+            params["post_edit"] = True
+            params["content_optimize"] = True
+            task.params_json = json.dumps(params, ensure_ascii=False)
+            db.commit()
+
+        fake_project = SimpleNamespace(id="p1")
+        fake_call = SimpleNamespace(provider="mock", model="mock")
+        generation_step = SimpleNamespace(
+            data={"content_md": "generated draft", "summary": "summary"},
+            run_id="run-main",
+        )
+        post_edit_step = SimpleNamespace(
+            applied=True,
+            edited_content_md="post edited draft",
+            warnings=["llm_config_resolve_failed"],
+        )
+        optimize_step = SimpleNamespace(
+            applied=True,
+            optimized_content_md="optimized draft",
+            warnings=["llm_config_resolve_failed"],
+        )
+
+        with patch.object(batch_generation_service, "SessionLocal", self.SessionLocal), patch.object(
+            batch_generation_service,
+            "_prepare_project_context",
+            return_value=(fake_project, fake_call, "sk-test", "", "", "", "", "", {}),
+        ), patch.object(
+            batch_generation_service,
+            "assemble_chapter_generate_render_values",
+            return_value=({}, {}),
+        ), patch.object(
+            batch_generation_service,
+            "render_preset_for_task",
+            return_value=("sys", "user", None, None, None, None, {}),
+        ), patch.object(
+            batch_generation_service,
+            "touch_batch_project_task",
+            return_value=None,
+        ), patch.object(
+            batch_generation_service,
+            "run_chapter_generate_llm_step",
+            return_value=generation_step,
+        ), patch.object(
+            batch_generation_service,
+            "run_post_edit_step",
+            return_value=post_edit_step,
+        ) as post_edit_mock, patch.object(
+            batch_generation_service,
+            "run_content_optimize_step",
+            return_value=optimize_step,
+        ) as optimize_mock:
+            batch_generation_service.run_batch_generation_task(task_id="task-1")
+
+        self.assertEqual(post_edit_mock.call_args.kwargs["raw_content"], "generated draft")
+        self.assertEqual(optimize_mock.call_args.kwargs["raw_content"], "post edited draft")
+
+        with self.SessionLocal() as db:
+            task = db.get(BatchGenerationTask, "task-1")
+            item = db.get(BatchGenerationTaskItem, "item-1")
+            assert task is not None
+            assert item is not None
+            self.assertEqual(task.status, "succeeded")
+            self.assertEqual(item.status, "succeeded")
+            self.assertIsNone(item.last_error_json)
+
+            event = db.execute(
+                select(ProjectTaskEvent)
+                .where(
+                    ProjectTaskEvent.task_id == "pt-batch",
+                    ProjectTaskEvent.event_type == "step_succeeded",
+                )
+                .order_by(ProjectTaskEvent.seq.desc())
+            ).scalars().first()
+            self.assertIsNotNone(event)
+            assert event is not None
+            payload = json.loads(str(event.payload_json or "{}"))
+            self.assertEqual(
+                payload.get("rewrite_warnings"),
+                {
+                    "post_edit": ["llm_config_resolve_failed"],
+                    "content_optimize": ["llm_config_resolve_failed"],
+                },
+            )
