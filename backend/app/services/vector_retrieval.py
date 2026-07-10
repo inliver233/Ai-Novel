@@ -227,7 +227,7 @@ def _parse_vector_source_order() -> list[str] | None:
     raw = str(getattr(settings, "vector_source_order", "") or "").strip()
     if not raw:
         return None
-    parts = [p.strip().lower() for p in re.split(r"[\\s,|;]+", raw) if p.strip()]
+    parts = [p.strip().lower() for p in re.split(r"[\s,|;]+", raw) if p.strip()]
     out: list[str] = []
     for p in parts:
         if p not in _ALL_SOURCES:
@@ -280,7 +280,7 @@ def _super_sort_final_chunks(
 
         raw_order = requested.get("source_order")
         if isinstance(raw_order, str):
-            parts = [p.strip().lower() for p in re.split(r"[\\s,|;]+", raw_order) if p.strip()]
+            parts = [p.strip().lower() for p in re.split(r"[\s,|;]+", raw_order) if p.strip()]
         elif isinstance(raw_order, list):
             parts = [str(p or "").strip().lower() for p in raw_order if str(p or "").strip()]
         else:
