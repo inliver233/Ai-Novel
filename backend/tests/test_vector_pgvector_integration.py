@@ -138,9 +138,9 @@ class TestVectorPgvectorIntegration(unittest.TestCase):
 
         chunks = [
             vector_rag_service.VectorChunk(
-                id="c_wb",
-                text="dragon from worldbook",
-                metadata={"source": "worldbook", "source_id": "wb1", "chunk_index": 0, "title": "WB"},
+                id="c_memory",
+                text="dragon from story memory",
+                metadata={"source": "story_memory", "source_id": "m1", "chunk_index": 0, "title": "M"},
             ),
             vector_rag_service.VectorChunk(
                 id="c_outline",
@@ -163,7 +163,7 @@ class TestVectorPgvectorIntegration(unittest.TestCase):
             project_id=self.project_id,
             query_text="dragon",
             query_vec=emb(0.0),
-            sources=["worldbook", "chapter"],
+            sources=["story_memory", "chapter"],
             vector_k=10,
             fts_k=10,
             rrf_k=60,
@@ -173,7 +173,7 @@ class TestVectorPgvectorIntegration(unittest.TestCase):
         self.assertIsInstance(candidates, list)
         cand_ids = {str(c.get("id")) for c in candidates if isinstance(c, dict)}
 
-        self.assertIn("c_wb", cand_ids)
+        self.assertIn("c_memory", cand_ids)
         self.assertIn("c_chapter", cand_ids)
         self.assertNotIn("c_outline", cand_ids)
 

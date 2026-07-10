@@ -12,6 +12,7 @@ Implementation is split into focused modules:
 from app.services.vector_build import (
     VectorChunk,
     VectorSource,
+    _ALL_SOURCES,
     _default_chroma_persist_dir,
     _vector_enabled_reason,
     schedule_vector_rebuild_task,
@@ -19,7 +20,6 @@ from app.services.vector_build import (
 
 # IMPORTANT: these MUST stay importable from `app.services.vector_rag_service`
 # for backward-compat (external modules import them from here).
-_ALL_SOURCES: list[VectorSource] = ["outline", "chapter", "story_memory"]
 _PGVECTOR_TABLE = "vector_chunks"
 _PGVECTOR_READY_CACHE: tuple[bool, float] | None = None
 _PGVECTOR_READY_CACHE_TTL_SECONDS = 30.0

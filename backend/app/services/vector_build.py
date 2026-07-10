@@ -39,7 +39,7 @@ from app.services.vector_chroma_fallback import (
 )
 
 logger = logging.getLogger("ainovel")
-VectorSource = Literal["worldbook", "outline", "chapter", "story_memory"]
+VectorSource = Literal["outline", "chapter", "story_memory"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +49,7 @@ class VectorChunk:
     metadata: dict[str, Any]
 
 
-_ALL_SOURCES: list[VectorSource] = ["worldbook", "outline", "chapter", "story_memory"]
+_ALL_SOURCES: list[VectorSource] = ["outline", "chapter", "story_memory"]
 _PGVECTOR_TABLE = "vector_chunks"
 _PGVECTOR_READY_CACHE: tuple[bool, float] | None = None
 _PGVECTOR_READY_CACHE_TTL_SECONDS = 30.0
