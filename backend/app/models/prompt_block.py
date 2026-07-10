@@ -27,6 +27,8 @@ class PromptBlock(Base):
     forbid_overrides: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     budget_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     cache_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_template_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_template_outdated: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

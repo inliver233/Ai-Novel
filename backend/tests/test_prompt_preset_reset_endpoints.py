@@ -19,6 +19,7 @@ from app.models.project import Project
 from app.models.project_membership import ProjectMembership
 from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
+from app.services.prompt_preset_defaults import prompt_template_hash
 from app.models.user import User
 from app.services.prompt_preset_resources import load_preset_resource
 
@@ -127,6 +128,7 @@ class TestPromptPresetResetEndpoints(unittest.TestCase):
         )
         self.assertEqual(update_resp.status_code, 200)
         self.assertEqual(update_resp.json()["data"]["block"]["template"], "changed")
+        self.assertTrue(update_resp.json()["data"]["block"]["resource_template_outdated"])
 
         reset_block_resp = client.post(
             f"/api/prompt_blocks/{block_id}/reset_to_default",
@@ -140,6 +142,22 @@ class TestPromptPresetResetEndpoints(unittest.TestCase):
         resource_block = next((b for b in resource.blocks if b.identifier == identifier), None)
         self.assertIsNotNone(resource_block)
         self.assertEqual(reset_block["template"], resource_block.template)
+        self.assertFalse(reset_block["resource_template_outdated"])
+
+        with self.SessionLocal() as db:
+            stored_block = db.get(PromptBlock, block_id)
+            self.assertIsNotNone(stored_block)
+            assert stored_block is not None
+            self.assertEqual(stored_block.origin_template_hash, prompt_template_hash(resource_block.template))
+            self.assertFalse(stored_block.resource_template_outdated)
+
+        metadata_update_resp = client.put(
+            f"/api/prompt_blocks/{block_id}",
+            headers={"X-Test-User": "u_editor"},
+            json={"name": "User customized block name"},
+        )
+        self.assertEqual(metadata_update_resp.status_code, 200)
+        self.assertTrue(metadata_update_resp.json()["data"]["block"]["resource_template_outdated"])
 
         preset_update = client.put(
             f"/api/prompt_presets/{preset_id}",
@@ -161,8 +179,20 @@ class TestPromptPresetResetEndpoints(unittest.TestCase):
 
         reset_blocks = reset_preset_resp.json()["data"]["blocks"]
         self.assertEqual(len(reset_blocks), len(resource.blocks))
+        self.assertTrue(all(block["resource_template_outdated"] is False for block in reset_blocks))
+
+        with self.SessionLocal() as db:
+            stored_blocks = (
+                db.query(PromptBlock)
+                .filter(PromptBlock.preset_id == preset_id)
+                .all()
+            )
+            self.assertTrue(stored_blocks)
+            self.assertTrue(
+                all(block.origin_template_hash == prompt_template_hash(block.template) for block in stored_blocks)
+            )
+            self.assertTrue(all(block.resource_template_outdated is False for block in stored_blocks))
 
 
 if __name__ == "__main__":
     unittest.main()
-

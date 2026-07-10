@@ -49,6 +49,7 @@ def _block_to_out(row: PromptBlock) -> dict[str, object]:
         forbid_overrides=row.forbid_overrides,
         budget=parse_json_dict(row.budget_json),
         cache=parse_json_dict(row.cache_json),
+        resource_template_outdated=row.resource_template_outdated,
         created_at=row.created_at,
         updated_at=row.updated_at,
     ).model_dump()

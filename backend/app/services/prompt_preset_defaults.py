@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -13,10 +15,93 @@ from app.models.prompt_preset import PromptPreset
 from app.services.prompt_preset_resources import list_available_preset_resources, load_preset_resource
 
 
+logger = logging.getLogger("ainovel")
+
+
+def prompt_template_hash(template: str | None) -> str:
+    return hashlib.sha256(str(template or "").encode("utf-8")).hexdigest()
+
+
+def refresh_prompt_block_resource_status(block: PromptBlock) -> None:
+    if block.origin_template_hash is None:
+        return
+    block.resource_template_outdated = prompt_template_hash(block.template) != block.origin_template_hash
+
+
+def mark_prompt_block_resource_outdated(block: PromptBlock) -> None:
+    if block.origin_template_hash is not None:
+        block.resource_template_outdated = True
+
+
+def _resource_block_metadata_matches(block: PromptBlock, block_resource: Any) -> bool:
+    triggers_json = json.dumps(list(block_resource.triggers or []), ensure_ascii=False)
+    budget_json = json.dumps(block_resource.budget, ensure_ascii=False) if block_resource.budget else None
+    cache_json = json.dumps(block_resource.cache, ensure_ascii=False) if block_resource.cache else None
+    return (
+        block.identifier == str(block_resource.identifier)
+        and block.name == str(block_resource.name)
+        and block.role == str(block_resource.role)
+        and block.enabled is bool(block_resource.enabled)
+        and block.marker_key == block_resource.marker_key
+        and block.injection_position == str(block_resource.injection_position)
+        and block.injection_depth == block_resource.injection_depth
+        and block.injection_order == int(block_resource.injection_order)
+        and block.triggers_json == triggers_json
+        and block.forbid_overrides is bool(block_resource.forbid_overrides)
+        and block.budget_json == budget_json
+        and block.cache_json == cache_json
+    )
+
+
+def _apply_resource_block_metadata(block: PromptBlock, block_resource: Any) -> bool:
+    before = (
+        block.identifier,
+        block.name,
+        block.role,
+        block.enabled,
+        block.marker_key,
+        block.injection_position,
+        block.injection_depth,
+        block.injection_order,
+        block.triggers_json,
+        block.forbid_overrides,
+        block.budget_json,
+        block.cache_json,
+    )
+    block.identifier = str(block_resource.identifier)
+    block.name = str(block_resource.name)
+    block.role = str(block_resource.role)
+    block.enabled = bool(block_resource.enabled)
+    block.marker_key = block_resource.marker_key
+    block.injection_position = str(block_resource.injection_position)
+    block.injection_depth = block_resource.injection_depth
+    block.injection_order = int(block_resource.injection_order)
+    block.triggers_json = json.dumps(list(block_resource.triggers or []), ensure_ascii=False)
+    block.forbid_overrides = bool(block_resource.forbid_overrides)
+    block.budget_json = json.dumps(block_resource.budget, ensure_ascii=False) if block_resource.budget else None
+    block.cache_json = json.dumps(block_resource.cache, ensure_ascii=False) if block_resource.cache else None
+    after = (
+        block.identifier,
+        block.name,
+        block.role,
+        block.enabled,
+        block.marker_key,
+        block.injection_position,
+        block.injection_depth,
+        block.injection_order,
+        block.triggers_json,
+        block.forbid_overrides,
+        block.budget_json,
+        block.cache_json,
+    )
+    return before != after
+
+
 def _prompt_block_from_resource(preset_id: str, block_resource: Any) -> PromptBlock:
     triggers_json = json.dumps(list(block_resource.triggers or []), ensure_ascii=False)
     budget_json = json.dumps(block_resource.budget, ensure_ascii=False) if block_resource.budget else None
     cache_json = json.dumps(block_resource.cache, ensure_ascii=False) if block_resource.cache else None
+    template = str(block_resource.template or "")
     return PromptBlock(
         id=new_id(),
         preset_id=preset_id,
@@ -24,7 +109,7 @@ def _prompt_block_from_resource(preset_id: str, block_resource: Any) -> PromptBl
         name=str(block_resource.name),
         role=str(block_resource.role),
         enabled=bool(block_resource.enabled),
-        template=str(block_resource.template or ""),
+        template=template,
         marker_key=block_resource.marker_key,
         injection_position=str(block_resource.injection_position),
         injection_depth=block_resource.injection_depth,
@@ -33,7 +118,83 @@ def _prompt_block_from_resource(preset_id: str, block_resource: Any) -> PromptBl
         forbid_overrides=bool(block_resource.forbid_overrides),
         budget_json=budget_json,
         cache_json=cache_json,
+        origin_template_hash=prompt_template_hash(template),
+        resource_template_outdated=False,
     )
+
+
+def _reconcile_resource_blocks(
+    db: Session,
+    *,
+    preset: PromptPreset,
+    resource: Any,
+    existing_blocks: list[PromptBlock],
+) -> bool:
+    changed = False
+    existing_by_identifier = {block.identifier: block for block in existing_blocks}
+
+    for resource_block in resource.blocks:
+        existing = existing_by_identifier.get(resource_block.identifier)
+        if existing is None:
+            db.add(_prompt_block_from_resource(preset.id, resource_block))
+            changed = True
+            continue
+
+        before = (
+            existing.template,
+            existing.origin_template_hash,
+            existing.resource_template_outdated,
+        )
+        resource_template = str(resource_block.template or "")
+        resource_hash = prompt_template_hash(resource_template)
+        current_hash = prompt_template_hash(existing.template)
+        metadata_matches = _resource_block_metadata_matches(existing, resource_block)
+        was_trusted_clean = (
+            existing.resource_template_outdated is False
+            and existing.origin_template_hash is not None
+            and current_hash == existing.origin_template_hash
+        )
+        metadata_changed = False
+
+        if current_hash == resource_hash:
+            existing.origin_template_hash = resource_hash
+            if was_trusted_clean:
+                metadata_changed = _apply_resource_block_metadata(existing, resource_block)
+                existing.resource_template_outdated = False
+            else:
+                existing.resource_template_outdated = not metadata_matches
+        elif was_trusted_clean:
+            existing.template = resource_template
+            metadata_changed = _apply_resource_block_metadata(existing, resource_block)
+            existing.origin_template_hash = resource_hash
+            existing.resource_template_outdated = False
+        else:
+            existing.resource_template_outdated = True
+
+        after = (
+            existing.template,
+            existing.origin_template_hash,
+            existing.resource_template_outdated,
+        )
+        changed = changed or metadata_changed or before != after
+
+    resource_identifiers = {block.identifier for block in resource.blocks}
+    for existing in existing_blocks:
+        if existing.identifier in resource_identifiers:
+            continue
+        current_hash = prompt_template_hash(existing.template)
+        if (
+            existing.resource_template_outdated is False
+            and existing.origin_template_hash is not None
+            and current_hash == existing.origin_template_hash
+        ):
+            db.delete(existing)
+            changed = True
+        else:
+            if existing.resource_template_outdated is not True:
+                changed = True
+            existing.resource_template_outdated = True
+    return changed
 
 
 def _ensure_default_preset_from_resource(
@@ -42,6 +203,7 @@ def _ensure_default_preset_from_resource(
     project_id: str,
     resource_key: str,
     activate: bool,
+    commit: bool = True,
 ) -> PromptPreset:
     from app.services.prompt_presets import parse_json_list
 
@@ -76,38 +238,31 @@ def _ensure_default_preset_from_resource(
                 preset.active_for_json = json.dumps(merged, ensure_ascii=False)
                 changed = True
 
-        if int(preset.version or 0) < int(resource.version):
-            # Version upgrade: refresh ALL block templates from resource
-            blocks_by_identifier = {b.identifier: b for b in resource.blocks}
-            existing_blocks = db.execute(select(PromptBlock).where(PromptBlock.preset_id == preset.id)).scalars().all()
-            existing_by_identifier = {b.identifier: b for b in existing_blocks}
+        existing_blocks = db.execute(select(PromptBlock).where(PromptBlock.preset_id == preset.id)).scalars().all()
+        existing_identifiers = {block.identifier for block in existing_blocks}
+        resource_identifiers = {block.identifier for block in resource.blocks}
+        resource_version_is_newer = int(preset.version or 0) < int(resource.version)
+        provenance_needs_reconcile = any(block.resource_template_outdated is not False for block in existing_blocks)
+        resource_block_is_missing = not resource_identifiers.issubset(existing_identifiers)
+        if resource_version_is_newer or provenance_needs_reconcile or resource_block_is_missing:
+            blocks_changed = _reconcile_resource_blocks(
+                db,
+                preset=preset,
+                resource=resource,
+                existing_blocks=existing_blocks,
+            )
+            changed = changed or blocks_changed
 
-            # Update existing blocks with new template content
-            for res_block in resource.blocks:
-                existing = existing_by_identifier.get(res_block.identifier)
-                if existing is not None:
-                    existing.template = str(res_block.template or "")
-                    existing.name = str(res_block.name)
-                    existing.role = str(res_block.role)
-                    existing.enabled = bool(res_block.enabled)
-                    existing.injection_order = int(res_block.injection_order)
-                    existing.triggers_json = json.dumps(list(res_block.triggers or []), ensure_ascii=False)
-                    existing.budget_json = json.dumps(res_block.budget, ensure_ascii=False) if res_block.budget else None
-                else:
-                    db.add(_prompt_block_from_resource(preset.id, res_block))
-
-            # Remove blocks that no longer exist in resource
-            resource_identifiers = {b.identifier for b in resource.blocks}
-            for existing in existing_blocks:
-                if existing.identifier not in resource_identifiers:
-                    db.delete(existing)
-
+        if resource_version_is_newer:
             preset.version = int(resource.version)
             changed = True
 
         if changed:
-            db.commit()
-            db.refresh(preset)
+            if commit:
+                db.commit()
+                db.refresh(preset)
+            else:
+                db.flush()
         return preset
 
     preset = PromptPreset(
@@ -125,8 +280,11 @@ def _ensure_default_preset_from_resource(
 
     blocks = [_prompt_block_from_resource(preset.id, b) for b in resource.blocks]
     db.add_all(blocks)
-    db.commit()
-    db.refresh(preset)
+    if commit:
+        db.commit()
+        db.refresh(preset)
+    else:
+        db.flush()
     return preset
 
 
@@ -255,6 +413,8 @@ def reset_prompt_block_to_default_resource(db: Session, *, preset: PromptPreset,
     block.forbid_overrides = bool(res_block.forbid_overrides)
     block.budget_json = json.dumps(res_block.budget, ensure_ascii=False) if res_block.budget else None
     block.cache_json = json.dumps(res_block.cache, ensure_ascii=False) if res_block.cache else None
+    block.origin_template_hash = prompt_template_hash(block.template)
+    block.resource_template_outdated = False
 
     preset.updated_at = utc_now()
     db.commit()
@@ -262,9 +422,47 @@ def reset_prompt_block_to_default_resource(db: Session, *, preset: PromptPreset,
     return block
 
 
+def _auto_upgrade_bound_preset(
+    db: Session,
+    *,
+    project_id: str,
+    preset: PromptPreset,
+    commit_upgrade: bool,
+) -> PromptPreset:
+    preset_id = preset.id
+    resource_key = str(preset.resource_key or "").strip()
+    if not resource_key:
+        return preset
+
+    try:
+        with db.begin_nested():
+            upgraded = _ensure_default_preset_from_resource(
+                db,
+                project_id=project_id,
+                resource_key=resource_key,
+                activate=False,
+                commit=False,
+            )
+        if commit_upgrade:
+            db.commit()
+            db.refresh(upgraded)
+        return upgraded
+    except Exception as exc:
+        if commit_upgrade:
+            db.rollback()
+        logger.warning(
+            "prompt_preset_resource_upgrade_failed preset_id=%s resource_key=%s error_type=%s",
+            preset_id,
+            resource_key,
+            type(exc).__name__,
+        )
+        return db.get(PromptPreset, preset_id) or preset
+
+
 def get_active_preset_for_task(db: Session, *, project_id: str, task: str, allow_autocreate: bool = True) -> PromptPreset:
     from app.services.prompt_presets import LEGACY_IMPORTED_SCOPE, parse_json_list
 
+    commit_upgrade = not db.in_transaction() and not (db.new or db.dirty or db.deleted)
     presets = (
         db.execute(select(PromptPreset).where(PromptPreset.project_id == project_id).order_by(PromptPreset.updated_at.desc()))
         .scalars()
@@ -275,32 +473,23 @@ def get_active_preset_for_task(db: Session, *, project_id: str, task: str, allow
         if (preset.scope or "") == LEGACY_IMPORTED_SCOPE:
             continue
         if task in parse_json_list(preset.active_for_json):
-            # Auto-upgrade blocks if resource version is newer
-            if preset.resource_key:
-                try:
-                    resource = load_preset_resource(preset.resource_key)
-                    if int(preset.version or 0) < int(resource.version):
-                        preset = _ensure_default_preset_from_resource(
-                            db, project_id=project_id, resource_key=preset.resource_key, activate=False,
-                        )
-                except Exception:
-                    pass
-            return preset
+            return _auto_upgrade_bound_preset(
+                db,
+                project_id=project_id,
+                preset=preset,
+                commit_upgrade=commit_upgrade,
+            )
 
     for preset in presets:
         if (preset.scope or "") != LEGACY_IMPORTED_SCOPE:
             continue
         if task in parse_json_list(preset.active_for_json):
-            if preset.resource_key:
-                try:
-                    resource = load_preset_resource(preset.resource_key)
-                    if int(preset.version or 0) < int(resource.version):
-                        preset = _ensure_default_preset_from_resource(
-                            db, project_id=project_id, resource_key=preset.resource_key, activate=False,
-                        )
-                except Exception:
-                    pass
-            return preset
+            return _auto_upgrade_bound_preset(
+                db,
+                project_id=project_id,
+                preset=preset,
+                commit_upgrade=commit_upgrade,
+            )
 
     if allow_autocreate:
         if task == "plan_chapter":

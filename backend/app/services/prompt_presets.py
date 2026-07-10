@@ -102,6 +102,9 @@ from app.services.prompt_preset_defaults import (  # noqa: E402
     ensure_default_plan_preset,
     ensure_default_post_edit_preset,
     get_active_preset_for_task,
+    mark_prompt_block_resource_outdated,
+    prompt_template_hash,
+    refresh_prompt_block_resource_status,
     reset_prompt_block_to_default_resource,
     reset_prompt_preset_to_default_resource,
     resolve_resource_key_for_preset,
@@ -137,7 +140,9 @@ __all__ = [
     "reset_prompt_preset_to_default_resource",
     "reset_prompt_block_to_default_resource",
     "get_active_preset_for_task",
+    "mark_prompt_block_resource_outdated",
+    "prompt_template_hash",
+    "refresh_prompt_block_resource_status",
     "RenderedBlock",
     "render_preset_for_task",
 ]
-

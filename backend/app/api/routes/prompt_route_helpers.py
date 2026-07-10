@@ -18,6 +18,8 @@ from app.services.prompt_presets import (
     ensure_default_outline_preset,
     ensure_default_plan_preset,
     ensure_default_post_edit_preset,
+    mark_prompt_block_resource_outdated,
+    refresh_prompt_block_resource_status,
     reset_prompt_block_to_default_resource,
     reset_prompt_preset_to_default_resource,
 )
@@ -213,6 +215,22 @@ def _update_prompt_block_payload(
     block: PromptBlock,
     body: object,
 ) -> dict[str, object]:
+    metadata_fields = {
+        "identifier",
+        "name",
+        "role",
+        "enabled",
+        "marker_key",
+        "injection_position",
+        "injection_depth",
+        "injection_order",
+        "triggers",
+        "forbid_overrides",
+        "budget",
+        "cache",
+    }
+    metadata_was_updated = bool(metadata_fields.intersection(getattr(body, "model_fields_set", set())))
+
     if getattr(body, "identifier", None) is not None:
         block.identifier = body.identifier
     if getattr(body, "name", None) is not None:
@@ -223,6 +241,7 @@ def _update_prompt_block_payload(
         block.enabled = body.enabled
     if "template" in getattr(body, "model_fields_set", set()):
         block.template = body.template
+        refresh_prompt_block_resource_status(block)
     if "marker_key" in getattr(body, "model_fields_set", set()):
         block.marker_key = body.marker_key
     if getattr(body, "injection_position", None) is not None:
@@ -241,6 +260,8 @@ def _update_prompt_block_payload(
         block.budget_json = json.dumps(body.budget or {}, ensure_ascii=False) if body.budget else None
     if getattr(body, "cache", None) is not None:
         block.cache_json = json.dumps(body.cache or {}, ensure_ascii=False) if body.cache else None
+    if metadata_was_updated:
+        mark_prompt_block_resource_outdated(block)
 
     preset.updated_at = utc_now()
     db.commit()
@@ -296,7 +317,10 @@ def _reorder_prompt_blocks_payload(
         raise AppError.validation(message="块顺序（ordered_block_ids）必须与该 preset 的 blocks 集合完全一致")
 
     for idx, block_id in enumerate(ordered_ids):
-        by_id[block_id].injection_order = idx
+        block = by_id[block_id]
+        if block.injection_order != idx:
+            block.injection_order = idx
+            mark_prompt_block_resource_outdated(block)
 
     preset.updated_at = utc_now()
     db.commit()

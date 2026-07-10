@@ -66,6 +66,7 @@ class PromptBlockOut(BaseModel):
     forbid_overrides: bool = False
     budget: dict[str, Any] = Field(default_factory=dict)
     cache: dict[str, Any] = Field(default_factory=dict)
+    resource_template_outdated: bool | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

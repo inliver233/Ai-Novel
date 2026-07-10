@@ -28,6 +28,7 @@ from app.services.prompt_presets import (
     ensure_default_plan_preset,
     ensure_default_post_edit_preset,
     parse_json_list,
+    refresh_prompt_block_resource_status,
 )
 from app.services.prompt_task_catalog import PROMPT_TASK_SET
 
@@ -597,6 +598,7 @@ def update_preset_payload(
             prompt_preset.name = body.name
         if body.content is not None:
             guidance_block.template = _compose_guidance_template(config, body.content)
+            refresh_prompt_block_resource_status(guidance_block)
         prompt_preset.updated_at = utc_now()
 
         db.commit()
