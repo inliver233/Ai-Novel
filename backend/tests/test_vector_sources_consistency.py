@@ -9,6 +9,7 @@ from app.services.vector_chunk_builder import _ALL_SOURCES as CHUNK_BUILDER_SOUR
 from app.services.vector_rag_service import _ALL_SOURCES as RAG_SERVICE_SOURCES
 from app.services.vector_retrieval import _ALL_SOURCES as RETRIEVAL_SOURCES
 from app.services.vector_storage import _ALL_SOURCES as STORAGE_SOURCES
+from app.services.vector_types import _ALL_SOURCES as TYPE_SOURCES
 
 
 def test_all_sources_consistent_across_modules() -> None:
@@ -16,6 +17,7 @@ def test_all_sources_consistent_across_modules() -> None:
     canonical_sources = ["outline", "chapter", "story_memory"]
 
     assert BUILD_SOURCES == canonical_sources
+    assert BUILD_SOURCES is TYPE_SOURCES
     assert RAG_SERVICE_SOURCES == canonical_sources
     assert CHUNK_BUILDER_SOURCES == canonical_sources
     assert BUILD_SOURCES is RAG_SERVICE_SOURCES

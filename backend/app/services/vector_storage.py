@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-# NOTE: These functions are extracted from `vector_rag_service.py` to keep the public API stable while
-# isolating storage backend logic in a dedicated module.
-
-# Per refactor contract: keep importing VectorChunk / VectorSource from vector_rag_service.
-from app.services.vector_rag_service import VectorChunk, VectorSource, _ALL_SOURCES, _PGVECTOR_TABLE
-
 import hashlib
 import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
@@ -18,8 +13,11 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.logging import exception_log_fields, log_event
 from app.db.session import SessionLocal, engine
-from app.services import vector_rag_service as _hub
-from app.services.embedding_service import embed_texts as embed_texts_with_providers
+from app.services.embedding_service import (
+    embed_texts as embed_texts_with_providers,
+    embedding_enabled_reason,
+    resolve_embedding_config,
+)
 from app.services.vector_chroma_fallback import (
     _INMEMORY_CHROMA,
     _INMEMORY_CHROMADB,
@@ -29,8 +27,12 @@ from app.services.vector_chroma_fallback import (
     _cosine_distance,
     load_chromadb_or_fallback as _import_chromadb,
 )
+from app.services.vector_types import VectorChunk, VectorSource, _ALL_SOURCES
 
 logger = logging.getLogger("ainovel")
+_PGVECTOR_TABLE = "vector_chunks"
+_PGVECTOR_READY_CACHE: tuple[bool, float] | None = None
+_PGVECTOR_READY_CACHE_TTL_SECONDS = 30.0
 
 
 def _is_postgres() -> bool:
@@ -38,13 +40,14 @@ def _is_postgres() -> bool:
 
 
 def _pgvector_ready() -> bool:
+    global _PGVECTOR_READY_CACHE
     now = time.time()
-    cached = _hub._PGVECTOR_READY_CACHE
-    if cached is not None and (now - cached[1]) < _hub._PGVECTOR_READY_CACHE_TTL_SECONDS:
+    cached = _PGVECTOR_READY_CACHE
+    if cached is not None and (now - cached[1]) < _PGVECTOR_READY_CACHE_TTL_SECONDS:
         return bool(cached[0])
 
     if not _is_postgres():
-        _hub._PGVECTOR_READY_CACHE = (False, now)
+        _PGVECTOR_READY_CACHE = (False, now)
         return False
 
     ready = False
@@ -59,7 +62,7 @@ def _pgvector_ready() -> bool:
     except Exception:
         ready = False
 
-    _hub._PGVECTOR_READY_CACHE = (bool(ready), now)
+    _PGVECTOR_READY_CACHE = (bool(ready), now)
     return bool(ready)
 
 
@@ -94,6 +97,19 @@ def _rrf_contrib(rank: int | None, *, k: int) -> float:
 
 def _rrf_score(*, vector_rank: int | None, fts_rank: int | None, k: int) -> float:
     return _rrf_contrib(vector_rank, k=k) + _rrf_contrib(fts_rank, k=k)
+
+
+def _backend_dir() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _default_chroma_persist_dir() -> str:
+    return str((_backend_dir() / ".chroma").resolve().as_posix())
+
+
+def _vector_enabled_reason(*, embedding: dict[str, str | None] | None = None) -> tuple[bool, str | None]:
+    config = resolve_embedding_config(embedding)
+    return embedding_enabled_reason(config)
 
 
 def _normalize_kb_id(kb_id: str | None) -> str:
@@ -146,7 +162,7 @@ def _migrate_chroma_collection(*, source: Any, target: Any) -> int:
 
 def _get_collection(*, project_id: str, kb_id: str | None = None):
     chromadb = _import_chromadb()
-    persist_dir = settings.vector_chroma_persist_dir or _hub._default_chroma_persist_dir()
+    persist_dir = settings.vector_chroma_persist_dir or _default_chroma_persist_dir()
     client = chromadb.PersistentClient(path=persist_dir)
 
     kb = _normalize_kb_id(kb_id)
@@ -461,10 +477,7 @@ def _pgvector_hybrid_fetch(
 
 
 def _pgvector_hybrid_query(*, project_id: str, query_text: str, query_vec: list[float], sources: list[VectorSource]) -> dict[str, Any]:
-    # Backward-compat for tests/monkeypatch: allow overriding _is_postgres/_pgvector_hybrid_fetch via vector_rag_service.
-    from app.services import vector_rag_service as _hub  # noqa: PLC0415
-
-    if not _hub._is_postgres():
+    if not _is_postgres():
         raise RuntimeError("not_postgres")
 
     top_k = int(settings.vector_max_candidates or 20)
@@ -478,7 +491,7 @@ def _pgvector_hybrid_query(*, project_id: str, query_text: str, query_vec: list[
 
     min_needed = max(1, min(3, int(settings.vector_final_max_chunks or 6)))
     for _attempt in range(3):
-        out = _hub._pgvector_hybrid_fetch(
+        out = _pgvector_hybrid_fetch(
             project_id=project_id,
             query_text=query_text,
             query_vec=query_vec,
@@ -524,7 +537,7 @@ def ingest_chunks(
     chunks: list[VectorChunk],
     embedding: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
-    enabled, disabled_reason = _hub._vector_enabled_reason(embedding=embedding)
+    enabled, disabled_reason = _vector_enabled_reason(embedding=embedding)
     if not enabled:
         return {"enabled": False, "skipped": True, "disabled_reason": disabled_reason, "ingested": 0}
 
@@ -621,7 +634,7 @@ def rebuild_project(
     chunks: list[VectorChunk],
     embedding: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
-    enabled, disabled_reason = _hub._vector_enabled_reason(embedding=embedding)
+    enabled, disabled_reason = _vector_enabled_reason(embedding=embedding)
     if not enabled:
         return {"enabled": False, "skipped": True, "disabled_reason": disabled_reason, "rebuilt": 0}
 
@@ -643,7 +656,7 @@ def rebuild_project(
 
     try:
         chromadb = _import_chromadb()
-        persist_dir = settings.vector_chroma_persist_dir or _hub._default_chroma_persist_dir()
+        persist_dir = settings.vector_chroma_persist_dir or _default_chroma_persist_dir()
         client = chromadb.PersistentClient(path=persist_dir)
         kb = _normalize_kb_id(kb_id)
         legacy_name = _legacy_collection_name(project_id)
@@ -714,7 +727,7 @@ def purge_project_vectors(*, project_id: str, kb_id: str | None = None) -> dict[
 
     try:
         chromadb = _import_chromadb()
-        persist_dir = settings.vector_chroma_persist_dir or _hub._default_chroma_persist_dir()
+        persist_dir = settings.vector_chroma_persist_dir or _default_chroma_persist_dir()
         client = chromadb.PersistentClient(path=persist_dir)
         kb = _normalize_kb_id(kb_id)
         names = [_hash_collection_name(project_id, kb)]

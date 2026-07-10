@@ -43,15 +43,6 @@ def _rerank_candidates(
     hybrid_alpha: float | None = None,
     external: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    # Backward-compat for tests/monkeypatch: allow overriding score fn via app.services.vector_rag_service._rerank_score
-    score_fn = _rerank_score
-    try:
-        from app.services import vector_rag_service as _hub  # noqa: PLC0415
-
-        score_fn = getattr(_hub, "_rerank_score", _rerank_score)
-    except Exception:
-        score_fn = _rerank_score
-
     return rerank_candidates_with_providers(
         query_text=query_text,
         candidates=candidates,
@@ -59,7 +50,7 @@ def _rerank_candidates(
         top_k=top_k,
         hybrid_alpha=hybrid_alpha,
         external=external,
-        score_fn=score_fn,
+        score_fn=_rerank_score,
     )
 
 

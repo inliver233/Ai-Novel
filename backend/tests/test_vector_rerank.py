@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.services import vector_rag_service
+from app.services import vector_rag_service, vector_rerank
 
 
 class TestVectorRerank(unittest.TestCase):
@@ -27,13 +27,13 @@ class TestVectorRerank(unittest.TestCase):
         self.assertIsInstance(obs.get("timing_ms"), int)
 
     def test_rerank_failsoft_when_scoring_raises(self) -> None:
-        orig = vector_rag_service._rerank_score
+        orig = vector_rerank._rerank_score
 
         def _boom(*, method: str, query_text: str, candidate_text: str) -> float:  # pragma: no cover
             raise RuntimeError("boom")
 
         try:
-            vector_rag_service._rerank_score = _boom  # type: ignore[assignment]
+            vector_rerank._rerank_score = _boom  # type: ignore[assignment]
             candidates = [
                 {"id": "x", "text": "dragon", "metadata": {}},
                 {"id": "y", "text": "castle", "metadata": {}},
@@ -52,7 +52,7 @@ class TestVectorRerank(unittest.TestCase):
             self.assertIsInstance(obs.get("errors"), list)
             self.assertGreaterEqual(len(obs.get("errors") or []), 1)
         finally:
-            vector_rag_service._rerank_score = orig  # type: ignore[assignment]
+            vector_rerank._rerank_score = orig  # type: ignore[assignment]
 
     def test_rerank_hybrid_alpha_preserves_original_order(self) -> None:
         candidates = [

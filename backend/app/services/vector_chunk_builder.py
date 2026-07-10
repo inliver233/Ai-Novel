@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.models.chapter import Chapter
 from app.models.outline import Outline
 from app.models.story_memory import StoryMemory
-from app.services.vector_build import VectorChunk, VectorSource, _ALL_SOURCES
+from app.services.vector_types import VectorChunk, VectorSource, _ALL_SOURCES
 
 
 def _chunk_text(text: str, *, chunk_size: int, overlap: int) -> list[str]:

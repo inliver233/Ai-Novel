@@ -10,9 +10,7 @@ from app.core.config import settings
 from app.core.logging import log_event
 from app.services.context_budget_observability import build_budget_observability
 from app.services.embedding_service import embed_texts as embed_texts_with_providers
-from app.services.vector_build import (
-    VectorSource,
-    _ALL_SOURCES,
+from app.services.vector_storage import (
     _get_collection,
     _normalize_kb_id,
     _pgvector_hybrid_query,
@@ -20,6 +18,7 @@ from app.services.vector_build import (
     _rrf_contrib,
     _vector_enabled_reason,
 )
+from app.services.vector_types import VectorSource, _ALL_SOURCES
 from app.services.vector_rerank import (
     _rerank_candidates,
     _resolve_rerank_config,
