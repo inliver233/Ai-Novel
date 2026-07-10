@@ -29,7 +29,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -59,6 +58,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 #     - 记忆/搜索：memory(记忆管理)、story_memory(故事记忆)、search(搜索)、vector(向量检索)
 #     - 其他：mcp(MCP协议)、writing_styles(写作风格)
 from app.api.router import api_router
+
+# 【共享引导】数据库迁移、管理员初始化及其应用内执行策略的唯一实现
+#   Docker entrypoint 同样通过 `python -m app.bootstrap` 复用这条路径
+from app.bootstrap import bootstrap_in_app
 
 # 【全局配置】基于 pydantic-settings 的配置单例，从 .env 文件和环境变量加载
 #   定义位置：app/core/config.py
@@ -97,15 +100,6 @@ from app.core.logging import configure_logging, exception_log_fields, log_event,
 #   get_request_id()  — 在任意位置获取当前请求的 ID（日志系统会自动调用）
 from app.core.request_id import new_request_id, reset_request_id, set_request_id
 
-# 【数据库迁移】基于 Alembic 的自动数据库 schema 管理
-#   定义位置：app/db/migrations.py
-#   ensure_db_schema() — 启动时自动检测数据库状态并执行迁移：
-#     - 空库 → alembic upgrade head（建表）
-#     - 旧库 → alembic upgrade head（升级）
-#     - 无 alembic_version 的遗留 SQLite → 先 stamp 再 upgrade
-#     - PostgreSQL 支持 advisory lock 防止多进程同时迁移
-from app.db.migrations import ensure_db_schema
-
 # 【数据库会话工厂】SQLAlchemy 的引擎和会话配置
 #   定义位置：app/db/session.py
 #   SessionLocal — sessionmaker 实例，用于创建数据库会话
@@ -125,13 +119,6 @@ from app.llm.http_client import close_llm_http_client
 #   定义位置：app/models/user.py
 #   User 字段：id(主键)、email、password_hash、display_name、is_admin、created_at、updated_at
 from app.models.user import User
-
-# 【认证服务】管理员用户的初始化逻辑
-#   定义位置：app/services/auth_service.py
-#   ensure_admin_user() — 根据配置中的 auth_admin_user_id/auth_admin_password
-#     自动创建或更新管理员账户，密码使用 bcrypt 哈希（rounds 由配置决定）
-#   hash_password() / verify_password() — bcrypt 密码哈希和验证
-from app.services.auth_service import ensure_admin_user
 
 # 【项目任务看门狗】后台线程，定期巡检异步任务的健康状态
 #   定义位置：app/services/project_task_runtime_service.py
@@ -160,74 +147,6 @@ logger = logging.getLogger("ainovel")
 # ═══════════════════════════════════════════════════════════════════
 # 一、辅助函数 — 启动阶段使用的工具函数
 # ═══════════════════════════════════════════════════════════════════
-
-
-def _env_truthy(name: str) -> bool | None:
-    """
-    读取环境变量并解析为布尔值。
-
-    返回值：
-      - True：  值为 "1" / "true" / "yes" / "on"
-      - False： 值为 "0" / "false" / "no" / "off"
-      - None：  环境变量不存在或为空
-
-    用途：用于 _should_bootstrap_in_app() 判断是否在应用内执行数据库初始化
-    """
-    raw = str(os.getenv(name) or "").strip().lower()
-    if not raw:
-        return None
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
-def _web_concurrency() -> int:
-    """
-    读取环境变量 WEB_CONCURRENCY，获取 uvicorn worker 数量。
-
-    返回值：worker 数量（最小为 1）
-
-    用途：当 worker > 1 时，不应在应用启动时执行数据库迁移
-         （避免多个 worker 同时执行迁移导致冲突）
-    """
-    raw = str(os.getenv("WEB_CONCURRENCY") or "").strip()
-    if not raw:
-        return 1
-    try:
-        value = int(raw)
-    except Exception:
-        return 1
-    return 1 if value <= 0 else value
-
-
-def _should_bootstrap_in_app() -> bool:
-    """
-    判断是否应该在应用启动时执行"引导初始化"（数据库迁移 + 管理员创建）。
-
-    决策逻辑（按优先级从高到低）：
-      1. AINOVEL_BOOTSTRAP_DONE=true     → 不执行（外部已完成引导，如 Docker entrypoint）
-      2. AINOVEL_BOOTSTRAP_IN_APP=true   → 强制执行
-      3. AINOVEL_BOOTSTRAP_IN_APP=false  → 强制不执行
-      4. app_env != "dev"                → 不执行（非开发环境应由外部脚本管理迁移）
-      5. WEB_CONCURRENCY <= 1            → 执行（单 worker 安全）
-
-    这样设计的原因：
-      - 开发环境单 worker 时自动引导，零配置即可运行
-      - 生产环境应通过独立脚本/命令执行迁移，避免竞态
-    """
-    if _env_truthy("AINOVEL_BOOTSTRAP_DONE") is True:
-        return False
-
-    override = _env_truthy("AINOVEL_BOOTSTRAP_IN_APP")
-    if override is not None:
-        return override
-
-    if settings.app_env != "dev":
-        return False
-
-    return _web_concurrency() <= 1
 
 
 def _warn_sqlite_single_worker() -> None:
@@ -293,45 +212,6 @@ def _ensure_local_user() -> None:
         db.close()
 
 
-def _ensure_admin_user() -> None:
-    """
-    确保管理员用户存在。
-
-    委托给 app/services/auth_service.py → ensure_admin_user(db)：
-      - 如果 auth_admin_user_id 和 auth_admin_password 都配置了：
-        - 用户不存在 → 创建用户 + 设置密码（bcrypt 哈希）
-        - 用户已存在 → 确保 is_admin=True，补全 email/display_name
-        - 密码记录不存在 → 创建密码记录
-
-    特殊处理：在 dev 环境下，如果密码长度 < 8 导致 VALIDATION_ERROR，
-    仅输出警告日志并跳过（而非抛出异常阻止启动）
-
-    涉及模型：app/models/user.py → User
-              app/models/user_password.py → UserPassword
-    """
-    db = SessionLocal()
-    try:
-        ensure_admin_user(db)
-    except AppError as exc:
-        raw = (settings.auth_admin_password or "").strip()
-        if settings.app_env == "dev" and exc.code == "VALIDATION_ERROR" and raw and len(raw) < 8:
-            log_event(
-                logger,
-                "warning",
-                event="AUTH_ADMIN_BOOTSTRAP",
-                action="skipped",
-                reason="invalid_password",
-                admin_user_id=settings.auth_admin_user_id,
-                password_length=len(raw),
-                min_password_length=8,
-                message="AUTH_ADMIN_PASSWORD 无效（长度 < 8），跳过 admin bootstrap（dev only）",
-            )
-            return
-        raise
-    finally:
-        db.close()
-
-
 # ═══════════════════════════════════════════════════════════════════
 # 二、应用生命周期（Lifespan）— FastAPI 的启动与关闭钩子
 # ═══════════════════════════════════════════════════════════════════
@@ -347,13 +227,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
          → 初始化 loguru 日志系统，拦截所有 stdlib logger
          → 实现位置：app/core/logging.py
 
-      2. 条件性引导初始化（仅在 _should_bootstrap_in_app() 返回 True 时）：
-         a. ensure_db_schema()
-            → 自动执行数据库迁移（Alembic upgrade head）
-            → 实现位置：app/db/migrations.py
-         b. _ensure_admin_user()
-            → 创建管理员账户
-            → 实现位置：app/services/auth_service.py
+      2. bootstrap_in_app()
+         → 由 app/bootstrap.py 的共享策略决定是否执行数据库迁移和管理员初始化
 
       3. _warn_sqlite_single_worker()
          → 如果用 SQLite，输出警告
@@ -375,9 +250,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
          → 实现位置：app/llm/http_client.py
     """
     configure_logging()
-    if _should_bootstrap_in_app():
-        ensure_db_schema()
-        _ensure_admin_user()
+    bootstrap_in_app()
     _warn_sqlite_single_worker()
     _ensure_local_user()
     watchdog_handle = start_project_task_watchdog()
