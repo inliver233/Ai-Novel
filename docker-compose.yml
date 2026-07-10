@@ -47,7 +47,7 @@ x-backend-common: &backend-common
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ainovel}
       POSTGRES_USER: ${POSTGRES_USER:-ainovel}

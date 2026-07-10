@@ -167,7 +167,11 @@ docker compose up -d --build
 
 - 前端对外开放 `5173`
 - 后端仅监听宿主机本地 `127.0.0.1:8000`
+- PostgreSQL 镜像内置 pgvector；启动迁移会安装 `vector` 扩展并确保 `vector_chunks` 可用
 - PostgreSQL / Redis 不直接暴露公网端口
+
+如通过 `DATABASE_URL` 接入外部 PostgreSQL，请先确保服务端已安装 pgvector，且数据库账号可执行
+`CREATE EXTENSION vector`；迁移会在能力缺失时明确失败，不会静默降级为不可持久化的进程内索引。
 
 #### 5. 更新项目
 
@@ -239,8 +243,8 @@ Docker Compose 默认会创建以下卷：
 
 其中：
 
-- PostgreSQL 主数据保存在 `ainovel_postgres_data`
-- 应用运行数据、向量相关持久化内容与自动生成密钥等保存在 `ainovel_app_data`
+- PostgreSQL 主数据与 pgvector 索引保存在 `ainovel_postgres_data`
+- 应用运行数据、可选 Chroma 目录与自动生成密钥等保存在 `ainovel_app_data`
 
 如需完全清空部署数据：
 
