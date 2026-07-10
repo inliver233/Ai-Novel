@@ -96,6 +96,7 @@ export function AdminUsersPage() {
   const [onlineOnly, setOnlineOnly] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [cursorHistory, setCursorHistory] = useState<string[]>([]);
+  const [reloadVersion, setReloadVersion] = useState(0);
 
   type RowBusy = { resetPassword?: number; toggleDisabled?: number };
   const [rowBusy, setRowBusy] = useState<Record<string, RowBusy>>({});
@@ -195,7 +196,7 @@ export function AdminUsersPage() {
   useEffect(() => {
     if (!canManage) return;
     void load();
-  }, [canManage, load]);
+  }, [canManage, load, reloadVersion]);
 
   const createUser = useCallback(async () => {
     if (!canManage) return;
@@ -227,6 +228,7 @@ export function AdminUsersPage() {
       setOnlineOnly(false);
       setCursor(null);
       setCursorHistory([]);
+      setReloadVersion((version) => version + 1);
     } catch (e) {
       const err =
         e instanceof ApiError

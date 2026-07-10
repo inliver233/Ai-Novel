@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// fe8-P8 known_issue：AdminUsersPage 创建用户后列表不刷新。
+// fe8-P8 回归：AdminUsersPage 创建用户后必须显式刷新列表。
 // AdminUsersPage.tsx:225-229，createUser 成功后用 setSearchInput(userId); setSearchQuery(userId);
 // setOnlineOnly(false); setCursor(null); setCursorHistory([]) 期望触发列表刷新。但若当前
 // searchQuery 已等于将创建的 userId 且 cursor 已为 null、onlineOnly 已为 false（例如先搜过该
@@ -8,7 +8,7 @@
 // → load 回调身份不变 → useEffect([canManage, load]) 不重跑 → 列表不刷新，新用户不出现。
 // （setCursorHistory([]) 虽产生新数组引用触发 re-render，但 cursorHistory 不在 load deps 内，
 // 亦不影响该 effect。）
-// 本测试断言【正确行为】：创建用户后新用户应出现在列表中。当前实现有 bug 故 FAILED(红)。
+// 覆盖筛选状态未变化以及筛选状态变化两条路径。
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -138,10 +138,14 @@ function userListWithNewResponse() {
   };
 }
 
-describe("AdminUsersPage 创建用户后刷新 (fe8-P8 known_issue)", () => {
+describe("AdminUsersPage 创建用户后刷新", () => {
   beforeEach(() => {
     // fe8-P8：每个用例重置 created 标志并重装 apiJson 路由。
     mocks.created = false;
+    mocks.apiJson.mockReset();
+    mocks.toast.toastSuccess.mockClear();
+    mocks.toast.toastWarning.mockClear();
+    mocks.toast.toastError.mockClear();
     mocks.apiJson.mockImplementation((path: string, init?: { method?: string }) => {
       const method = init?.method ?? "GET";
       // POST 创建用户：翻转 created 标志，返回成功。
@@ -161,7 +165,7 @@ describe("AdminUsersPage 创建用户后刷新 (fe8-P8 known_issue)", () => {
     });
   });
 
-  it("先搜该 userId 再创建同名用户后，新用户应出现在列表中", { tags: ["@known_issue"] }, async () => {
+  it("先搜该 userId 再创建同名用户后，新用户应出现在列表中", async () => {
     const user = userEvent.setup();
 
     render(<AdminUsersPage />);
@@ -194,10 +198,28 @@ describe("AdminUsersPage 创建用户后刷新 (fe8-P8 known_issue)", () => {
     // 正确行为断言：创建用户后列表应刷新，新用户 newuser 应出现在列表中。
     // waitFor 轮询以给可能的刷新 effect 留出时间（honest mirror：若修复则 load 重跑、
     // GET 返回 [newuser]、列表渲染 newuser → 断言通过）。
-    // 当前 bug：searchQuery 已="newuser"、cursor 已 null → setSearchQuery/setCursor 均为 no-op
-    // → load 身份不变 → useEffect 不重跑 → 列表不刷新 → newuser 永不出现 → waitFor 超时 → FAILED(红)。
     await waitFor(() => {
       expect(screen.getAllByText(NEW_USER_ID).length).toBeGreaterThan(0);
     });
+  });
+
+  it("默认筛选下创建用户只触发一次刷新", async () => {
+    const user = userEvent.setup();
+    render(<AdminUsersPage />);
+    await waitFor(() => expect(mocks.apiJson).toHaveBeenCalledTimes(1));
+
+    const userIdInput = document.querySelector<HTMLInputElement>("#admin_users_user_id");
+    expect(userIdInput).not.toBeNull();
+    await user.type(userIdInput!, NEW_USER_ID);
+    const createSubmit = userIdInput!.closest("form")!.querySelector<HTMLButtonElement>('button[type="submit"]');
+    expect(createSubmit).not.toBeNull();
+    await user.click(createSubmit!);
+
+    await waitFor(() => expect(screen.getAllByText(NEW_USER_ID).length).toBeGreaterThan(0));
+    const listCalls = mocks.apiJson.mock.calls.filter(
+      ([path, init]) => (init?.method ?? "GET") === "GET" && String(path).startsWith("/api/auth/admin/users?"),
+    );
+    expect(listCalls).toHaveLength(2);
+    expect(listCalls[1]?.[0]).toContain("q=newuser");
   });
 });
