@@ -366,7 +366,11 @@ def local_register(request: Request, db: DbDep, body: LocalRegisterRequest) -> J
         disabled_at=None,
     )
     db.add(pwd)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise AppError.conflict("用户已存在") from None
 
     session = build_session(user_id=user.id)
     response = JSONResponse(

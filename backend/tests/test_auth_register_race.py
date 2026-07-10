@@ -1,11 +1,10 @@
-"""认证注册路由竞态测试。
+"""认证注册路由提交冲突测试。
 
 H7（项目情况完全分析.md）子项：``local_register`` 是 check-then-act——先
-``db.get`` 查重（auth.py:354），后 ``db.commit``（:369），且未捕获 ``IntegrityError``。
-并发同名注册时，第二个请求通过了查重检查，但在 commit 时撞唯一约束 →
-``IntegrityError`` 冒泡 → 全局 ``SQLAlchemyError`` 处理器返回 500 DB_ERROR，
-而非语义正确的 409 CONFLICT。本测试直接模拟该竞态结果（让 commit 抛
-IntegrityError），断言【正确行为】应返回 409；当前实现有 bug，标 ``known_issue``。
+``db.get`` 查重，后 ``db.commit``；历史实现未捕获提交阶段的 ``IntegrityError``。
+并发同名注册时，第二个请求可能通过查重检查，但在 commit 时撞唯一约束。本文件
+不伪造线程级并发，而是在数据库提交边界确定性模拟“竞态失败方”：让 commit 抛出
+``IntegrityError``，断言路由回滚事务并返回语义正确的 409 CONFLICT。
 
 载体用 ``make_test_app`` + 手动挂生产的 ``sqlalchemy_error_handler``：脚手架默认
 只挂 ``AppError`` 处理器（刻意设计，让其他异常自然冒泡给测试），这里需要 DB
@@ -15,7 +14,9 @@ IntegrityError），断言【正确行为】应返回 409；当前实现有 bug�
 
 from __future__ import annotations
 
-import pytest
+from unittest.mock import Mock
+
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.testclient import TestClient
 
@@ -33,28 +34,21 @@ from tests.support import (
 )
 
 
-# H7: register 未捕获 IntegrityError → 并发重复应 409 CONFLICT，当前 500 DB_ERROR
-@pytest.mark.known_issue
-def test_local_register_concurrent_duplicate_returns_conflict() -> None:
+def _client_with_commit_failure(error: SQLAlchemyError) -> tuple[TestClient, Mock, Engine]:
     engine = make_sqlite_engine()
     factory = make_session_factory(engine)
     create_tables(engine, [User, UserPassword])
     app = make_test_app(factory, [auth_routes])
-    # 复用生产的 DB 异常处理器，使 IntegrityError → 500 DB_ERROR（反映生产行为）
     app.add_exception_handler(SQLAlchemyError, sqlalchemy_error_handler)
 
-    # 模拟竞态：查重通过（表空 → db.get 返回 None），但 commit 时撞唯一约束
-    # （另一并发请求已先插入同 user_id）。
     boomed = factory()
+    rollback = Mock(wraps=boomed.rollback)
 
     def _boom(*_args, **_kw):
-        raise IntegrityError(
-            "simulated concurrent insert",
-            {},
-            Exception("UNIQUE constraint failed: users.id"),
-        )
+        raise error
 
     boomed.commit = _boom
+    boomed.rollback = rollback
 
     def _override_get_db():
         try:
@@ -64,15 +58,80 @@ def test_local_register_concurrent_duplicate_returns_conflict() -> None:
 
     app.dependency_overrides[get_db] = _override_get_db
 
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.post(
-        "/api/auth/local/register",
-        json={"user_id": "race-user", "password": "whatever-123"},
-    )
+    return TestClient(app, raise_server_exceptions=False), rollback, engine
 
-    # 正确行为：并发重复注册应返回 409 CONFLICT。
-    # 当前 bug：IntegrityError 未被路由捕获 → 500 DB_ERROR。
+
+# H7: 确定性模拟并发竞态的失败方；保留原 node 名用于 catalog 连续性。
+def test_local_register_concurrent_duplicate_returns_conflict() -> None:
+    error = IntegrityError(
+        "simulated concurrent insert",
+        {},
+        Exception("UNIQUE constraint failed: users.id"),
+    )
+    client, rollback, engine = _client_with_commit_failure(error)
+    try:
+        resp = client.post(
+            "/api/auth/local/register",
+            json={"user_id": "race-user", "password": "whatever-123"},
+        )
+    finally:
+        engine.dispose()
+
     assert resp.status_code == 409
     body = resp.json()
-    assert body.get("ok") is False
-    assert body["error"]["code"] == "CONFLICT"
+    assert body == {
+        "ok": False,
+        "error": {"code": "CONFLICT", "message": "用户已存在", "details": {}},
+        "request_id": "rid-test",
+    }
+    assert resp.headers["X-Request-Id"] == "rid-test"
+    serialized = str(body).lower()
+    assert "unique" not in serialized
+    assert "constraint" not in serialized
+    assert "users.id" not in serialized
+    rollback.assert_called_once_with()
+
+
+def test_local_register_non_integrity_database_error_remains_db_error() -> None:
+    client, rollback, engine = _client_with_commit_failure(
+        SQLAlchemyError("simulated database outage")
+    )
+    try:
+        resp = client.post(
+            "/api/auth/local/register",
+            json={"user_id": "db-error-user", "password": "whatever-123"},
+        )
+    finally:
+        engine.dispose()
+
+    assert resp.status_code == 500
+    assert resp.json() == {
+        "ok": False,
+        "error": {"code": "DB_ERROR", "message": "数据库错误", "details": {}},
+        "request_id": "rid-test",
+    }
+    assert resp.headers["X-Request-Id"] == "rid-test"
+    rollback.assert_not_called()
+
+
+def test_local_register_unique_email_conflict_rolls_back_cleanly() -> None:
+    engine = make_sqlite_engine()
+    factory = make_session_factory(engine)
+    create_tables(engine, [User, UserPassword])
+    app = make_test_app(factory, [auth_routes])
+    client = TestClient(app)
+    try:
+        first = client.post(
+            "/api/auth/local/register",
+            json={"user_id": "email-owner", "email": "shared@example.com", "password": "whatever-123"},
+        )
+        duplicate = client.post(
+            "/api/auth/local/register",
+            json={"user_id": "email-racer", "email": "shared@example.com", "password": "whatever-123"},
+        )
+    finally:
+        engine.dispose()
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "CONFLICT"
