@@ -84,7 +84,7 @@ def database_user_objects(connection: sa.Connection) -> dict[str, tuple[str, ...
             SELECT t.typname
             FROM pg_catalog.pg_type AS t
             JOIN pg_catalog.pg_namespace AS n ON n.oid = t.typnamespace
-            WHERE n.nspname = 'public' AND t.typname NOT LIKE '\\_%' ESCAPE '\\'
+            WHERE n.nspname = 'public' AND LEFT(t.typname, 1) <> '_'
             ORDER BY t.typname
             """
         ).scalars()
