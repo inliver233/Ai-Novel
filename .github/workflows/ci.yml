@@ -91,9 +91,30 @@ jobs:
           python scripts/check_alembic.py --database-url "sqlite:///$contract_db"
 
       - name: Pytest + coverage baseline (safety net — must stay green)
-        run: python -m pytest -m "not known_issue" -q --cov=app --cov-report=term --cov-fail-under=62
+        run: python -m pytest -m "not known_issue" -q --cov=app --cov-report=term --cov-fail-under=62 --junitxml="$RUNNER_TEMP/backend-tests.xml"
         env:
           AINOVEL_APP_ENV: test
+
+      - name: Report backend test failure
+        if: failure()
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          report = pathlib.Path(os.environ["RUNNER_TEMP"]) / "backend-tests.xml"
+          if report.exists():
+              root = ET.parse(report).getroot()
+              for case in root.iter("testcase"):
+                  for node in list(case):
+                      if node.tag not in {"failure", "error"}:
+                          continue
+                      summary = node.get("message") or "Backend test failed"
+                      details = node.text or ""
+                      message = (summary + "\n" + details).replace("\n", "%0A")
+                      print(f"::error title={case.get('name', 'Backend test')}::{message}")
+          PY
 
       - name: Known-issue backlog (informational, expected to fail)
         run: python -m pytest -m known_issue -q
