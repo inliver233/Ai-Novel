@@ -1,3 +1,5 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { useParams } from "react-router-dom";
@@ -12,7 +14,7 @@ import { usePersistentOutletIsActive } from "../../hooks/usePersistentOutlet";
 import { useQueuedSave } from "../../hooks/useQueuedSave";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
-import { ApiError, apiJson } from "../../services/apiClient";
+import { apiJson } from "../../services/apiClient";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { LLMPreset, Outline, OutlineListItem, Project } from "../../types";
 import { deriveOutlineFromStoredContent } from "../outlineParsing";
@@ -179,8 +181,8 @@ export function useOutlinePageState(): OutlinePageState {
         }
         return true;
       } catch (error) {
-        const err = error as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(error);
+        toastApiError(toast, err);
         return false;
       }
     },
@@ -251,8 +253,8 @@ export function useOutlinePageState(): OutlinePageState {
         toast.toastSuccess(OUTLINE_COPY.createdAndSwitched);
         return response.data.outline;
       } catch (error) {
-        const err = error as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(error);
+        toastApiError(toast, err);
         return null;
       }
     },
@@ -272,8 +274,8 @@ export function useOutlinePageState(): OutlinePageState {
         await refreshOutline();
         toast.toastSuccess(OUTLINE_COPY.renamed);
       } catch (error) {
-        const err = error as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(error);
+        toastApiError(toast, err);
       }
     },
     [activeOutlineId, bumpWizardLocal, projectId, refreshOutline, toast],
@@ -293,8 +295,8 @@ export function useOutlinePageState(): OutlinePageState {
       await refreshWizard();
       toast.toastSuccess(OUTLINE_COPY.deleted);
     } catch (error) {
-      const err = error as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(error);
+      toastApiError(toast, err);
     }
   }, [activeOutlineId, bumpWizardLocal, confirm, projectId, refreshOutline, refreshWizard, toast]);
 
@@ -323,8 +325,8 @@ export function useOutlinePageState(): OutlinePageState {
         await refreshWizard();
         toast.toastSuccess(OUTLINE_COPY.switched);
       } catch (error) {
-        const err = error as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(error);
+        toastApiError(toast, err);
       }
     },
     [activeOutlineId, bumpWizardLocal, confirm, dirty, projectId, refreshOutline, refreshWizard, save, toast],

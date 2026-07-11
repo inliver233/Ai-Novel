@@ -1,10 +1,12 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
 import type { ConfirmApi } from "../../components/ui/confirm";
 import type { ToastApi } from "../../components/ui/toast";
 import type { GenerationRun } from "../../components/writing/types";
-import { ApiError, apiJson } from "../../services/apiClient";
+import { apiJson } from "../../services/apiClient";
 import { createChapterMarkerStreamParser } from "../../services/chapterMarkerStreamParser";
 import type { Chapter } from "../../types";
 import { WRITING_PAGE_COPY } from "./writingPageCopy";
@@ -84,8 +86,8 @@ export function useApplyGenerationRun(args: {
         );
         toast.toastSuccess(WRITING_PAGE_COPY.applyRunSuccess, res.request_id);
       } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       }
       if (canceled) return;
       if (!shouldClearApplyRunId) return;

@@ -1,4 +1,5 @@
 import { ApiError } from "./apiClient";
+import { toApiError } from "./apiError";
 import {
   bulkCreateChapters,
   chapterDetailToListItem,
@@ -69,17 +70,6 @@ const DEFAULT_TRANSPORT: ChapterTransport = {
   fetchChapterDetail,
   updateChapter,
 };
-
-function normalizeApiError(error: unknown): ApiError {
-  if (error instanceof ApiError) return error;
-  return new ApiError({
-    code: "UNKNOWN",
-    message: error instanceof Error ? error.message : String(error),
-    requestId: "unknown",
-    status: 0,
-    details: error,
-  });
-}
 
 function sortChapterMeta(chapters: ChapterListItem[]): ChapterListItem[] {
   return [...chapters].sort((left, right) => (left.number ?? 0) - (right.number ?? 0));
@@ -236,7 +226,7 @@ export function createChapterStore(transport: ChapterTransport = DEFAULT_TRANSPO
       })
       .catch((error) => {
         nextSnapshot(entry, {
-          error: normalizeApiError(error),
+          error: toApiError(error),
           hasLoaded: true,
           loading: false,
           stale: true,
@@ -268,7 +258,7 @@ export function createChapterStore(transport: ChapterTransport = DEFAULT_TRANSPO
       })
       .catch((error) => {
         nextSnapshot(entry, {
-          error: normalizeApiError(error),
+          error: toApiError(error),
           hasLoaded: true,
           loading: false,
           stale: true,

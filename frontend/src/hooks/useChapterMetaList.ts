@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
 import { useToast } from "../components/ui/toast";
+import { toastApiError } from "../lib/apiErrorPresentation";
 import type { ApiError } from "../services/apiClient";
 import { chapterStore } from "../services/chapterStore";
 import type { ChapterListItem } from "../types";
@@ -59,7 +60,7 @@ export function useChapterMetaList(projectId: string | undefined): {
     const errorKey = `${snapshot.error.code}:${snapshot.error.requestId}:${snapshot.error.message}`;
     if (lastErrorKeyRef.current === errorKey) return;
     lastErrorKeyRef.current = errorKey;
-    toast.toastError(`${snapshot.error.message} (${snapshot.error.code})`, snapshot.error.requestId);
+    toastApiError(toast, snapshot.error);
   }, [snapshot.error, toast]);
 
   const refresh = useCallback(async () => {

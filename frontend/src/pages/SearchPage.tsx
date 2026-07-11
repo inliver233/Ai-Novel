@@ -1,10 +1,12 @@
+import { toApiError } from "../services/apiError";
+import { toastApiError } from "../lib/apiErrorPresentation";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { DebugPageShell } from "../components/atelier/DebugPageShell";
 import { useToast } from "../components/ui/toast";
 import { UI_COPY } from "../lib/uiCopy";
-import { ApiError, apiJson } from "../services/apiClient";
+import { apiJson } from "../services/apiClient";
 
 type SearchItem = {
   source_type: string;
@@ -54,8 +56,8 @@ export function SearchPage() {
   const navigate = useNavigate();
 
   const [query, setQuery] = useState("");
-  const [sourcesState, setSourcesState] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(SOURCE_OPTIONS.map((s) => [s.key, true])),
+  const [sourcesState, setSourcesState] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(SOURCE_OPTIONS.map((s) => [s.key, true])),
   );
 
   const [loading, setLoading] = useState(false);
@@ -92,11 +94,8 @@ export function SearchPage() {
         setItems((prev) => (append ? dedupeItems([...prev, ...nextItems]) : dedupeItems(nextItems)));
         setNextOffset(typeof data.next_offset === "number" ? data.next_offset : null);
       } catch (e) {
-        const err =
-          e instanceof ApiError
-            ? e
-            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         setLoading(false);
       }

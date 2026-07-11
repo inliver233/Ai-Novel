@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/services/apiClient";
 import { createProjectTaskStore, type ProjectTaskListQuery } from "@/services/projectTaskStore";
 import type { ProjectTaskRuntime } from "@/services/projectTaskRuntime";
 import type { ProjectTask } from "@/types";
@@ -35,6 +36,25 @@ function makeRuntime(overrides: Partial<ProjectTaskRuntime> = {}): ProjectTaskRu
 }
 
 describe("projectTaskStore", () => {
+  it("stores unknown transport failures as safe ApiError instances", async () => {
+    const thrown = null;
+    const store = createProjectTaskStore({
+      listProjectTasks: vi.fn(async () => Promise.reject(thrown)),
+      fetchProjectTaskDetail: vi.fn(async () => makeTask()),
+      fetchProjectTaskRuntime: vi.fn(async () => makeRuntime()),
+    });
+
+    await expect(store.loadProjectTaskList("project-1")).rejects.toMatchObject({ code: "UNKNOWN", details: null });
+    expect(store.getProjectTaskListSnapshot("project-1").error).toBeInstanceOf(ApiError);
+    expect(store.getProjectTaskListSnapshot("project-1").error).toMatchObject({
+      code: "UNKNOWN",
+      message: "请求失败",
+      requestId: "unknown",
+      status: 0,
+      details: null,
+    });
+  });
+
   it("caches project task lists per filter until invalidated", async () => {
     const listProjectTasks = vi.fn(async (projectId: string, query: Required<ProjectTaskListQuery>) => [
       makeTask({ id: `${projectId}-${query.status || "all"}` }),

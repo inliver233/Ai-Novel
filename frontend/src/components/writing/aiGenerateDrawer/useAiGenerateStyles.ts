@@ -1,3 +1,4 @@
+import { toApiError } from "../../../services/apiError";
 import { useEffect, useMemo, useState } from "react";
 
 import { ApiError, apiJson } from "../../../services/apiClient";
@@ -37,10 +38,7 @@ export function useAiGenerateStyles(args: { open: boolean; projectId?: string })
         setProjectDefaultStyleId(defaultRes.data.default?.style_id ?? null);
       } catch (error) {
         if (cancelled) return;
-        const nextError =
-          error instanceof ApiError
-            ? error
-            : new ApiError({ code: "UNKNOWN", message: String(error), requestId: "unknown", status: 0 });
+        const nextError = toApiError(error);
         setStylesError(nextError);
       } finally {
         if (!cancelled) {

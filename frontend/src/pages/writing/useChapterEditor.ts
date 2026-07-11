@@ -1,3 +1,5 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ConfirmApi } from "../../components/ui/confirm";
@@ -6,7 +8,6 @@ import { useAutoSave } from "../../hooks/useAutoSave";
 import { useChapterMetaList } from "../../hooks/useChapterMetaList";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { createRequestSeqGuard } from "../../lib/requestSeqGuard";
-import { ApiError } from "../../services/apiClient";
 import { chapterStore } from "../../services/chapterStore";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { Chapter, ChapterListItem } from "../../types";
@@ -130,8 +131,8 @@ export function useChapterEditor(args: {
         setForm(next);
       } catch (e) {
         if (!chapterLoadGuardRef.current.isLatest(seq)) return;
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
         setActiveChapter(null);
         setBaseline(null);
         setForm(null);
@@ -215,8 +216,8 @@ export function useChapterEditor(args: {
           if (!nextSilent) toast.toastSuccess(WRITING_PAGE_COPY.saveSuccess);
           return true;
         } catch (e) {
-          const err = e as ApiError;
-          toast.toastError(`${err.message} (${err.code})`, err.requestId);
+          const err = toApiError(e);
+          toastApiError(toast, err);
           return false;
         } finally {
           setSaving(false);

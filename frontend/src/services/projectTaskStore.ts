@@ -1,4 +1,5 @@
 import { ApiError, apiJson } from "./apiClient";
+import { toApiError } from "./apiError";
 import { getProjectTaskRuntime, type ProjectTaskRuntime } from "./projectTaskRuntime";
 import type { ProjectTask } from "../types";
 
@@ -71,17 +72,6 @@ const DEFAULT_TRANSPORT: ProjectTaskTransport = {
     return res.data.items ?? [];
   },
 };
-
-function normalizeApiError(error: unknown): ApiError {
-  if (error instanceof ApiError) return error;
-  return new ApiError({
-    code: "UNKNOWN",
-    message: error instanceof Error ? error.message : String(error),
-    requestId: "unknown",
-    status: 0,
-    details: error,
-  });
-}
 
 function normalizeListQuery(query: ProjectTaskListQuery = {}): Required<ProjectTaskListQuery> {
   const normalizedStatus =
@@ -211,7 +201,7 @@ export function createProjectTaskStore(transport: ProjectTaskTransport = DEFAULT
         })
         .catch((error) => {
           nextSnapshot(entry, {
-            error: normalizeApiError(error),
+            error: toApiError(error),
             hasLoaded: true,
             loading: false,
             stale: true,
@@ -256,7 +246,7 @@ export function createProjectTaskStore(transport: ProjectTaskTransport = DEFAULT
         })
         .catch((error) => {
           nextSnapshot(entry, {
-            error: normalizeApiError(error),
+            error: toApiError(error),
             hasLoaded: true,
             loading: false,
             stale: true,
@@ -297,7 +287,7 @@ export function createProjectTaskStore(transport: ProjectTaskTransport = DEFAULT
         })
         .catch((error) => {
           nextSnapshot(entry, {
-            error: normalizeApiError(error),
+            error: toApiError(error),
             hasLoaded: true,
             loading: false,
             stale: true,

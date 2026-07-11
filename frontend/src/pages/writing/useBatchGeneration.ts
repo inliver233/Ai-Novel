@@ -1,3 +1,5 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SetURLSearchParams } from "react-router-dom";
 
@@ -95,8 +97,8 @@ export function useBatchGeneration(args: {
       } catch (e) {
         if (!batchRefreshGuardRef.current.isLatest(seq)) return;
         if (!opts?.silent) {
-          const err = e as ApiError;
-          toast.toastError(`${err.message} (${err.code})`, err.requestId);
+          const err = toApiError(e);
+          toastApiError(toast, err);
         }
       }
     },
@@ -183,7 +185,7 @@ export function useBatchGeneration(args: {
       batchTaskRef.current = res.data.task;
       toast.toastSuccess("Batch generation started.", res.request_id);
     } catch (e) {
-      const err = e as ApiError;
+      const err = toApiError(e);
       const missingNumbers = extractMissingNumbers(err);
       if (missingNumbers.length > 0) {
         const targetNumber = missingNumbers[0]!;
@@ -200,7 +202,7 @@ export function useBatchGeneration(args: {
         );
         return;
       }
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      toastApiError(toast, err);
     } finally {
       setBatchLoading(false);
     }
@@ -225,8 +227,8 @@ export function useBatchGeneration(args: {
       await refreshBatchTask({ silent: true });
       await batchRuntimeResource.refresh({ force: true, silent: true });
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBatchLoading(false);
     }
@@ -241,8 +243,8 @@ export function useBatchGeneration(args: {
       await refreshBatchTask({ silent: true });
       await batchRuntimeResource.refresh({ force: true, silent: true });
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBatchLoading(false);
     }
@@ -257,8 +259,8 @@ export function useBatchGeneration(args: {
       await refreshBatchTask({ silent: true });
       await batchRuntimeResource.refresh({ force: true, silent: true });
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBatchLoading(false);
     }
@@ -273,8 +275,8 @@ export function useBatchGeneration(args: {
       await refreshBatchTask({ silent: true });
       await batchRuntimeResource.refresh({ force: true, silent: true });
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBatchLoading(false);
     }
@@ -289,8 +291,8 @@ export function useBatchGeneration(args: {
       await refreshBatchTask({ silent: true });
       await batchRuntimeResource.refresh({ force: true, silent: true });
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBatchLoading(false);
     }

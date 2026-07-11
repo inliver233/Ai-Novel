@@ -11,7 +11,7 @@ import {
   type ProjectTaskDetailSnapshot,
   type ProjectTaskRuntimeSnapshot,
 } from "../services/projectTaskStore";
-import { ApiError } from "../services/apiClient";
+import { toApiError } from "../services/apiError";
 
 import {
   useProjectTaskEvents,
@@ -37,17 +37,6 @@ type ListRefreshOptions = RefreshOptions & {
 type RuntimeRefreshOptions = RefreshOptions & {
   taskId?: string | null;
 };
-
-function normalizeApiError(error: unknown): ApiError {
-  if (error instanceof ApiError) return error;
-  return new ApiError({
-    code: "UNKNOWN",
-    message: error instanceof Error ? error.message : String(error),
-    requestId: "unknown",
-    status: 0,
-    details: error,
-  });
-}
 
 function normalizeTaskId(taskId: string | null | undefined): string | null {
   const next = String(taskId || "").trim();
@@ -101,7 +90,7 @@ export function useProjectTaskListResource(args: {
         );
       } catch (error) {
         if (options.silent) return;
-        const err = normalizeApiError(error);
+        const err = toApiError(error);
         toastApiError(toast, err);
       }
     },
@@ -149,7 +138,7 @@ export function useProjectTaskDetailResource(args: {
         await projectTaskStore.loadProjectTaskDetail(targetTaskId, { force: options.force });
       } catch (error) {
         if (options.silent) return;
-        const err = normalizeApiError(error);
+        const err = toApiError(error);
         toastApiError(toast, err);
       }
     },
@@ -197,7 +186,7 @@ export function useProjectTaskRuntimeResource(args: {
         await projectTaskStore.loadProjectTaskRuntime(targetTaskId, { force: options.force });
       } catch (error) {
         if (options.silent) return;
-        const err = normalizeApiError(error);
+        const err = toApiError(error);
         toastApiError(toast, err);
       }
     },

@@ -1,6 +1,7 @@
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { UnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { copyText } from "../lib/copyText";
+import { formatApiErrorFields } from "../lib/apiErrorPresentation";
 
 import { SettingsCoreSections } from "./settings/SettingsCoreSections";
 import { useSettingsPageState } from "./settings/useSettingsPageState";
@@ -61,7 +62,7 @@ function SettingsPageErrorState(props: { message: string; code: string; requestI
     <div className="grid gap-6 pb-24">
       <div className="error-card">
         <div className="state-title">加载失败</div>
-        <div className="state-desc">{`${props.message} (${props.code})`}</div>
+        <div className="state-desc">{formatApiErrorFields(props)}</div>
         {props.requestId ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtext">
             <span>request_id: {props.requestId}</span>

@@ -1,8 +1,10 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback } from "react";
 
 import type { ConfirmApi } from "../../components/ui/confirm";
 import type { ToastApi } from "../../components/ui/toast";
-import { ApiError, apiJson } from "../../services/apiClient";
+import { apiJson } from "../../services/apiClient";
 import { chapterStore } from "../../services/chapterStore";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { Project } from "../../types";
@@ -60,8 +62,8 @@ export function useOutlineSwitcher(args: {
         await refreshWizard();
         toast.toastSuccess(WRITING_PAGE_COPY.switchedOutline);
       } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       }
     },
     [

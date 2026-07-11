@@ -180,7 +180,7 @@ describe("usePromptsPageState.saveAll error normalization", () => {
     const message = lastCall[0] as string;
 
     expect(message).toBe("boom (UNKNOWN)");
-    expect(lastCall[1]).toBe("unknown");
+    expect(lastCall[1]).toBeUndefined();
   });
 
   it("保留真实 ApiError 的 code 与 requestId", async () => {
@@ -199,12 +199,12 @@ describe("usePromptsPageState.saveAll error normalization", () => {
   it("空抛出值使用稳定兜底文案", async () => {
     const lastCall = await saveDirtyPresetWithError(null);
 
-    expect(lastCall).toEqual(["请求失败 (UNKNOWN)", "unknown"]);
+    expect(lastCall).toEqual(["请求失败 (UNKNOWN)", undefined]);
   });
 
   it("字符串抛出值去除首尾空白后保留消息", async () => {
     const lastCall = await saveDirtyPresetWithError("  string boom  ");
 
-    expect(lastCall).toEqual(["string boom (UNKNOWN)", "unknown"]);
+    expect(lastCall).toEqual(["string boom (UNKNOWN)", undefined]);
   });
 });

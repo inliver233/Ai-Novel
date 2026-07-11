@@ -1,3 +1,5 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
@@ -329,11 +331,11 @@ export function useChapterGeneration(args: {
                 }
                 return;
               }
-              toast.toastError(`${err.message} (${err.code})`, err.requestId ?? requestId);
+              toastApiError(toast, err, { code: err.code, requestId: err.requestId ?? requestId });
               return;
             }
             if (err instanceof SSEError && err.code === "SSE_SERVER_ERROR") {
-              toast.toastError(`${err.message} (${err.code})`, err.requestId);
+              toastApiError(toast, err, { code: err.code, requestId: err.requestId ?? requestId });
               return;
             }
             if (err instanceof ApiError) {
@@ -353,7 +355,7 @@ export function useChapterGeneration(args: {
                 );
                 return;
               }
-              toast.toastError(`${err.message} (${err.code})`, err.requestId);
+              toastApiError(toast, err);
               return;
             }
             toast.toastError(WRITING_PAGE_COPY.generateFailed);
@@ -386,7 +388,7 @@ export function useChapterGeneration(args: {
           }
         }
       } catch (e) {
-        const err = e as ApiError;
+        const err = toApiError(e);
         const missingNumbers = extractMissingNumbers(err);
         if (missingNumbers.length > 0) {
           const targetNumber = missingNumbers[0]!;
@@ -403,7 +405,7 @@ export function useChapterGeneration(args: {
           );
           return;
         }
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        toastApiError(toast, err);
       } finally {
         setGenerating(false);
       }

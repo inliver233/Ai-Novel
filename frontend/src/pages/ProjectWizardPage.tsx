@@ -1,3 +1,5 @@
+import { toastApiError } from "../lib/apiErrorPresentation";
+import { toApiError } from "../services/apiError";
 import clsx from "clsx";
 import { motion, useReducedMotion } from "framer-motion";
 import { CheckCircle2, Circle, CircleSlash2, Wand2 } from "lucide-react";
@@ -14,7 +16,7 @@ import { useChapterMetaList } from "../hooks/useChapterMetaList";
 import { useProjectData } from "../hooks/useProjectData";
 import { duration, transition } from "../lib/motion";
 import { UI_COPY } from "../lib/uiCopy";
-import { ApiError, apiJson } from "../services/apiClient";
+import { apiJson } from "../services/apiClient";
 import { chapterStore } from "../services/chapterStore";
 import { computeWizardProgress, setWizardStepSkipped, type WizardStep, type WizardStepKey } from "../services/wizard";
 import type { ChapterListItem, Character, LLMPreset, LLMProfile, Outline, ProjectSettings } from "../types";
@@ -185,7 +187,7 @@ export function ProjectWizardPage() {
       try {
         await chapterStore.bulkCreateProjectChapters(projectId, payload);
       } catch (e) {
-        const err = e as ApiError;
+        const err = toApiError(e);
         if (err.code === "CONFLICT" && err.status === 409) {
           const replaceOk = await confirm.confirm({
             title: "检测到已有章节，是否继续覆盖？",
@@ -210,8 +212,8 @@ export function ProjectWizardPage() {
       toast.toastSuccess("已生成大纲并创建章节骨架");
       navigate(`/projects/${projectId}/writing`);
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setAutoRunning(false);
     }

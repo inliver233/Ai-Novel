@@ -1,3 +1,5 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useConfirm } from "../../components/ui/confirm";
@@ -106,8 +108,8 @@ export function useDetailedOutlineState(
       const list = await listDetailedOutlines(projectId, outlineId);
       setItems(list);
     } catch (error) {
-      const err = error as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(error);
+      toastApiError(toast, err);
     }
   }, [projectId, outlineId, toast]);
 
@@ -127,8 +129,8 @@ export function useDetailedOutlineState(
         setSelected(detail);
         setEditing(false);
       } catch (error) {
-        const err = error as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(error);
+        toastApiError(toast, err);
       }
     },
     [toast],
@@ -242,7 +244,7 @@ export function useDetailedOutlineState(
           return false;
         }
         if (error instanceof SSEError || error instanceof ApiError) {
-          toast.toastError(`${error.message} (${(error as SSEError).code ?? (error as ApiError).code})`);
+          toastApiError(toast, error, { code: error.code, requestId: error.requestId });
         } else {
           toast.toastError(OUTLINE_COPY.detailedOutline.generateDetailedFailed);
         }
@@ -315,7 +317,7 @@ export function useDetailedOutlineState(
           return;
         }
         if (error instanceof SSEError || error instanceof ApiError) {
-          toast.toastError(`${error.message} (${(error as SSEError).code ?? (error as ApiError).code})`);
+          toastApiError(toast, error, { code: error.code, requestId: error.requestId });
         } else {
           toast.toastError(OUTLINE_COPY.detailedOutline.generateSkeletonFailed);
         }
@@ -344,8 +346,8 @@ export function useDetailedOutlineState(
       await refresh();
       toast.toastSuccess(OUTLINE_COPY.detailedOutline.saveDetailedSuccess);
     } catch (error) {
-      const err = error as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(error);
+      toastApiError(toast, err);
     } finally {
       setSaving(false);
     }
@@ -367,8 +369,8 @@ export function useDetailedOutlineState(
         await refresh();
         toast.toastSuccess(OUTLINE_COPY.detailedOutline.deletedSuccess);
       } catch (error) {
-        const err = error as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(error);
+        toastApiError(toast, err);
       }
     },
     [confirm, refresh, selected?.id, toast],
@@ -390,7 +392,7 @@ export function useDetailedOutlineState(
         await refresh();
         if (projectId) chapterStore.invalidateProjectChapters(projectId);
       } catch (error) {
-        const err = error as ApiError;
+        const err = toApiError(error);
         if (err.code === "CONFLICT" && err.status === 409) {
           const replaceOk = await confirm.confirm({
             title: OUTLINE_COPY.detailedOutline.replaceChaptersTitle,
@@ -407,12 +409,12 @@ export function useDetailedOutlineState(
             await refresh();
             if (projectId) chapterStore.invalidateProjectChapters(projectId);
           } catch (retryError) {
-            const retryErr = retryError as ApiError;
-            toast.toastError(`${retryErr.message} (${retryErr.code})`, retryErr.requestId);
+            const retryErr = toApiError(retryError);
+            toastApiError(toast, retryErr);
           }
           return;
         }
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        toastApiError(toast, err);
       }
     },
     [confirm, projectId, refresh, toast],

@@ -12,8 +12,12 @@ import { useProjectData } from "../hooks/useProjectData";
 import { useQueuedSave } from "../hooks/useQueuedSave";
 import { useWizardProgress } from "../hooks/useWizardProgress";
 import { copyText } from "../lib/copyText";
+import {
+  formatApiError as formatApiErrorMessage,
+  formatApiErrorFields,
+  getApiErrorRequestId,
+} from "../lib/apiErrorPresentation";
 import { duration, transition } from "../lib/motion";
-import { ApiError } from "../services/apiClient";
 import { createEntry, deleteEntry, listEntries, updateEntry } from "../services/entriesApi";
 import { markWizardProjectChanged } from "../services/wizard";
 import type { Entry } from "../types";
@@ -86,10 +90,7 @@ function filterChipClass(active: boolean): string {
 }
 
 function formatApiError(error: unknown): { message: string; requestId?: string } {
-  if (error instanceof ApiError) {
-    return { message: `${error.message} (${error.code})`, requestId: error.requestId };
-  }
-  return { message: "请求失败 (UNKNOWN_ERROR)" };
+  return { message: formatApiErrorMessage(error), requestId: getApiErrorRequestId(error) };
 }
 
 export function EntriesPage() {
@@ -405,7 +406,7 @@ export function EntriesPage() {
       {!loading && entriesQuery.data === null && loadError ? (
         <div className="error-card">
           <div className="state-title">加载失败</div>
-          <div className="state-desc">{`${loadError.message} (${loadError.code})`}</div>
+          <div className="state-desc">{formatApiErrorFields(loadError)}</div>
           {loadError.requestId && loadError.requestId !== "unknown" ? (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtext">
               <span>request_id: {loadError.requestId}</span>

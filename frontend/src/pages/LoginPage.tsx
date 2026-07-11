@@ -1,10 +1,11 @@
+import { formatApiError, getApiErrorRequestId, toastApiError } from "../lib/apiErrorPresentation";
+import { toApiError } from "../services/apiError";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 
 import { useAuth } from "../contexts/auth";
 import { UI_COPY } from "../lib/uiCopy";
 import { DebugDetails } from "../components/atelier/DebugPageShell";
-import { ApiError } from "../services/apiClient";
 import { fetchAuthProviders } from "../services/authProviders";
 import { DEFAULT_USER_ID, getCurrentUserId } from "../services/currentUser";
 import { useToast } from "../components/ui/toast";
@@ -50,8 +51,8 @@ export function LoginPage() {
       toast.toastSuccess(UI_COPY.auth.loginSuccess);
       navigate(nextPath, { replace: true });
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBusy(false);
     }
@@ -186,10 +187,10 @@ export function LoginPage() {
                           const url = `/api/auth/oidc/linuxdo/start?next=${encodeURIComponent(nextPath)}`;
                           window.location.assign(url);
                         } catch (e) {
-                          const err = e as ApiError;
+                          const err = toApiError(e);
                           toast.toastError(
-                            `${UI_COPY.auth.linuxdoCheckFailedPrefix}${err.message} (${err.code})`,
-                            err.requestId,
+                            `${UI_COPY.auth.linuxdoCheckFailedPrefix}${formatApiError(err)}`,
+                            getApiErrorRequestId(err),
                           );
                         }
                       })();

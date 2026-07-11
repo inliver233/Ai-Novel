@@ -1,8 +1,10 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { GenerationRun } from "../../components/writing/types";
 import { createRequestSeqGuard } from "../../lib/requestSeqGuard";
-import { ApiError, apiJson } from "../../services/apiClient";
+import { apiJson } from "../../services/apiClient";
 
 export function useGenerationHistory(args: {
   projectId: string | undefined;
@@ -40,8 +42,8 @@ export function useGenerationHistory(args: {
       });
     } catch (e) {
       if (!runsGuardRef.current.isLatest(seq)) return;
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       if (runsGuardRef.current.isLatest(seq)) {
         setRunsLoading(false);
@@ -66,8 +68,8 @@ export function useGenerationHistory(args: {
         setSelectedRun(res.data.run);
       } catch (e) {
         if (!runDetailsGuardRef.current.isLatest(seq)) return;
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       }
     },
     [toast],

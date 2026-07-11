@@ -4,6 +4,7 @@ import { useToast } from "../components/ui/toast";
 import { toastApiError } from "../lib/apiErrorPresentation";
 import { createRequestSeqGuard } from "../lib/requestSeqGuard";
 import { ApiError } from "../services/apiClient";
+import { toApiError } from "../services/apiError";
 
 export type ProjectDataResult<T> = {
   data: T | null;
@@ -17,17 +18,6 @@ export type ProjectDataResult<T> = {
 export type UseProjectDataOptions = {
   toastOnError?: boolean;
 };
-
-function normalizeProjectDataError(error: unknown): ApiError {
-  if (error instanceof ApiError) return error;
-  return new ApiError({
-    code: "UNKNOWN_ERROR",
-    message: "请求失败",
-    requestId: "unknown",
-    status: 0,
-    details: error,
-  });
-}
 
 export function useProjectData<T>(
   projectId: string | undefined,
@@ -71,7 +61,7 @@ export function useProjectData<T>(
       setData(next);
     } catch (e) {
       if (!requestGuardRef.current.isLatest(seq)) return;
-      const nextError = normalizeProjectDataError(e);
+      const nextError = toApiError(e, { code: "UNKNOWN_ERROR", message: "请求失败" });
       setError(nextError);
       if (toastOnErrorRef.current) toastApiError(toast, nextError);
     } finally {

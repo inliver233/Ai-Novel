@@ -1,3 +1,5 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -11,7 +13,7 @@ import { useProjectData } from "../../hooks/useProjectData";
 import { useQueuedSave } from "../../hooks/useQueuedSave";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
-import { ApiError, apiJson } from "../../services/apiClient";
+import { apiJson } from "../../services/apiClient";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { Project, ProjectSettings } from "../../types";
 import {
@@ -103,11 +105,8 @@ export function useSettingsPageState(): SettingsPageState {
       next.sort((a, b) => String(a.user?.id ?? "").localeCompare(String(b.user?.id ?? "")));
       setMemberships(next);
     } catch (e) {
-      const err =
-        e instanceof ApiError
-          ? e
-          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setMembershipsLoading(false);
     }
@@ -135,11 +134,8 @@ export function useSettingsPageState(): SettingsPageState {
       toast.toastSuccess("已邀请成员");
       await loadMemberships();
     } catch (e) {
-      const err =
-        e instanceof ApiError
-          ? e
-          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setMembershipSaving(false);
     }
@@ -157,11 +153,8 @@ export function useSettingsPageState(): SettingsPageState {
         toast.toastSuccess("已更新角色");
         await loadMemberships();
       } catch (e) {
-        const err =
-          e instanceof ApiError
-            ? e
-            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         setMembershipSaving(false);
       }
@@ -180,11 +173,8 @@ export function useSettingsPageState(): SettingsPageState {
         toast.toastSuccess("已移除成员");
         await loadMemberships();
       } catch (e) {
-        const err =
-          e instanceof ApiError
-            ? e
-            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         setMembershipSaving(false);
       }
@@ -285,8 +275,8 @@ export function useSettingsPageState(): SettingsPageState {
         }
         return true;
       } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
         return false;
       }
     },

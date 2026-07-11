@@ -1,9 +1,10 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useState } from "react";
 
 import type { ConfirmApi } from "../../components/ui/confirm";
 import type { ToastApi } from "../../components/ui/toast";
 import type { CreateChapterForm } from "../../components/writing/types";
-import { ApiError } from "../../services/apiClient";
 import { chapterStore } from "../../services/chapterStore";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { Chapter, ChapterListItem } from "../../types";
@@ -64,8 +65,8 @@ export function useChapterCrud(args: {
       setCreateOpen(false);
       await requestSelectChapter(chapter.id);
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setCreateSaving(false);
     }
@@ -86,8 +87,8 @@ export function useChapterCrud(args: {
       const next = chapters[idx - 1]?.id ?? chapters[idx + 1]?.id ?? null;
       setActiveId(next);
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     }
   }, [activeChapter, bumpWizardLocal, chapters, confirm, refreshWizard, setActiveId, toast]);
 

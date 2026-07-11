@@ -1,3 +1,5 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ConfirmApi } from "../../components/ui/confirm";
@@ -245,7 +247,7 @@ export function useOutlineGenerationState(args: {
               progress: prev?.progress ?? 0,
               status: "error",
             }));
-            toast.toastError(`${error.message} (${error.code})`, error.requestId);
+            toastApiError(toast, error, { code: error.code, requestId: error.requestId });
           }
           return;
         }
@@ -256,7 +258,7 @@ export function useOutlineGenerationState(args: {
             progress: prev?.progress ?? 0,
             status: "error",
           }));
-          toast.toastError(`${error.message} (${error.code})`, error.requestId);
+          toastApiError(toast, error, { code: error.code, requestId: error.requestId });
           return;
         }
 
@@ -272,7 +274,7 @@ export function useOutlineGenerationState(args: {
             progress: prev?.progress ?? 0,
             status: "error",
           }));
-          toast.toastError(`${error.message} (${error.code})`, error.requestId);
+          toastApiError(toast, error);
           return;
         }
 
@@ -284,8 +286,8 @@ export function useOutlineGenerationState(args: {
         toast.toastError("流式生成失败");
       }
     } catch (error) {
-      const err = error as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(error);
+      toastApiError(toast, err);
     } finally {
       streamClientRef.current = null;
       setGenerating(false);

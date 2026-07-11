@@ -1,3 +1,5 @@
+import { toApiError } from "../../services/apiError";
+import { toastApiError } from "../../lib/apiErrorPresentation";
 import type { ComponentProps } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
@@ -8,7 +10,7 @@ import { useToast } from "../../components/ui/toast";
 import { usePersistentOutletIsActive } from "../../hooks/usePersistentOutlet";
 import { useProjectData } from "../../hooks/useProjectData";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
-import { ApiError, apiJson } from "../../services/apiClient";
+import { apiJson } from "../../services/apiClient";
 import { listEntries, type EntryItem } from "../../services/entriesApi";
 import { getWizardProjectChangedAt } from "../../services/wizard";
 import type { Character, LLMPreset, Outline, OutlineListItem } from "../../types";
@@ -257,11 +259,8 @@ export function useWritingPageState(): WritingPageState {
       );
       toast.toastSuccess(WRITING_PAGE_COPY.autoUpdatesCreated, response.request_id);
     } catch (error) {
-      const err =
-        error instanceof ApiError
-          ? error
-          : new ApiError({ code: "UNKNOWN", message: String(error), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(error);
+      toastApiError(toast, err);
     } finally {
       setAutoUpdatesTriggering(false);
     }

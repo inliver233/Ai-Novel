@@ -1,3 +1,5 @@
+import { toastApiError } from "../lib/apiErrorPresentation";
+import { toApiError } from "../services/apiError";
 import { motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -9,7 +11,7 @@ import { useToast } from "../components/ui/toast";
 import { useProjects } from "../contexts/projects";
 import { duration, transition } from "../lib/motion";
 import { UI_COPY } from "../lib/uiCopy";
-import { ApiError, apiJson } from "../services/apiClient";
+import { apiJson } from "../services/apiClient";
 import { computeWizardProgressFromSummary, setWizardStepSkipped } from "../services/wizard";
 import type { Project, ProjectSummaryItem } from "../types";
 
@@ -380,8 +382,8 @@ export function DashboardPage() {
                         toast.toastSuccess("已删除");
                         return res;
                       } catch (e) {
-                        const err = e as ApiError;
-                        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+                        const err = toApiError(e);
+                        toastApiError(toast, err);
                       }
                     }}
                     type="button"
@@ -516,8 +518,8 @@ export function DashboardPage() {
                   navigate(`/projects/${res.data.project.id}/settings`);
                 }
               } catch (e) {
-                const err = e as ApiError;
-                toast.toastError(`${err.message} (${err.code})`, err.requestId);
+                const err = toApiError(e);
+                toastApiError(toast, err);
               } finally {
                 setCreating(false);
               }

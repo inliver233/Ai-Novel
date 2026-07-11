@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/services/apiClient";
 import { createChapterStore } from "@/services/chapterStore";
 import type {
   BulkCreateChapterInput,
@@ -67,6 +68,26 @@ function buildTransport(
 }
 
 describe("chapterStore", () => {
+  it("stores unknown transport failures as safe ApiError instances", async () => {
+    const thrown = { reason: "offline" };
+    const store = createChapterStore(
+      buildTransport({ fetchAllChapterMeta: vi.fn(async () => Promise.reject(thrown)) }),
+    );
+
+    await expect(store.loadProjectChapterMeta("project-1")).rejects.toMatchObject({
+      code: "UNKNOWN",
+      details: thrown,
+    });
+    expect(store.getMetaSnapshot("project-1").error).toBeInstanceOf(ApiError);
+    expect(store.getMetaSnapshot("project-1").error).toMatchObject({
+      code: "UNKNOWN",
+      message: "请求失败",
+      requestId: "unknown",
+      status: 0,
+      details: thrown,
+    });
+  });
+
   it("caches chapter meta until forced or invalidated", async () => {
     const fetchAllChapterMeta = vi.fn(async () => [makeListItem()]);
     const store = createChapterStore(buildTransport({ fetchAllChapterMeta }));

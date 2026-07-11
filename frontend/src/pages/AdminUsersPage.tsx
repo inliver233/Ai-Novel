@@ -1,3 +1,5 @@
+import { toApiError } from "../services/apiError";
+import { toastApiError } from "../lib/apiErrorPresentation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useConfirm } from "../components/ui/confirm";
@@ -5,7 +7,7 @@ import { useToast } from "../components/ui/toast";
 import { useAuth } from "../contexts/auth";
 import { copyText } from "../lib/copyText";
 import { humanizeYesNo } from "../lib/humanize";
-import { ApiError, apiJson } from "../services/apiClient";
+import { apiJson } from "../services/apiClient";
 
 const PAGE_SIZE = 50;
 
@@ -183,11 +185,8 @@ export function AdminUsersPage() {
         has_more: Boolean(res.data.pagination?.has_more),
       });
     } catch (e) {
-      const err =
-        e instanceof ApiError
-          ? e
-          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setLoading(false);
     }
@@ -230,11 +229,8 @@ export function AdminUsersPage() {
       setCursorHistory([]);
       setReloadVersion((version) => version + 1);
     } catch (e) {
-      const err =
-        e instanceof ApiError
-          ? e
-          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setCreatingUser(false);
     }
@@ -260,11 +256,8 @@ export function AdminUsersPage() {
         setTempPasswords((v) => ({ ...v, [targetUserId]: res.data.temp_password }));
         toast.toastSuccess("密码已重置（请复制一次性密码）", res.request_id);
       } catch (e) {
-        const err =
-          e instanceof ApiError
-            ? e
-            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         bumpRowBusy(targetUserId, "resetPassword", -1);
       }
@@ -292,11 +285,8 @@ export function AdminUsersPage() {
         toast.toastSuccess(disabled ? "已禁用" : "已启用");
         await load();
       } catch (e) {
-        const err =
-          e instanceof ApiError
-            ? e
-            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         bumpRowBusy(targetUserId, "toggleDisabled", -1);
       }

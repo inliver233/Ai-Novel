@@ -365,7 +365,7 @@ describe("useQueuedSave 并发保存队列（经 useOutlinePageState.save 暴露
     });
 
     expect(ok).toBe(false);
-    expect(mocks.toast.toastError).toHaveBeenCalledWith("boom (E1)", "rid-x");
+    expect(mocks.toast.toastError).toHaveBeenCalledWith("请求失败 (UNKNOWN)", undefined);
     expect(result.current.actionsBarProps.saving).toBe(false);
   });
 });

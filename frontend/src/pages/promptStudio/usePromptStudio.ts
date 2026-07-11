@@ -1,8 +1,10 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { useToast } from "../../components/ui/toast";
-import { ApiError, apiJson } from "../../services/apiClient";
+import { apiJson } from "../../services/apiClient";
+import { toApiError } from "../../services/apiError";
 import type { PromptStudioCategory, PromptStudioPresetDetail, PromptStudioPresetSummary } from "./types";
 
 type PromptStudioError = {
@@ -18,21 +20,6 @@ type PromptStudioCategoriesResponse = {
 type PresetResponse = {
   preset: PromptStudioPresetDetail;
 };
-
-function toPromptStudioError(error: unknown): PromptStudioError {
-  if (error instanceof ApiError) {
-    return {
-      message: error.message,
-      code: error.code,
-      requestId: error.requestId,
-    };
-  }
-
-  return {
-    message: "请求失败",
-    code: "UNKNOWN_ERROR",
-  };
-}
 
 function getDefaultPresetId(category: PromptStudioCategory | null | undefined): string | null {
   if (!category) return null;
@@ -150,9 +137,9 @@ export function usePromptStudio() {
         }
       } catch (error) {
         if (requestSeq !== categoriesRequestRef.current) return;
-        const nextError = toPromptStudioError(error);
+        const nextError = toApiError(error, { code: "UNKNOWN_ERROR", message: "请求失败" });
         setLoadError(nextError);
-        toast.toastError(`${nextError.message} (${nextError.code})`, nextError.requestId);
+        toastApiError(toast, nextError);
       } finally {
         if (requestSeq === categoriesRequestRef.current && !options?.silent) {
           setLoading(false);
@@ -184,10 +171,10 @@ export function usePromptStudio() {
         setPresetError(null);
       } catch (error) {
         if (requestSeq !== presetRequestRef.current) return;
-        const nextError = toPromptStudioError(error);
+        const nextError = toApiError(error, { code: "UNKNOWN_ERROR", message: "请求失败" });
         setPresetError(nextError);
         resetEditor({ clearPresetError: false });
-        toast.toastError(`${nextError.message} (${nextError.code})`, nextError.requestId);
+        toastApiError(toast, nextError);
       } finally {
         if (requestSeq === presetRequestRef.current) {
           setPresetLoading(false);
@@ -299,8 +286,8 @@ export function usePromptStudio() {
         toast.toastSuccess("已创建预设", res.request_id);
         return nextPreset;
       } catch (error) {
-        const nextError = toPromptStudioError(error);
-        toast.toastError(`${nextError.message} (${nextError.code})`, nextError.requestId);
+        const nextError = toApiError(error, { code: "UNKNOWN_ERROR", message: "请求失败" });
+        toastApiError(toast, nextError);
         return null;
       } finally {
         setBusy(false);
@@ -356,8 +343,8 @@ export function usePromptStudio() {
       toast.toastSuccess("已保存预设", res.request_id);
       return nextPreset;
     } catch (error) {
-      const nextError = toPromptStudioError(error);
-      toast.toastError(`${nextError.message} (${nextError.code})`, nextError.requestId);
+      const nextError = toApiError(error, { code: "UNKNOWN_ERROR", message: "请求失败" });
+      toastApiError(toast, nextError);
       return null;
     } finally {
       setBusy(false);
@@ -388,8 +375,8 @@ export function usePromptStudio() {
       toast.toastSuccess("已删除预设", res.request_id);
       return true;
     } catch (error) {
-      const nextError = toPromptStudioError(error);
-      toast.toastError(`${nextError.message} (${nextError.code})`, nextError.requestId);
+      const nextError = toApiError(error, { code: "UNKNOWN_ERROR", message: "请求失败" });
+      toastApiError(toast, nextError);
       return false;
     } finally {
       setBusy(false);
@@ -429,8 +416,8 @@ export function usePromptStudio() {
       toast.toastSuccess("已切换生效预设", res.request_id);
       return nextPreset;
     } catch (error) {
-      const nextError = toPromptStudioError(error);
-      toast.toastError(`${nextError.message} (${nextError.code})`, nextError.requestId);
+      const nextError = toApiError(error, { code: "UNKNOWN_ERROR", message: "请求失败" });
+      toastApiError(toast, nextError);
       return null;
     } finally {
       setBusy(false);
@@ -449,8 +436,8 @@ export function usePromptStudio() {
       toast.toastSuccess(`已同步 ${res.data.synced} 组内置提示词`, res.request_id);
       return true;
     } catch (error) {
-      const nextError = toPromptStudioError(error);
-      toast.toastError(`${nextError.message} (${nextError.code})`, nextError.requestId);
+      const nextError = toApiError(error, { code: "UNKNOWN_ERROR", message: "请求失败" });
+      toastApiError(toast, nextError);
       return false;
     } finally {
       setBusy(false);

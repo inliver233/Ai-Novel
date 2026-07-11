@@ -1,8 +1,10 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
+import { toApiError } from "../../services/apiError";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { createRequestSeqGuard } from "../../lib/requestSeqGuard";
-import { ApiError, apiDownloadAttachment, apiJson } from "../../services/apiClient";
+import { apiDownloadAttachment, apiJson } from "../../services/apiClient";
 import { Drawer } from "../ui/Drawer";
 import { useToast } from "../ui/toast";
 import type { GenerationRun } from "./types";
@@ -75,8 +77,8 @@ export function GenerationHistoryDrawer(props: Props) {
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
       toast.toastSuccess("已下载排障包", requestId);
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setDownloading(false);
     }
@@ -106,10 +108,7 @@ export function GenerationHistoryDrawer(props: Props) {
       })
       .catch((e) => {
         if (!pipelineGuardRef.current.isLatest(seq)) return;
-        const err =
-          e instanceof ApiError
-            ? e
-            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
+        const err = toApiError(e);
         setPipelineError({ code: err.code, message: err.message, requestId: err.requestId });
       })
       .finally(() => {

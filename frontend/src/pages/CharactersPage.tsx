@@ -1,3 +1,5 @@
+import { formatApiErrorFields, toastApiError } from "../lib/apiErrorPresentation";
+import { toApiError } from "../services/apiError";
 import { motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
@@ -13,7 +15,7 @@ import { useQueuedSave } from "../hooks/useQueuedSave";
 import { useWizardProgress } from "../hooks/useWizardProgress";
 import { copyText } from "../lib/copyText";
 import { duration, transition } from "../lib/motion";
-import { ApiError, apiJson } from "../services/apiClient";
+import { apiJson } from "../services/apiClient";
 import { markWizardProjectChanged } from "../services/wizard";
 import type { Character } from "../types";
 
@@ -204,8 +206,8 @@ export function CharactersPage() {
         if (close && editorSessionRef.current.id === sessionId) setDrawerOpen(false);
         return true;
       } catch (err) {
-        const apiErr = err as ApiError;
-        toast.toastError(`${apiErr.message} (${apiErr.code})`, apiErr.requestId);
+        const apiErr = toApiError(err);
+        toastApiError(toast, apiErr);
         return false;
       }
     },
@@ -281,7 +283,7 @@ export function CharactersPage() {
       {!loading && charactersQuery.data === null && loadError ? (
         <div className="error-card">
           <div className="state-title">加载失败</div>
-          <div className="state-desc">{`${loadError.message} (${loadError.code})`}</div>
+          <div className="state-desc">{formatApiErrorFields(loadError)}</div>
           {loadError.requestId && loadError.requestId !== "unknown" ? (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtext">
               <span>request_id: {loadError.requestId}</span>
@@ -380,8 +382,8 @@ export function CharactersPage() {
                     await load();
                     await refreshWizard();
                   } catch (err) {
-                    const apiErr = err as ApiError;
-                    toast.toastError(`${apiErr.message} (${apiErr.code})`, apiErr.requestId);
+                    const apiErr = toApiError(err);
+                    toastApiError(toast, apiErr);
                   }
                 }}
                 type="button"

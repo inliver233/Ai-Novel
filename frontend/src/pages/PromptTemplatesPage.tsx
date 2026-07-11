@@ -1,3 +1,5 @@
+import { toastApiError } from "../lib/apiErrorPresentation";
+import { toApiError } from "../services/apiError";
 import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -9,7 +11,7 @@ import { copyText } from "../lib/copyText";
 import { PROMPT_STUDIO_TASKS } from "../lib/promptTaskCatalog";
 import { usePersistentOutletIsActive } from "../hooks/usePersistentOutlet";
 import { UnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
-import { ApiError, apiJson, sanitizeFilename } from "../services/apiClient";
+import { apiJson, sanitizeFilename } from "../services/apiClient";
 import type { Character, Outline, Project, ProjectSettings, PromptBlock, PromptPreset, PromptPreview } from "../types";
 import type { PromptStudioTask } from "./promptStudio/types";
 
@@ -470,8 +472,8 @@ export function PromptTemplatesPage() {
         return firstWithPreset?.key ?? nextResources[0]?.key ?? null;
       });
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setLoading(false);
     }
@@ -534,8 +536,8 @@ export function PromptTemplatesPage() {
         setDraftTemplates(nextDrafts);
         setBaselineTemplates(nextBaseline);
       } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         setBusy(false);
       }
@@ -603,8 +605,8 @@ export function PromptTemplatesPage() {
       setRenderLog(res.data.render_log ?? null);
       setPreviewRequestId(res.request_id ?? null);
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
       setPreviewRequestId(err.requestId ?? null);
     } finally {
       setPreviewLoading(false);
@@ -630,8 +632,8 @@ export function PromptTemplatesPage() {
       downloadJsonFile(res.data.export, `prompt_presets_all_${stamp}.json`);
       toast.toastSuccess("已导出整套");
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBusy(false);
     }
@@ -674,8 +676,8 @@ export function PromptTemplatesPage() {
           toast.toastError("导入失败：不是合法 JSON");
           return;
         }
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         setBusy(false);
       }
@@ -691,8 +693,8 @@ export function PromptTemplatesPage() {
       downloadJsonFile(res.data.export, `${preset.name || "prompt_preset"}.json`);
       toast.toastSuccess("已导出");
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBusy(false);
     }
@@ -729,8 +731,8 @@ export function PromptTemplatesPage() {
       toast.toastSuccess("已重置为系统默认");
       await loadResources();
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setBusy(false);
     }
@@ -754,8 +756,8 @@ export function PromptTemplatesPage() {
         setBaselineTemplates((prev) => ({ ...prev, [updated.id]: stableTemplate }));
         toast.toastSuccess("已保存");
       } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         savingBlockIdRef.current = null;
         setBusy(false);
@@ -788,8 +790,8 @@ export function PromptTemplatesPage() {
         setBaselineTemplates((prev) => ({ ...prev, [updated.id]: stableTemplate }));
         toast.toastSuccess("已重置");
       } catch (e) {
-        const err = e as ApiError;
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         setBusy(false);
       }

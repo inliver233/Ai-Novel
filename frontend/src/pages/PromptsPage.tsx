@@ -2,13 +2,14 @@ import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { LlmPresetPanel } from "../components/prompts/LlmPresetPanel";
 import { UnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { copyText } from "../lib/copyText";
+import { formatApiErrorFields } from "../lib/apiErrorPresentation";
 
 import { PromptsVectorRagSection } from "./prompts/PromptsVectorRagSection";
 import { usePromptsPageState } from "./prompts/usePromptsPageState";
 
 function PromptsPageSkeleton() {
   return (
-      <div className="grid gap-6 pb-24" aria-busy="true" aria-live="polite">
+    <div className="grid gap-6 pb-24" aria-busy="true" aria-live="polite">
       <span className="sr-only">正在加载模型配置…</span>
       <div className="panel p-4 sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -40,7 +41,7 @@ function PromptsPageErrorState(props: { message: string; code: string; requestId
     <div className="grid gap-6 pb-24">
       <div className="error-card">
         <div className="state-title">加载失败</div>
-        <div className="state-desc">{`${props.message} (${props.code})`}</div>
+        <div className="state-desc">{formatApiErrorFields(props)}</div>
         {props.requestId ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtext">
             <span>request_id: {props.requestId}</span>

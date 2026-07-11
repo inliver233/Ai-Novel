@@ -1,3 +1,5 @@
+import { toastApiError } from "../lib/apiErrorPresentation";
+import { toApiError } from "../services/apiError";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Check } from "lucide-react";
@@ -6,7 +8,7 @@ import { GhostwriterIndicator } from "../components/atelier/GhostwriterIndicator
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { useToast } from "../components/ui/toast";
 import { useWizardProgress } from "../hooks/useWizardProgress";
-import { ApiError, apiDownloadMarkdown } from "../services/apiClient";
+import { apiDownloadMarkdown } from "../services/apiClient";
 import { markWizardExported } from "../services/wizard";
 
 type ExportForm = {
@@ -103,8 +105,8 @@ export function ExportPage() {
       bumpWizardLocal();
       return true;
     } catch (e) {
-      const err = e as ApiError;
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
       return false;
     } finally {
       setExporting(false);

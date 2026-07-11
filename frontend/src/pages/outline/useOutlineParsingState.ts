@@ -1,3 +1,4 @@
+import { toastApiError } from "../../lib/apiErrorPresentation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ConfirmApi } from "../../components/ui/confirm";
@@ -350,7 +351,7 @@ export function useOutlineParsingState(args: {
           progress: prev?.progress ?? 0,
           status: "error",
         }));
-        toast.toastError(`${error.message} (${error.code})`, error.requestId);
+        toastApiError(toast, error, { code: error.code, requestId: error.requestId });
         return;
       }
 
@@ -360,7 +361,7 @@ export function useOutlineParsingState(args: {
           progress: prev?.progress ?? 0,
           status: "error",
         }));
-        toast.toastError(`${error.message} (${error.code})`, error.requestId);
+        toastApiError(toast, error);
         return;
       }
 
@@ -431,7 +432,7 @@ export function useOutlineParsingState(args: {
       return true;
     } catch (error) {
       if (error instanceof ApiError) {
-        toast.toastError(`${error.message} (${error.code})`, error.requestId);
+        toastApiError(toast, error);
       } else {
         toast.toastError("创建角色失败");
       }
@@ -460,7 +461,7 @@ export function useOutlineParsingState(args: {
       return true;
     } catch (error) {
       if (error instanceof ApiError) {
-        toast.toastError(`${error.message} (${error.code})`, error.requestId);
+        toastApiError(toast, error);
       } else {
         toast.toastError("创建条目失败");
       }
@@ -491,7 +492,7 @@ export function useOutlineParsingState(args: {
         return true;
       } catch (error) {
         if (error instanceof ApiError) {
-          toast.toastError(`${error.message} (${error.code})`, error.requestId);
+          toastApiError(toast, error);
         } else {
           toast.toastError("保存细纲失败");
         }

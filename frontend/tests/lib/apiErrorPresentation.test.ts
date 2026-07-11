@@ -19,7 +19,30 @@ describe("apiErrorPresentation", () => {
 
   it("通过 toastError 展示统一文案和可追踪 request id", () => {
     const toastError = vi.fn();
-    toastApiError({ toastError }, makeError("rid-toast"));
+    const error = makeError("rid-toast");
+    expect(toastApiError({ toastError }, error)).toBe(error);
     expect(toastError).toHaveBeenCalledWith("操作失败 (FAILED)", "rid-toast");
+  });
+
+  it("安全归一化 unknown 并返回统一错误", () => {
+    const toastError = vi.fn();
+    const normalized = toastApiError({ toastError }, null);
+    expect(normalized).toMatchObject({ code: "UNKNOWN", message: "请求失败", requestId: "unknown", status: 0 });
+    expect(toastError).toHaveBeenCalledWith("请求失败 (UNKNOWN)", undefined);
+  });
+
+  it("保留 SSE 等结构化 Error 的调用方 code 和 request id", () => {
+    const toastError = vi.fn();
+    const normalized = toastApiError({ toastError }, new Error("流式请求失败"), {
+      code: "SSE_STREAM_ERROR",
+      requestId: "rid-sse",
+    });
+    expect(normalized).toMatchObject({
+      code: "SSE_STREAM_ERROR",
+      message: "流式请求失败",
+      requestId: "rid-sse",
+      status: 0,
+    });
+    expect(toastError).toHaveBeenCalledWith("流式请求失败 (SSE_STREAM_ERROR)", "rid-sse");
   });
 });

@@ -1,3 +1,4 @@
+import { formatApiError, toastApiError } from "../../lib/apiErrorPresentation";
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -14,6 +15,7 @@ import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
 import { createRequestSeqGuard } from "../../lib/requestSeqGuard";
 import { ApiError, apiJson } from "../../services/apiClient";
+import { toApiError } from "../../services/apiError";
 import { markWizardLlmTestOk } from "../../services/wizard";
 import type {
   LLMPreset,
@@ -90,23 +92,6 @@ type PresetSaveRequest = {
   silent: boolean;
   snapshot: LlmForm;
 };
-
-function normalizeApiError(error: unknown): ApiError {
-  if (error instanceof ApiError) return error;
-  const message =
-    error instanceof Error && error.message.trim()
-      ? error.message
-      : typeof error === "string" && error.trim()
-        ? error.trim()
-        : "请求失败";
-  return new ApiError({
-    code: "UNKNOWN",
-    message,
-    requestId: "unknown",
-    status: 0,
-    details: error,
-  });
-}
 
 export function usePromptsPageState(): PromptsPageState {
   const { projectId } = useParams();
@@ -261,7 +246,7 @@ export function usePromptsPageState(): PromptsPageState {
     } catch (e) {
       if (e instanceof ApiError) {
         setLoadError({ message: e.message, code: e.code, requestId: e.requestId });
-        toast.toastError(`${e.message} (${e.code})`, e.requestId);
+        toastApiError(toast, e);
       } else {
         setLoadError({ message: "请求失败", code: "UNKNOWN_ERROR" });
         toast.toastError("请求失败 (UNKNOWN_ERROR)");
@@ -471,8 +456,8 @@ export function usePromptsPageState(): PromptsPageState {
         }
         return true;
       } catch (e) {
-        const err = normalizeApiError(e);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
         return false;
       }
     },
@@ -607,8 +592,8 @@ export function usePromptsPageState(): PromptsPageState {
         if (!opts?.silent) toast.toastSuccess("任务模块已保存", res.request_id);
         return true;
       } catch (e) {
-        const err = normalizeApiError(e);
-        if (!opts?.silent) toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        if (!opts?.silent) toastApiError(toast, err);
         return false;
       } finally {
         setTaskSaving((prev) => ({ ...prev, [taskKey]: false }));
@@ -699,8 +684,8 @@ export function usePromptsPageState(): PromptsPageState {
         toast.toastSuccess("任务模块已删除");
         return true;
       } catch (e) {
-        const err = normalizeApiError(e);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
         return false;
       } finally {
         setTaskDeleting((prev) => ({ ...prev, [taskKey]: false }));
@@ -758,12 +743,12 @@ export function usePromptsPageState(): PromptsPageState {
           requestId: res.request_id,
         });
       } catch (e) {
-        const err = normalizeApiError(e);
+        const err = toApiError(e);
         setResult({
           loading: false,
           options: [],
           warning: null,
-          error: `${err.message} (${err.code})`,
+          error: formatApiError(err),
           requestId: err.requestId ?? null,
         });
       }
@@ -983,8 +968,8 @@ export function usePromptsPageState(): PromptsPageState {
       toast.toastSuccess("已保存");
       return true;
     } catch (e) {
-      const err = normalizeApiError(e);
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
       return false;
     } finally {
       setSavingVector(false);
@@ -1056,8 +1041,8 @@ export function usePromptsPageState(): PromptsPageState {
       setVectorRagProfileName("");
       toast.toastSuccess("已创建配置");
     } catch (e) {
-      const err = normalizeApiError(e);
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setVectorRagProfileBusy(false);
     }
@@ -1082,8 +1067,8 @@ export function usePromptsPageState(): PromptsPageState {
         setVectorRagProfiles((prev) => prev.filter((p) => p.id !== profileId));
         toast.toastSuccess("已删除配置");
       } catch (e) {
-        const err = normalizeApiError(e);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         setVectorRagProfileBusy(false);
       }
@@ -1113,9 +1098,9 @@ export function usePromptsPageState(): PromptsPageState {
       setEmbeddingDryRun({ requestId: res.request_id, result: res.data.result });
       toast.toastSuccess("Embedding 测试已完成", res.request_id);
     } catch (e) {
-      const err = normalizeApiError(e);
+      const err = toApiError(e);
       setEmbeddingDryRunError({ message: err.message, code: err.code, requestId: err.requestId });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      toastApiError(toast, err);
     } finally {
       setEmbeddingDryRunLoading(false);
     }
@@ -1155,9 +1140,9 @@ export function usePromptsPageState(): PromptsPageState {
       setRerankDryRun({ requestId: res.request_id, result: res.data.result });
       toast.toastSuccess("Rerank 测试已完成", res.request_id);
     } catch (e) {
-      const err = normalizeApiError(e);
+      const err = toApiError(e);
       setRerankDryRunError({ message: err.message, code: err.code, requestId: err.requestId });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      toastApiError(toast, err);
     } finally {
       setRerankDryRunLoading(false);
     }
@@ -1203,8 +1188,8 @@ export function usePromptsPageState(): PromptsPageState {
         await refreshWizard();
         toast.toastSuccess("已切换配置");
       } catch (e) {
-        const err = normalizeApiError(e);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         setProfileBusy(false);
       }
@@ -1257,8 +1242,8 @@ export function usePromptsPageState(): PromptsPageState {
       await refreshWizard();
       toast.toastSuccess("已保存为新配置并应用到项目");
     } catch (e) {
-      const err = normalizeApiError(e);
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setProfileBusy(false);
     }
@@ -1304,8 +1289,8 @@ export function usePromptsPageState(): PromptsPageState {
       await reloadAll();
       toast.toastSuccess("已更新配置");
     } catch (e) {
-      const err = normalizeApiError(e);
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setProfileBusy(false);
     }
@@ -1332,8 +1317,8 @@ export function usePromptsPageState(): PromptsPageState {
       await refreshWizard();
       toast.toastSuccess("已删除配置");
     } catch (e) {
-      const err = normalizeApiError(e);
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setProfileBusy(false);
     }
@@ -1364,8 +1349,8 @@ export function usePromptsPageState(): PromptsPageState {
       toast.toastSuccess("已保存 Key");
       return true;
     } catch (e) {
-      const err = normalizeApiError(e);
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
       return false;
     } finally {
       setProfileBusy(false);
@@ -1397,8 +1382,8 @@ export function usePromptsPageState(): PromptsPageState {
       bumpWizardLocal();
       toast.toastSuccess("已清除 Key");
     } catch (e) {
-      const err = normalizeApiError(e);
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setProfileBusy(false);
     }
@@ -1439,8 +1424,8 @@ export function usePromptsPageState(): PromptsPageState {
         toast.toastSuccess(`配置库「${profile.name}」Key 已保存`, res.request_id);
         return true;
       } catch (e) {
-        const err = normalizeApiError(e);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
         return false;
       } finally {
         setTaskProfileBusy((prev) => ({ ...prev, [taskKey]: false }));
@@ -1496,8 +1481,8 @@ export function usePromptsPageState(): PromptsPageState {
         toast.toastSuccess(`模块「${taskLabel}」绑定配置的 Key 已清除`, res.request_id);
         return true;
       } catch (e) {
-        const err = normalizeApiError(e);
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
         return false;
       } finally {
         setTaskProfileBusy((prev) => ({ ...prev, [taskKey]: false }));
@@ -1581,7 +1566,7 @@ export function usePromptsPageState(): PromptsPageState {
         );
         return true;
       } catch (e) {
-        const err = normalizeApiError(e);
+        const err = toApiError(e);
         toast.toastError(formatLlmTestApiError(err), err.requestId);
         return false;
       } finally {
@@ -1644,7 +1629,7 @@ export function usePromptsPageState(): PromptsPageState {
       }
       return true;
     } catch (e) {
-      const err = normalizeApiError(e);
+      const err = toApiError(e);
       toast.toastError(formatLlmTestApiError(err), err.requestId);
       return false;
     } finally {

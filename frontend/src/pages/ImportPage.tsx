@@ -1,3 +1,5 @@
+import { toApiError } from "../services/apiError";
+import { toastApiError } from "../lib/apiErrorPresentation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 
@@ -5,7 +7,7 @@ import { DebugDetails, DebugPageShell } from "../components/atelier/DebugPageShe
 import { GhostwriterIndicator } from "../components/atelier/GhostwriterIndicator";
 import { useToast } from "../components/ui/toast";
 import { createRequestSeqGuard } from "../lib/requestSeqGuard";
-import { ApiError, apiJson, sanitizeFilename } from "../services/apiClient";
+import { apiJson, sanitizeFilename } from "../services/apiClient";
 import { getImportProposalDisabledReason, mergeImportDocuments, type ImportDocument } from "./importState";
 
 type ImportDocumentDetail = {
@@ -167,11 +169,8 @@ export function ImportPage() {
       setDocuments((prev) => mergeImportDocuments(prev, documents));
     } catch (e) {
       if (!listGuardRef.current.isLatest(seq)) return;
-      const err =
-        e instanceof ApiError
-          ? e
-          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       if (listGuardRef.current.isLatest(seq)) setListLoading(false);
     }
@@ -195,11 +194,8 @@ export function ImportPage() {
         setDocuments((prev) => mergeImportDocuments(prev, [res.data.document]));
       } catch (e) {
         if (!detailGuardRef.current.isLatest(seq)) return;
-        const err =
-          e instanceof ApiError
-            ? e
-            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       } finally {
         if (detailGuardRef.current.isLatest(seq)) setDetailLoading(false);
       }
@@ -222,11 +218,8 @@ export function ImportPage() {
         setSelectedId(res.data.document.id);
         await Promise.all([loadList(), selectDocAndLoad(res.data.document.id)]);
       } catch (e) {
-        const err =
-          e instanceof ApiError
-            ? e
-            : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-        toast.toastError(`${err.message} (${err.code})`, err.requestId);
+        const err = toApiError(e);
+        toastApiError(toast, err);
       }
     },
     [loadList, projectId, selectDocAndLoad, toast],
@@ -243,11 +236,8 @@ export function ImportPage() {
       );
       setChunks(Array.isArray(res.data.chunks) ? res.data.chunks : []);
     } catch (e) {
-      const err =
-        e instanceof ApiError
-          ? e
-          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setChunksLoading(false);
     }
@@ -285,11 +275,8 @@ export function ImportPage() {
       setDocuments((prev) => mergeImportDocuments(prev, [res.data.document]));
       await Promise.all([loadList(), selectDocAndLoad(res.data.document.id)]);
     } catch (e) {
-      const err =
-        e instanceof ApiError
-          ? e
-          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setCreating(false);
     }
@@ -307,11 +294,8 @@ export function ImportPage() {
       });
       toast.toastSuccess("已应用 story_memory 提案", res.request_id);
     } catch (e) {
-      const err =
-        e instanceof ApiError
-          ? e
-          : new ApiError({ code: "UNKNOWN", message: String(e), requestId: "unknown", status: 0 });
-      toast.toastError(`${err.message} (${err.code})`, err.requestId);
+      const err = toApiError(e);
+      toastApiError(toast, err);
     } finally {
       setApplyStoryMemoryLoading(false);
     }
