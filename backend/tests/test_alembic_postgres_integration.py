@@ -931,13 +931,15 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             connection.execute(sa.text("DELETE FROM vector_chunks WHERE id = 'nondefault-vector-chunk'"))
             connection.execute(
                 sa.text(
-                    "INSERT INTO users (id, display_name) VALUES ('duplicate-vector-user', 'Duplicate Vector User')"
+                    "INSERT INTO users (id, display_name, created_at, updated_at, is_admin) "
+                    "VALUES ('duplicate-vector-user', 'Duplicate Vector User', now(), now(), false)"
                 )
             )
             connection.execute(
                 sa.text(
-                    "INSERT INTO projects (id, owner_user_id, name) "
-                    "VALUES ('duplicate-vector-project', 'duplicate-vector-user', 'Duplicate Vector Project')"
+                    "INSERT INTO projects (id, owner_user_id, name, created_at, updated_at) "
+                    "VALUES ('duplicate-vector-project', 'duplicate-vector-user', "
+                    "'Duplicate Vector Project', now(), now())"
                 )
             )
             connection.execute(
