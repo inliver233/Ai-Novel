@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useConfirm } from "../../components/ui/confirm";
 import { useToast } from "../../components/ui/toast";
+import { createRequestSeqGuard } from "../../lib/requestSeqGuard";
 import { ApiError } from "../../services/apiClient";
 import {
   type ChapterSkeletonGenerateRequest,
@@ -30,7 +31,16 @@ export type DetailedOutlineProgress = {
 
 export type DetailedOutlineState = {
   items: DetailedOutlineListItem[];
+  loading: boolean;
+  error: ApiError | null;
+  hasData: boolean;
+  hasLoaded: boolean;
   selected: DetailedOutline | null;
+  selectedId: string | null;
+  detailLoading: boolean;
+  detailError: ApiError | null;
+  detailHasData: boolean;
+  detailHasLoaded: boolean;
   generating: boolean;
   progress: DetailedOutlineProgress | null;
   skeletonGenerating: boolean;
@@ -44,7 +54,11 @@ export type DetailedOutlineState = {
   generateModalOpen: boolean;
   skeletonModalOpen: boolean;
   refresh: () => Promise<void>;
+  reload: () => Promise<void>;
+  reset: () => void;
   selectVolume: (id: string) => Promise<void>;
+  reloadDetail: () => Promise<void>;
+  resetDetail: () => void;
   deselectVolume: () => void;
   openGenerateModal: () => void;
   closeGenerateModal: () => void;
@@ -75,7 +89,16 @@ export function useDetailedOutlineState(
   const confirm = useConfirm();
 
   const [items, setItems] = useState<DetailedOutlineListItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [hasData, setHasData] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [selected, setSelected] = useState<DetailedOutline | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<ApiError | null>(null);
+  const [detailHasData, setDetailHasData] = useState(false);
+  const [detailHasLoaded, setDetailHasLoaded] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress] = useState<DetailedOutlineProgress | null>(null);
   const [skeletonGenerating, setSkeletonGenerating] = useState(false);
@@ -91,55 +114,131 @@ export function useDetailedOutlineState(
 
   const streamClientRef = useRef<SSEPostClient | null>(null);
   const skeletonStreamRef = useRef<SSEPostClient | null>(null);
+  const listRequestGuardRef = useRef(createRequestSeqGuard());
+  const detailRequestGuardRef = useRef(createRequestSeqGuard());
+  const scopeRef = useRef("");
+  const editingRef = useRef(false);
+
+  const scope = `${projectId ?? ""}\u0000${outlineId ?? ""}`;
+  scopeRef.current = scope;
+  editingRef.current = editing;
 
   useEffect(() => {
+    const listRequestGuard = listRequestGuardRef.current;
+    const detailRequestGuard = detailRequestGuardRef.current;
     return () => {
+      listRequestGuard.invalidate();
+      detailRequestGuard.invalidate();
       streamClientRef.current?.abort();
       skeletonStreamRef.current?.abort();
     };
   }, []);
 
-  const refresh = useCallback(async () => {
+  const reset = useCallback(() => {
+    listRequestGuardRef.current.invalidate();
+    setItems([]);
+    setLoading(false);
+    setError(null);
+    setHasData(false);
+    setHasLoaded(false);
+  }, []);
+
+  const resetDetail = useCallback(() => {
+    detailRequestGuardRef.current.invalidate();
+    setSelected(null);
+    setSelectedId(null);
+    setDetailLoading(false);
+    setDetailError(null);
+    setDetailHasData(false);
+    setDetailHasLoaded(false);
+    setEditing(false);
+  }, []);
+
+  const reload = useCallback(async () => {
     if (!projectId || !outlineId) {
-      setItems([]);
+      reset();
       return;
     }
+    const requestSeq = listRequestGuardRef.current.next();
+    const requestScope = scope;
+    setLoading(true);
+    setError(null);
     try {
       const list = await listDetailedOutlines(projectId, outlineId);
+      if (!listRequestGuardRef.current.isLatest(requestSeq) || requestScope !== scopeRef.current) return;
       setItems(list);
+      setHasData(true);
     } catch (error) {
-      const err = toApiError(error);
-      toastApiError(toast, err);
+      if (!listRequestGuardRef.current.isLatest(requestSeq) || requestScope !== scopeRef.current) return;
+      setError(toApiError(error));
+    } finally {
+      if (listRequestGuardRef.current.isLatest(requestSeq) && requestScope === scopeRef.current) {
+        setLoading(false);
+        setHasLoaded(true);
+      }
     }
-  }, [projectId, outlineId, toast]);
+  }, [outlineId, projectId, reset, scope]);
+
+  const refresh = reload;
 
   useEffect(() => {
+    reset();
+    resetDetail();
     if (projectId && outlineId) {
-      void refresh();
-    } else {
-      setItems([]);
-      setSelected(null);
+      void reload();
     }
-  }, [projectId, outlineId, refresh]);
+  }, [outlineId, projectId, reload, reset, resetDetail]);
+
+  const loadDetail = useCallback(
+    async (id: string) => {
+      if (editingRef.current) return;
+      const requestSeq = detailRequestGuardRef.current.next();
+      const requestScope = scope;
+      const selectionChanged = selectedId !== id;
+      setSelectedId(id);
+      setDetailLoading(true);
+      setDetailError(null);
+      if (selectionChanged) {
+        setSelected(null);
+        setDetailHasData(false);
+        setDetailHasLoaded(false);
+        setEditing(false);
+      }
+      try {
+        const detail = await getDetailedOutline(id);
+        if (!detailRequestGuardRef.current.isLatest(requestSeq) || requestScope !== scopeRef.current) return;
+        if (!selectionChanged && editingRef.current) return;
+        setSelected(detail);
+        setDetailHasData(true);
+        setEditing(false);
+      } catch (error) {
+        if (!detailRequestGuardRef.current.isLatest(requestSeq) || requestScope !== scopeRef.current) return;
+        setDetailError(toApiError(error));
+      } finally {
+        if (detailRequestGuardRef.current.isLatest(requestSeq) && requestScope === scopeRef.current) {
+          setDetailLoading(false);
+          setDetailHasLoaded(true);
+        }
+      }
+    },
+    [scope, selectedId],
+  );
 
   const selectVolume = useCallback(
     async (id: string) => {
-      try {
-        const detail = await getDetailedOutline(id);
-        setSelected(detail);
-        setEditing(false);
-      } catch (error) {
-        const err = toApiError(error);
-        toastApiError(toast, err);
-      }
+      await loadDetail(id);
     },
-    [toast],
+    [loadDetail],
   );
 
+  const reloadDetail = useCallback(async () => {
+    if (!selectedId || editingRef.current) return;
+    await loadDetail(selectedId);
+  }, [loadDetail, selectedId]);
+
   const deselectVolume = useCallback(() => {
-    setSelected(null);
-    setEditing(false);
-  }, []);
+    resetDetail();
+  }, [resetDetail]);
 
   const openGenerateModal = useCallback(() => {
     setGenerateModalOpen(true);
@@ -362,10 +461,7 @@ export function useDetailedOutlineState(
       if (!ok) return;
       try {
         await deleteDetailedOutline(id);
-        if (selected?.id === id) {
-          setSelected(null);
-          setEditing(false);
-        }
+        if (selected?.id === id) resetDetail();
         await refresh();
         toast.toastSuccess(OUTLINE_COPY.detailedOutline.deletedSuccess);
       } catch (error) {
@@ -373,7 +469,7 @@ export function useDetailedOutlineState(
         toastApiError(toast, err);
       }
     },
-    [confirm, refresh, selected?.id, toast],
+    [confirm, refresh, resetDetail, selected?.id, toast],
   );
 
   const createChapters = useCallback(
@@ -422,7 +518,16 @@ export function useDetailedOutlineState(
 
   return {
     items,
+    loading,
+    error,
+    hasData,
+    hasLoaded,
     selected,
+    selectedId,
+    detailLoading,
+    detailError,
+    detailHasData,
+    detailHasLoaded,
     generating,
     progress,
     skeletonGenerating,
@@ -436,7 +541,11 @@ export function useDetailedOutlineState(
     generateModalOpen,
     skeletonModalOpen,
     refresh,
+    reload,
+    reset,
     selectVolume,
+    reloadDetail,
+    resetDetail,
     deselectVolume,
     openGenerateModal,
     closeGenerateModal,

@@ -2,6 +2,7 @@ import { useState } from "react";
 import clsx from "clsx";
 
 import { MarkdownEditor } from "../../components/atelier/MarkdownEditor";
+import { QueryErrorCard } from "../../components/atelier/QueryErrorCard";
 import { Modal } from "../../components/ui/Modal";
 import { ProgressBar } from "../../components/ui/ProgressBar";
 import type {
@@ -16,7 +17,7 @@ import type { DetailedOutlineState } from "./useDetailedOutlineState";
 /*  Volume list sidebar                                                */
 /* ------------------------------------------------------------------ */
 
-type VolumeListProps = Pick<DetailedOutlineState, "items" | "selected" | "selectVolume">;
+type VolumeListProps = Pick<DetailedOutlineState, "items" | "selectedId" | "selectVolume" | "editing">;
 
 function VolumeList(props: VolumeListProps) {
   const copy = OUTLINE_COPY.detailedOutline;
@@ -28,7 +29,8 @@ function VolumeList(props: VolumeListProps) {
   return (
     <ul className="grid gap-1">
       {props.items.map((item) => {
-        const isActive = props.selected?.id === item.id;
+        const isActive = props.selectedId === item.id;
+        const switchBlocked = props.editing && !isActive;
         return (
           <li key={item.id}>
             <button
@@ -37,7 +39,9 @@ function VolumeList(props: VolumeListProps) {
                 "w-full rounded-atelier px-3 py-2 text-left ui-transition-fast",
                 isActive ? "bg-accent/10 text-accent" : "hover:bg-canvas text-ink",
               )}
+              disabled={switchBlocked}
               onClick={() => void props.selectVolume(item.id)}
+              title={switchBlocked ? "请先保存或取消当前编辑，再切换细纲" : undefined}
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-medium truncate">
@@ -228,6 +232,11 @@ export type DetailedOutlineSectionProps = DetailedOutlineState;
 
 export function DetailedOutlineSection(props: DetailedOutlineSectionProps) {
   const copy = OUTLINE_COPY.detailedOutline;
+  const blockingListError = !props.hasData ? props.error : null;
+  const refreshListError = props.hasData ? props.error : null;
+  const blockingDetailError = !props.detailHasData ? props.detailError : null;
+  const refreshDetailError = props.detailHasData ? props.detailError : null;
+  const detailRetryBlockedReason = props.editing ? "请先保存或取消当前编辑，再重试加载详情" : undefined;
 
   return (
     <>
@@ -238,47 +247,92 @@ export function DetailedOutlineSection(props: DetailedOutlineSectionProps) {
         <div className="mt-1 text-[11px] text-subtext">{copy.detailedFlowHint}</div>
       </div>
 
-      {/* Actions bar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          className={props.items.length === 0 ? "btn btn-primary" : "btn btn-secondary"}
-          type="button"
-          onClick={props.openGenerateModal}
-          disabled={props.generating}
-        >
-          {props.generating ? copy.generatingDetailedButton : copy.generateDetailedButton}
-        </button>
-      </div>
+      {blockingListError ? (
+        <QueryErrorCard error={blockingListError} onRetry={() => void props.reload()} title="细纲列表加载失败" />
+      ) : null}
+
+      {!props.hasData && props.loading ? (
+        <div className="panel p-8 text-center text-sm text-subtext">加载中...</div>
+      ) : null}
+
+      {refreshListError ? (
+        <QueryErrorCard
+          error={refreshListError}
+          onRetry={() => void props.reload()}
+          title="细纲列表刷新失败"
+          variant="warning"
+        />
+      ) : null}
+
+      {props.hasData ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            className={props.items.length === 0 ? "btn btn-primary" : "btn btn-secondary"}
+            type="button"
+            onClick={props.openGenerateModal}
+            disabled={props.generating}
+          >
+            {props.generating ? copy.generatingDetailedButton : copy.generateDetailedButton}
+          </button>
+        </div>
+      ) : null}
 
       {/* Two-panel content */}
-      {props.items.length > 0 ? (
+      {props.hasData && props.items.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-[240px_1fr]">
           {/* Left panel: volume list */}
           <div className="panel p-3 sm:p-4 overflow-y-auto sm:max-h-[70vh]">
-            <VolumeList items={props.items} selected={props.selected} selectVolume={props.selectVolume} />
+            <VolumeList
+              editing={props.editing}
+              items={props.items}
+              selectedId={props.selectedId}
+              selectVolume={props.selectVolume}
+            />
           </div>
 
           {/* Right panel: detail */}
           <div className="panel p-4 sm:p-6">
-            <VolumeDetail
-              selected={props.selected}
-              editing={props.editing}
-              editContent={props.editContent}
-              editTitle={props.editTitle}
-              saving={props.saving}
-              startEdit={props.startEdit}
-              cancelEdit={props.cancelEdit}
-              setEditContent={props.setEditContent}
-              setEditTitle={props.setEditTitle}
-              saveEdit={props.saveEdit}
-              deleteVolume={props.deleteVolume}
-              createChapters={props.createChapters}
-              skeletonGenerating={props.skeletonGenerating}
-              openSkeletonModal={props.openSkeletonModal}
-            />
+            {blockingDetailError ? (
+              <QueryErrorCard
+                error={blockingDetailError}
+                onRetry={() => void props.reloadDetail()}
+                retryBlockedReason={detailRetryBlockedReason}
+                title="细纲详情加载失败"
+              />
+            ) : props.detailLoading && !props.detailHasData ? (
+              <div className="py-16 text-center text-sm text-subtext">加载详情中...</div>
+            ) : (
+              <div className="grid gap-4">
+                {refreshDetailError ? (
+                  <QueryErrorCard
+                    error={refreshDetailError}
+                    onRetry={() => void props.reloadDetail()}
+                    retryBlockedReason={detailRetryBlockedReason}
+                    title="细纲详情刷新失败"
+                    variant="warning"
+                  />
+                ) : null}
+                <VolumeDetail
+                  selected={props.selected}
+                  editing={props.editing}
+                  editContent={props.editContent}
+                  editTitle={props.editTitle}
+                  saving={props.saving}
+                  startEdit={props.startEdit}
+                  cancelEdit={props.cancelEdit}
+                  setEditContent={props.setEditContent}
+                  setEditTitle={props.setEditTitle}
+                  saveEdit={props.saveEdit}
+                  deleteVolume={props.deleteVolume}
+                  createChapters={props.createChapters}
+                  skeletonGenerating={props.skeletonGenerating}
+                  openSkeletonModal={props.openSkeletonModal}
+                />
+              </div>
+            )}
           </div>
         </div>
-      ) : !props.generating ? (
+      ) : props.hasData && !props.generating ? (
         <div className="panel p-8 text-center text-sm text-subtext">{copy.noDetailedOutlines}</div>
       ) : null}
 
@@ -608,7 +662,7 @@ export function ChapterSkeletonGenerationModal(props: ChapterSkeletonGenerationM
         </div>
       ) : null}
 
-      {(props.generating || props.streamRawText || props.streamResult) ? (
+      {props.generating || props.streamRawText || props.streamResult ? (
         <div className="mt-4 grid gap-3">
           {props.streamRawText ? (
             <details open={props.generating} className="panel p-3">
