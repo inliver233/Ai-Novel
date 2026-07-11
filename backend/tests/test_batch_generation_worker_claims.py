@@ -24,6 +24,8 @@ def _factory(path: Path) -> tuple[sa.Engine, sessionmaker[Session]]:
         connect_args={"check_same_thread": False, "timeout": 15},
     )
     Base.metadata.create_all(engine)
+    ProjectTask.__table__.create(engine, checkfirst=True)
+    ProjectTaskEvent.__table__.create(engine, checkfirst=True)
     return engine, sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
