@@ -11,8 +11,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.batch_generation_task import BatchGenerationTask, BatchGenerationTaskItem
 from app.models.chapter import Chapter
-from app.models.project_task import ProjectTask
-from app.models.project_task_event import ProjectTaskEvent
 from app.services import batch_generation_commands, batch_generation_service
 from app.services.generation_service import PreparedLlmCall
 from tests.support import create_tables
@@ -36,7 +34,7 @@ def _seed(factory: sessionmaker[Session], *, with_chapter: bool = False) -> None
                 outline_id="outline",
                 actor_user_id="owner",
                 runtime_provider="openai",
-                project_task_id="project-task" if with_chapter else None,
+                project_task_id=None,
                 status="queued",
                 total_count=1,
                 params_json=json.dumps({"context": {}}, ensure_ascii=False),
@@ -52,16 +50,6 @@ def _seed(factory: sessionmaker[Session], *, with_chapter: bool = False) -> None
             )
         )
         if with_chapter:
-            db.add(
-                ProjectTask(
-                    id="project-task",
-                    project_id="project",
-                    actor_user_id="owner",
-                    kind="batch_generation",
-                    status="queued",
-                    idempotency_key="batch_generation:task",
-                )
-            )
             db.add(
                 Chapter(
                     id="chapter",
@@ -235,12 +223,6 @@ def test_duplicate_worker_delivery_invokes_external_generation_once(tmp_path: Pa
         assert task.status == "succeeded"
         assert item.status == "succeeded"
         assert item.attempt_count == 1
-        step_started = (
-            db.query(ProjectTaskEvent)
-            .filter(ProjectTaskEvent.task_id == "project-task", ProjectTaskEvent.event_type == "step_started")
-            .count()
-        )
-        assert step_started == 1
     engine.dispose()
 
 
@@ -261,11 +243,8 @@ def test_worker_initialization_error_rolls_claim_back_to_queued(tmp_path: Path) 
 
     with factory() as db:
         task = db.get(BatchGenerationTask, "task")
-        project_task = db.get(ProjectTask, "project-task")
-        assert task is not None and project_task is not None
+        assert task is not None
         assert task.status == "queued"
-        assert project_task.status == "queued"
-        assert project_task.attempt == 0
     engine.dispose()
 
 
@@ -307,10 +286,4 @@ def test_worker_does_not_reclaim_preexisting_running_item(tmp_path: Path) -> Non
         assert item is not None
         assert item.status == "running"
         assert item.attempt_count == 4
-        assert (
-            db.query(ProjectTaskEvent)
-            .filter(ProjectTaskEvent.task_id == "project-task", ProjectTaskEvent.event_type == "step_started")
-            .count()
-            == 0
-        )
     engine.dispose()
