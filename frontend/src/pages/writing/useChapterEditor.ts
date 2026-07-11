@@ -8,6 +8,7 @@ import { useAutoSave } from "../../hooks/useAutoSave";
 import { useChapterMetaList } from "../../hooks/useChapterMetaList";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { createRequestSeqGuard } from "../../lib/requestSeqGuard";
+import type { ApiError } from "../../services/apiClient";
 import { chapterStore } from "../../services/chapterStore";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { Chapter, ChapterListItem } from "../../types";
@@ -41,6 +42,7 @@ export function useChapterEditor(args: {
   const [baseline, setBaseline] = useState<ChapterForm | null>(null);
   const [form, setForm] = useState<ChapterForm | null>(null);
   const [loadingChapter, setLoadingChapter] = useState(false);
+  const [chapterLoadError, setChapterLoadError] = useState<ApiError | null>(null);
   const [saving, setSaving] = useState(false);
   const requestedChapterHandledRef = useRef(false);
   const chapterLoadGuardRef = useRef(createRequestSeqGuard());
@@ -55,10 +57,10 @@ export function useChapterEditor(args: {
   const queuedPromiseRef = useRef<Promise<boolean> | null>(null);
   const queuedPromiseResolveRef = useRef<((ok: boolean) => void) | null>(null);
   const queuedToastShownRef = useRef(false);
-  const chaptersQuery = useChapterMetaList(projectId);
+  const chaptersQuery = useChapterMetaList(projectId, { toastOnError: false });
   const chapters = chaptersQuery.chapters as ChapterListItem[];
   const refreshChapters = chaptersQuery.refresh;
-  const loading = !chaptersQuery.hasLoaded && chaptersQuery.loading;
+  const loading = !chaptersQuery.hasData && chaptersQuery.loading;
 
   useEffect(() => {
     const loadGuard = chapterLoadGuardRef.current;
@@ -107,42 +109,50 @@ export function useChapterEditor(args: {
     setSearchParams(next, { replace: true });
   }, [chapters, requestedChapterId, searchParams, setSearchParams]);
 
+  const loadChapter = useCallback(async (chapterId: string, force = false) => {
+    const seq = chapterLoadGuardRef.current.next();
+    setActiveChapter(null);
+    setBaseline(null);
+    setForm(null);
+    setChapterLoadError(null);
+    setLoadingChapter(true);
+    try {
+      const chapter = await chapterStore.loadChapterDetail(chapterId, { force });
+      if (!chapterLoadGuardRef.current.isLatest(seq)) return;
+      setActiveChapter(chapter);
+      const next = chapterToForm(chapter);
+      setBaseline(next);
+      setForm(next);
+    } catch (e) {
+      if (!chapterLoadGuardRef.current.isLatest(seq)) return;
+      setChapterLoadError(toApiError(e));
+      setActiveChapter(null);
+      setBaseline(null);
+      setForm(null);
+    } finally {
+      if (chapterLoadGuardRef.current.isLatest(seq)) {
+        setLoadingChapter(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!activeId) {
       chapterLoadGuardRef.current.invalidate();
       setActiveChapter(null);
       setBaseline(null);
       setForm(null);
+      setChapterLoadError(null);
       setLoadingChapter(false);
       return;
     }
-    const seq = chapterLoadGuardRef.current.next();
-    setActiveChapter(null);
-    setBaseline(null);
-    setForm(null);
-    setLoadingChapter(true);
-    void (async () => {
-      try {
-        const chapter = await chapterStore.loadChapterDetail(activeId);
-        if (!chapterLoadGuardRef.current.isLatest(seq)) return;
-        setActiveChapter(chapter);
-        const next = chapterToForm(chapter);
-        setBaseline(next);
-        setForm(next);
-      } catch (e) {
-        if (!chapterLoadGuardRef.current.isLatest(seq)) return;
-        const err = toApiError(e);
-        toastApiError(toast, err);
-        setActiveChapter(null);
-        setBaseline(null);
-        setForm(null);
-      } finally {
-        if (chapterLoadGuardRef.current.isLatest(seq)) {
-          setLoadingChapter(false);
-        }
-      }
-    })();
-  }, [activeId, toast]);
+    void loadChapter(activeId);
+  }, [activeId, loadChapter]);
+
+  const retryChapter = useCallback(async () => {
+    if (!activeId) return;
+    await loadChapter(activeId, true);
+  }, [activeId, loadChapter]);
 
   const saveChapter = useCallback(
     async (opts?: { snapshot?: ChapterForm; silent?: boolean }) => {
@@ -287,7 +297,11 @@ export function useChapterEditor(args: {
   return {
     loading,
     chapters,
+    chapterListError: chaptersQuery.error,
+    chapterListHasData: chaptersQuery.hasData,
+    chapterListHasLoaded: chaptersQuery.hasLoaded,
     refreshChapters,
+    retryChapterList: refreshChapters,
     activeId,
     setActiveId,
     activeChapter,
@@ -298,6 +312,8 @@ export function useChapterEditor(args: {
     saveChapter,
     requestSelectChapter,
     loadingChapter,
+    chapterLoadError,
+    retryChapter,
     saving,
   };
 }

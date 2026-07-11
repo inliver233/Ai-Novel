@@ -15,9 +15,13 @@ const EMPTY_SNAPSHOT = Object.freeze({
   stale: false,
 });
 
-export function useChapterMetaList(projectId: string | undefined): {
+export function useChapterMetaList(
+  projectId: string | undefined,
+  options: { toastOnError?: boolean } = {},
+): {
   chapters: readonly ChapterListItem[];
   error: ApiError | null;
+  hasData: boolean;
   hasLoaded: boolean;
   loading: boolean;
   refresh: () => Promise<ChapterListItem[]>;
@@ -43,16 +47,17 @@ export function useChapterMetaList(projectId: string | undefined): {
 
   useEffect(() => {
     if (!projectId) return;
-    void chapterStore.loadProjectChapterMeta(projectId);
+    void chapterStore.loadProjectChapterMeta(projectId).catch(() => undefined);
   }, [projectId]);
 
   // Auto-refetch when cache is invalidated (e.g., from outline page creating chapters)
   useEffect(() => {
     if (!projectId || !snapshot.stale) return;
-    void chapterStore.loadProjectChapterMeta(projectId);
+    void chapterStore.loadProjectChapterMeta(projectId).catch(() => undefined);
   }, [projectId, snapshot.stale]);
 
   useEffect(() => {
+    if (!(options.toastOnError ?? true)) return;
     if (!snapshot.error) {
       lastErrorKeyRef.current = null;
       return;
@@ -61,7 +66,7 @@ export function useChapterMetaList(projectId: string | undefined): {
     if (lastErrorKeyRef.current === errorKey) return;
     lastErrorKeyRef.current = errorKey;
     toastApiError(toast, snapshot.error);
-  }, [snapshot.error, toast]);
+  }, [options.toastOnError, snapshot.error, toast]);
 
   const refresh = useCallback(async () => {
     if (!projectId) return [...EMPTY_CHAPTERS];
@@ -71,6 +76,7 @@ export function useChapterMetaList(projectId: string | undefined): {
   return {
     chapters: snapshot.data ?? EMPTY_CHAPTERS,
     error: snapshot.error,
+    hasData: snapshot.data !== null,
     hasLoaded: snapshot.hasLoaded,
     loading: snapshot.loading,
     refresh,

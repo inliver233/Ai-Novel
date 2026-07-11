@@ -2,6 +2,7 @@ import type { ComponentProps } from "react";
 
 import { GhostwriterIndicator } from "../../components/atelier/GhostwriterIndicator";
 import { MarkdownEditor } from "../../components/atelier/MarkdownEditor";
+import { QueryErrorCard } from "../../components/atelier/QueryErrorCard";
 import { Drawer } from "../../components/ui/Drawer";
 import { ProgressBar } from "../../components/ui/ProgressBar";
 import { useIsMobile } from "../../hooks/useIsMobile";
@@ -13,6 +14,7 @@ import { GenerationHistoryDrawer } from "../../components/writing/GenerationHist
 import { PromptInspectorDrawer } from "../../components/writing/PromptInspectorDrawer";
 import { WritingToolbar } from "../../components/writing/WritingToolbar";
 import { humanizeChapterStatus } from "../../lib/humanize";
+import type { ApiError } from "../../services/apiClient";
 import type { Chapter, ChapterListItem, ChapterStatus } from "../../types";
 
 import type { ChapterForm } from "./writingUtils";
@@ -31,6 +33,7 @@ export type WritingEditorSectionProps = {
   dirty: boolean;
   isDoneReadonly: boolean;
   loadingChapter: boolean;
+  loadError: ApiError | null;
   generating: boolean;
   saving: boolean;
   autoUpdatesTriggering: boolean;
@@ -42,6 +45,7 @@ export type WritingEditorSectionProps = {
   onContentChange: (value: string) => void;
   onSummaryChange: (value: string) => void;
   onDeleteChapter: () => void;
+  onRetryLoad: () => void;
   onSaveAndTriggerAutoUpdates: () => void;
   onSaveChapter: () => void;
   onReopenDrafting: () => void;
@@ -49,6 +53,22 @@ export type WritingEditorSectionProps = {
 };
 
 export function WritingEditorSection(props: WritingEditorSectionProps) {
+  if (props.loadingChapter && !props.activeChapter && !props.form) {
+    return (
+      <div className="mx-auto w-full max-w-4xl rounded-atelier border border-border bg-surface p-8 text-sm text-subtext shadow-sm">
+        章节加载中...
+      </div>
+    );
+  }
+
+  if (props.loadError) {
+    return (
+      <div className="mx-auto w-full max-w-4xl">
+        <QueryErrorCard error={props.loadError} onRetry={props.onRetryLoad} title="章节加载失败" />
+      </div>
+    );
+  }
+
   if (!props.activeChapter || !props.form) {
     return (
       <div className="mx-auto w-full max-w-4xl rounded-atelier border border-border bg-surface p-8 text-sm text-subtext shadow-sm">

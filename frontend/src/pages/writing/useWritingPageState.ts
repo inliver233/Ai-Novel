@@ -10,7 +10,7 @@ import { useToast } from "../../components/ui/toast";
 import { usePersistentOutletIsActive } from "../../hooks/usePersistentOutlet";
 import { useProjectData } from "../../hooks/useProjectData";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
-import { apiJson } from "../../services/apiClient";
+import { apiJson, type ApiError } from "../../services/apiClient";
 import { listEntries, type EntryItem } from "../../services/entriesApi";
 import { getWizardProjectChangedAt } from "../../services/wizard";
 import type { Character, LLMPreset, Outline, OutlineListItem } from "../../types";
@@ -45,8 +45,22 @@ type WritingLoaded = {
   entries: EntryItem[];
 };
 
+export function deriveWritingMetadataLoadState<T>(query: { data: T | null; error: ApiError | null; loading: boolean }) {
+  return {
+    loading: query.loading && query.data === null,
+    blockingLoadError: query.data === null ? query.error : null,
+    refreshLoadError: query.data !== null ? query.error : null,
+  };
+}
+
 export type WritingPageState = {
   loading: boolean;
+  metadataBlockingLoadError: ApiError | null;
+  metadataRefreshLoadError: ApiError | null;
+  reloadMetadata: () => Promise<void>;
+  chapterListBlockingLoadError: ApiError | null;
+  chapterListRefreshLoadError: ApiError | null;
+  reloadChapterList: () => Promise<void>;
   dirty: boolean;
   showUnsavedGuard: boolean;
   workspaceProps: WritingWorkspaceProps;
@@ -77,44 +91,45 @@ export function useWritingPageState(): WritingPageState {
   const [promptInspectorOpen, setPromptInspectorOpen] = useState(false);
   const [autoUpdatesTriggering, setAutoUpdatesTriggering] = useState(false);
 
-  const writingQuery = useProjectData<WritingLoaded>(
-    projectId,
-    async (id) => {
-      const loadEntries = async (): Promise<EntryItem[]> => {
-        const items: EntryItem[] = [];
-        let offset = 0;
-        while (true) {
-          const page = await listEntries(id, { limit: 200, offset });
-          items.push(...page.items);
-          if (typeof page.next_offset !== "number") break;
-          offset = page.next_offset;
-        }
-        return items;
-      };
+  const writingQuery = useProjectData<WritingLoaded>(projectId, async (id) => {
+    const loadEntries = async (): Promise<EntryItem[]> => {
+      const items: EntryItem[] = [];
+      let offset = 0;
+      while (true) {
+        const page = await listEntries(id, { limit: 200, offset });
+        items.push(...page.items);
+        if (typeof page.next_offset !== "number") break;
+        offset = page.next_offset;
+      }
+      return items;
+    };
 
-      const [outlineRes, presetRes, charactersRes, entries] = await Promise.all([
-        apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
-        apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
-        apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`),
-        loadEntries(),
-      ]);
-      const outlinesRes = await apiJson<{ outlines: OutlineListItem[] }>(`/api/projects/${id}/outlines`);
-      return {
-        outlines: outlinesRes.data.outlines,
-        outline: outlineRes.data.outline,
-        preset: presetRes.data.llm_preset,
-        characters: charactersRes.data.characters,
-        entries,
-      };
-    },
-    { toastOnError: true },
-  );
+    const [outlineRes, presetRes, charactersRes, entries] = await Promise.all([
+      apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
+      apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
+      apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`),
+      loadEntries(),
+    ]);
+    const outlinesRes = await apiJson<{ outlines: OutlineListItem[] }>(`/api/projects/${id}/outlines`);
+    return {
+      outlines: outlinesRes.data.outlines,
+      outline: outlineRes.data.outline,
+      preset: presetRes.data.llm_preset,
+      characters: charactersRes.data.characters,
+      entries,
+    };
+  });
   const outlines = writingQuery.data?.outlines ?? [];
   const outline = writingQuery.data?.outline ?? null;
   const characters = writingQuery.data?.characters ?? [];
   const entries = writingQuery.data?.entries ?? [];
   const preset = writingQuery.data?.preset ?? null;
   const refreshWriting = writingQuery.refresh;
+  const resetWritingError = writingQuery.resetError;
+  const reloadMetadata = useCallback(async () => {
+    resetWritingError();
+    await refreshWriting();
+  }, [refreshWriting, resetWritingError]);
 
   const chapterEditor = useChapterEditor({
     projectId,
@@ -127,9 +142,13 @@ export function useWritingPageState(): WritingPageState {
     bumpWizardLocal,
   });
   const {
-    loading,
+    loading: chapterListLoading,
     chapters,
+    chapterListError,
+    chapterListHasData,
+    chapterListHasLoaded,
     refreshChapters,
+    retryChapterList,
     activeId,
     setActiveId,
     activeChapter,
@@ -140,6 +159,8 @@ export function useWritingPageState(): WritingPageState {
     saveChapter,
     requestSelectChapter: requestSelectChapterBase,
     loadingChapter,
+    chapterLoadError,
+    retryChapter,
     saving,
   } = chapterEditor;
 
@@ -337,6 +358,7 @@ export function useWritingPageState(): WritingPageState {
       dirty,
       isDoneReadonly,
       loadingChapter,
+      loadError: chapterLoadError,
       generating,
       saving,
       autoUpdatesTriggering,
@@ -348,6 +370,7 @@ export function useWritingPageState(): WritingPageState {
       onContentChange: (value) => setForm((prev) => (prev ? { ...prev, content_md: value } : prev)),
       onSummaryChange: (value) => setForm((prev) => (prev ? { ...prev, summary: value } : prev)),
       onDeleteChapter: () => void chapterCrud.deleteChapter(),
+      onRetryLoad: () => void retryChapter(),
       onSaveAndTriggerAutoUpdates: () => void saveAndTriggerAutoUpdates(),
       onSaveChapter: () => void saveChapter(),
       onReopenDrafting: () => setForm((prev: ChapterForm | null) => (prev ? { ...prev, status: "drafting" } : prev)),
@@ -447,8 +470,26 @@ export function useWritingPageState(): WritingPageState {
     onCancel: abortGenerate,
   };
 
+  const metadataLoadState = deriveWritingMetadataLoadState(writingQuery);
+  const chapterListBlockingLoadError =
+    writingQuery.data !== null && !chapterListHasData && chapterListHasLoaded ? chapterListError : null;
+  const chapterListRefreshLoadError = writingQuery.data !== null && chapterListHasData ? chapterListError : null;
+  const reloadChapterList = useCallback(async () => {
+    try {
+      await retryChapterList();
+    } catch {
+      // The chapter store snapshot owns the retry error state.
+    }
+  }, [retryChapterList]);
+
   return {
-    loading,
+    loading: metadataLoadState.loading || (writingQuery.data !== null && chapterListLoading),
+    metadataBlockingLoadError: metadataLoadState.blockingLoadError,
+    metadataRefreshLoadError: metadataLoadState.refreshLoadError,
+    reloadMetadata,
+    chapterListBlockingLoadError,
+    chapterListRefreshLoadError,
+    reloadChapterList,
     dirty,
     showUnsavedGuard: dirty && outletActive,
     workspaceProps,

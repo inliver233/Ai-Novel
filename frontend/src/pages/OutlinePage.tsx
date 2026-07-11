@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 
+import { QueryErrorCard } from "../components/atelier/QueryErrorCard";
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { GenerationFloatingCard } from "../components/ui/GenerationFloatingCard";
 import { UnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
-import { copyText } from "../lib/copyText";
-import { formatApiErrorFields } from "../lib/apiErrorPresentation";
-import type { ApiError } from "../services/apiClient";
 
 import { DetailedOutlineGenerationModal, DetailedOutlineSection } from "./outline/DetailedOutlineSection";
 import {
@@ -22,41 +20,6 @@ import { OUTLINE_COPY } from "./outline/outlineCopy";
 import { useOutlinePageState } from "./outline/useOutlinePageState";
 
 type TabId = "outline" | "detailed";
-
-function OutlineQueryErrorCard(props: {
-  error: ApiError;
-  onRetry: () => void;
-  retryBlockedReason?: string;
-  variant: "blocking" | "warning";
-}) {
-  const requestId = props.error.requestId && props.error.requestId !== "unknown" ? props.error.requestId : undefined;
-  const blocking = props.variant === "blocking";
-  return (
-    <div className={blocking ? "error-card" : "rounded-atelier border border-warning/30 bg-warning/5 p-4"}>
-      <div className="state-title">{blocking ? "加载失败" : "最近一次刷新失败"}</div>
-      <div className="state-desc">{formatApiErrorFields(props.error)}</div>
-      {requestId ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtext">
-          <span>request_id: {requestId}</span>
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() => void copyText(requestId, { title: "复制 request_id" })}
-            type="button"
-          >
-            复制 request_id
-          </button>
-        </div>
-      ) : null}
-      {props.retryBlockedReason ? (
-        <div className="mt-3 text-xs text-warning">{props.retryBlockedReason}</div>
-      ) : (
-        <button className="btn btn-primary mt-4" onClick={props.onRetry} type="button">
-          重试
-        </button>
-      )}
-    </div>
-  );
-}
 
 function TabButton(props: { id: TabId; active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -87,9 +50,7 @@ export function OutlinePage() {
   if (state.loading) return <div className="text-subtext">{OUTLINE_COPY.loading}</div>;
 
   if (state.blockingLoadError) {
-    return (
-      <OutlineQueryErrorCard error={state.blockingLoadError} onRetry={() => void state.reload()} variant="blocking" />
-    );
+    return <QueryErrorCard error={state.blockingLoadError} onRetry={() => void state.reload()} variant="blocking" />;
   }
 
   const detailedCopy = OUTLINE_COPY.detailedOutline;
@@ -117,7 +78,7 @@ export function OutlinePage() {
     <div className="grid gap-4 pb-[calc(6rem+env(safe-area-inset-bottom))]">
       {state.showUnsavedGuard ? <UnsavedChangesGuard when={state.dirty} /> : null}
       {state.refreshLoadError ? (
-        <OutlineQueryErrorCard
+        <QueryErrorCard
           error={state.refreshLoadError}
           onRetry={() => void state.reload()}
           retryBlockedReason={state.dirty ? "请先保存或放弃未保存修改再重试" : undefined}
