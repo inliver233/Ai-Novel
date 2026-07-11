@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -35,6 +36,15 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+def commit_user_creation(db: Session) -> None:
+    """Commit a newly created user and translate uniqueness races safely."""
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise AppError.conflict("用户已存在") from None
+
+
 def ensure_admin_user(db: Session) -> None:
     admin_user_id = settings.auth_admin_user_id
     admin_password = settings.auth_admin_password
@@ -68,4 +78,3 @@ def ensure_admin_user(db: Session) -> None:
         db.add(pwd)
 
     db.commit()
-

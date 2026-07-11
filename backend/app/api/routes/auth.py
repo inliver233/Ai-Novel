@@ -27,7 +27,7 @@ from app.models.user_activity_stat import UserActivityStat
 from app.models.user_password import UserPassword
 from app.models.user_usage_stat import UserUsageStat
 from app.schemas.base import RequestModel
-from app.services.auth_service import hash_password, verify_password
+from app.services.auth_service import commit_user_creation, hash_password, verify_password
 
 router = APIRouter()
 logger = logging.getLogger("ainovel")
@@ -366,11 +366,7 @@ def local_register(request: Request, db: DbDep, body: LocalRegisterRequest) -> J
         disabled_at=None,
     )
     db.add(pwd)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise AppError.conflict("用户已存在") from None
+    commit_user_creation(db)
 
     session = build_session(user_id=user.id)
     response = JSONResponse(
@@ -774,7 +770,7 @@ def create_user(request: Request, db: DbDep, user_id: AuthenticatedUserIdDep, bo
         disabled_at=None,
     )
     db.add(pwd)
-    db.commit()
+    commit_user_creation(db)
 
     return ok_payload(
         request_id=request_id,
