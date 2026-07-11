@@ -30,6 +30,16 @@ x-backend-environment: &backend-environment
   AUTH_ONLINE_WINDOW_SECONDS: ${AUTH_ONLINE_WINDOW_SECONDS:-300}
   SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
   AUTH_SESSION_SIGNING_KEY: ${AUTH_SESSION_SIGNING_KEY:-}
+  AUTH_LOGIN_ACCOUNT_LIMIT: ${AUTH_LOGIN_ACCOUNT_LIMIT:-10}
+  AUTH_LOGIN_ACCOUNT_WINDOW_SECONDS: ${AUTH_LOGIN_ACCOUNT_WINDOW_SECONDS:-300}
+  AUTH_LOGIN_IP_LIMIT: ${AUTH_LOGIN_IP_LIMIT:-30}
+  AUTH_LOGIN_IP_WINDOW_SECONDS: ${AUTH_LOGIN_IP_WINDOW_SECONDS:-300}
+  AUTH_REGISTER_ACCOUNT_LIMIT: ${AUTH_REGISTER_ACCOUNT_LIMIT:-3}
+  AUTH_REGISTER_ACCOUNT_WINDOW_SECONDS: ${AUTH_REGISTER_ACCOUNT_WINDOW_SECONDS:-3600}
+  AUTH_REGISTER_IP_LIMIT: ${AUTH_REGISTER_IP_LIMIT:-20}
+  AUTH_REGISTER_IP_WINDOW_SECONDS: ${AUTH_REGISTER_IP_WINDOW_SECONDS:-3600}
+  AUTH_RATE_LIMIT_REDIS_TIMEOUT_SECONDS: ${AUTH_RATE_LIMIT_REDIS_TIMEOUT_SECONDS:-0.5}
+  AUTH_TRUSTED_PROXY_CIDRS: ${AUTH_TRUSTED_PROXY_CIDRS:-172.31.250.10/32}
   LINUXDO_OIDC_DISCOVERY_URL: ${LINUXDO_OIDC_DISCOVERY_URL:-https://connect.linux.do/.well-known/openid-configuration}
   LINUXDO_OIDC_DISCOVERY_TTL_SECONDS: ${LINUXDO_OIDC_DISCOVERY_TTL_SECONDS:-300}
   LINUXDO_OIDC_CLIENT_ID: ${LINUXDO_OIDC_CLIENT_ID:-}
@@ -92,6 +102,9 @@ services:
       start_period: 10s
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    networks:
+      - default
+      - frontend_proxy
 
   rq_worker:
     <<: *backend-common
@@ -124,9 +137,18 @@ services:
       - "${FRONTEND_PORT:-5173}:80"
     restart: unless-stopped
     logging: *json-logging
+    networks:
+      frontend_proxy:
+        ipv4_address: 172.31.250.10
 
 volumes:
   postgres_data:
     name: ainovel_postgres_data
   app_data:
     name: ainovel_app_data
+
+networks:
+  frontend_proxy:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24

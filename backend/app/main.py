@@ -82,7 +82,7 @@ from app.core.auth_session import decode_session_cookie
 #              提供快捷方法：unauthorized(401)、forbidden(403)、not_found(404)、
 #                          conflict(409)、validation(400)
 #   error_payload() — 构造标准错误响应体 {"ok": false, "error": {...}, "request_id": "..."}
-from app.core.errors import AppError, error_payload
+from app.core.errors import AppError, error_payload, safe_app_error_headers
 
 # 【日志系统】基于 loguru 的结构化 JSON 日志
 #   定义位置：app/core/logging.py
@@ -510,7 +510,9 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         details=_safe_error_details(exc.details),
     )
     payload = error_payload(request_id=rid, code=exc.code, message=exc.message, details=exc.details)
-    return JSONResponse(payload, status_code=exc.status_code, headers={"X-Request-Id": rid})
+    headers = safe_app_error_headers(exc.headers)
+    headers["X-Request-Id"] = rid
+    return JSONResponse(payload, status_code=exc.status_code, headers=headers)
 
 
 # ── 5.3 请求参数校验异常处理器 ──────────────────────────────────────

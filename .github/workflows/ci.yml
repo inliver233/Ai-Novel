@@ -20,6 +20,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  auth-rate-limit-redis:
+    name: Auth rate limit (real Redis)
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      AINOVEL_APP_ENV: test
+      AINOVEL_REDIS_INTEGRATION: "1"
+      TEST_REDIS_URL: redis://localhost:6379/15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.lock.txt
+            backend/requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Redis multi-client atomicity integration (hard gate)
+        run: python -m pytest tests/test_auth_rate_limit_redis_integration.py -q
+
   backend:
     name: Backend (pytest + ruff)
     runs-on: ubuntu-latest

@@ -243,7 +243,11 @@ class TestAuthEndpoints(unittest.TestCase):
         self._seed_user(user_id="u1", password="password123")
         client = TestClient(self.app)
 
-        with patch.object(settings, "app_env", "prod"), patch.object(settings, "auth_cookie_samesite", "strict"):
+        with (
+            patch.object(settings, "app_env", "prod"),
+            patch.object(settings, "auth_cookie_samesite", "strict"),
+            patch("app.services.authentication.local.enforce_auth_rate_limit"),
+        ):
             resp = client.post("/api/auth/local/login", json={"user_id": "u1", "password": "password123"})
 
         self.assertEqual(resp.status_code, 200)

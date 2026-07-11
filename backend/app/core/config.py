@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from ipaddress import ip_network
 from math import isfinite
 from pathlib import Path
 from typing import Annotated, Literal
@@ -265,6 +266,16 @@ class Settings(BaseSettings):
     auth_admin_email: OptionalString = None
     auth_admin_display_name: OptionalString = "管理员"
     auth_bcrypt_rounds: Annotated[ParsedInt, Field(ge=10, le=15)] = 12
+    auth_login_account_limit: Annotated[ParsedInt, Field(gt=0)] = 10
+    auth_login_account_window_seconds: Annotated[ParsedInt, Field(gt=0)] = 300
+    auth_login_ip_limit: Annotated[ParsedInt, Field(gt=0)] = 30
+    auth_login_ip_window_seconds: Annotated[ParsedInt, Field(gt=0)] = 300
+    auth_register_account_limit: Annotated[ParsedInt, Field(gt=0)] = 3
+    auth_register_account_window_seconds: Annotated[ParsedInt, Field(gt=0)] = 3600
+    auth_register_ip_limit: Annotated[ParsedInt, Field(gt=0)] = 20
+    auth_register_ip_window_seconds: Annotated[ParsedInt, Field(gt=0)] = 3600
+    auth_rate_limit_redis_timeout_seconds: Annotated[ParsedFloat, Field(ge=0.1, le=5.0)] = 0.5
+    auth_trusted_proxy_cidrs: str = ""
 
     linuxdo_oidc_discovery_url: RequiredString = "https://connect.linux.do/.well-known/openid-configuration"
     linuxdo_oidc_discovery_ttl_seconds: Annotated[ParsedInt, Field(gt=0, le=24 * 60 * 60)] = 300
@@ -346,6 +357,10 @@ class Settings(BaseSettings):
             raise ValueError("REDIS_URL must be set when TASK_QUEUE_BACKEND=rq")
         if self.vector_chunk_overlap >= self.vector_chunk_size:
             raise ValueError("VECTOR_CHUNK_OVERLAP must be less than VECTOR_CHUNK_SIZE")
+        try:
+            self.auth_trusted_proxy_networks()
+        except ValueError as exc:
+            raise ValueError("AUTH_TRUSTED_PROXY_CIDRS must contain valid comma-separated CIDRs") from exc
         return self
 
     def cors_origins_list(self) -> list[str]:
@@ -356,6 +371,12 @@ class Settings(BaseSettings):
 
     def is_sqlite(self) -> bool:
         return self.database_url.strip().startswith("sqlite")
+
+    def auth_trusted_proxy_networks(self) -> tuple:
+        raw = self.auth_trusted_proxy_cidrs.strip()
+        if not raw:
+            return ()
+        return tuple(ip_network(item.strip(), strict=False) for item in raw.split(",") if item.strip())
 
 
 settings = Settings()

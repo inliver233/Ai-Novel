@@ -24,6 +24,15 @@ _NUMERIC_CASES = [
     ("auth_activity_touch_interval_seconds", (("1", 1), ("3600", 3600)), ("0", "3601")),
     ("auth_online_window_seconds", (("1", 1), ("86400", 86400)), ("0", "86401")),
     ("auth_bcrypt_rounds", (("10", 10), ("15", 15)), ("9", "16")),
+    ("auth_login_account_limit", (("1", 1),), ("0",)),
+    ("auth_login_account_window_seconds", (("1", 1),), ("0",)),
+    ("auth_login_ip_limit", (("1", 1),), ("0",)),
+    ("auth_login_ip_window_seconds", (("1", 1),), ("0",)),
+    ("auth_register_account_limit", (("1", 1),), ("0",)),
+    ("auth_register_account_window_seconds", (("1", 1),), ("0",)),
+    ("auth_register_ip_limit", (("1", 1),), ("0",)),
+    ("auth_register_ip_window_seconds", (("1", 1),), ("0",)),
+    ("auth_rate_limit_redis_timeout_seconds", (("0.1", 0.1), ("5", 5.0)), ("0.09", "5.01", "nan", "inf")),
     ("linuxdo_oidc_discovery_ttl_seconds", (("1", 1), ("86400", 86400)), ("0", "86401")),
     ("project_task_heartbeat_interval_seconds", (("1", 1),), ("0",)),
     ("project_task_watchdog_interval_seconds", (("1", 1),), ("0",)),
@@ -48,7 +57,10 @@ _NUMERIC_CASES = [
 ]
 
 _NUMERIC_FIELDS = {case[0] for case in _NUMERIC_CASES}
-_INTEGER_FIELDS = _NUMERIC_FIELDS - {"vector_rerank_external_timeout_seconds"}
+_INTEGER_FIELDS = _NUMERIC_FIELDS - {
+    "auth_rate_limit_redis_timeout_seconds",
+    "vector_rerank_external_timeout_seconds",
+}
 _MALFORMED_NUMERIC_CASES = [
     *((field_name, invalid) for field_name in sorted(_NUMERIC_FIELDS) for invalid in ("", "not-a-number")),
     *((field_name, "1.0") for field_name in sorted(_INTEGER_FIELDS)),
@@ -64,6 +76,15 @@ _NUMERIC_DEFAULTS = {
     "auth_activity_touch_interval_seconds": 30,
     "auth_online_window_seconds": 300,
     "auth_bcrypt_rounds": 12,
+    "auth_login_account_limit": 10,
+    "auth_login_account_window_seconds": 300,
+    "auth_login_ip_limit": 30,
+    "auth_login_ip_window_seconds": 300,
+    "auth_register_account_limit": 3,
+    "auth_register_account_window_seconds": 3600,
+    "auth_register_ip_limit": 20,
+    "auth_register_ip_window_seconds": 3600,
+    "auth_rate_limit_redis_timeout_seconds": 0.5,
     "linuxdo_oidc_discovery_ttl_seconds": 300,
     "project_task_heartbeat_interval_seconds": 5,
     "project_task_watchdog_interval_seconds": 15,

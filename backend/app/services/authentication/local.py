@@ -11,10 +11,12 @@ from app.models.user import User
 from app.models.user_password import UserPassword
 from app.schemas.auth import ChangePasswordRequest, LocalLoginRequest, LocalRegisterRequest
 from app.services.authentication.passwords import commit_user_creation, hash_password, verify_password
+from app.services.authentication.rate_limit import enforce_auth_rate_limit
 from app.services.authentication.session import login_response
 
 
 def local_login(request: Request, db: Session, body: LocalLoginRequest) -> JSONResponse:
+    enforce_auth_rate_limit(request, action="login", account_id=body.user_id)
     user = db.get(User, body.user_id)
     pwd = db.get(UserPassword, body.user_id)
     if user is None or pwd is None:
@@ -28,6 +30,7 @@ def local_login(request: Request, db: Session, body: LocalLoginRequest) -> JSONR
 
 def local_register(request: Request, db: Session, body: LocalRegisterRequest) -> JSONResponse:
     target_user_id = body.user_id.strip()
+    enforce_auth_rate_limit(request, action="register", account_id=target_user_id)
     if not target_user_id:
         raise AppError.validation("user_id 不能为空")
     admin_user_id = (settings.auth_admin_user_id or "").strip()

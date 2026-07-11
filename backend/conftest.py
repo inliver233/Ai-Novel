@@ -18,6 +18,7 @@ import pytest
 from loguru import logger as loguru_logger
 
 from app.core.config import settings as _settings
+from app.services.authentication.rate_limit import _reset_for_tests as _reset_auth_rate_limit
 from tests.support import make_session_factory, make_sqlite_engine
 
 
@@ -38,6 +39,13 @@ def _silence_app_logging() -> Iterator[None]:
         yield
     finally:
         loguru_logger.enable("app")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_auth_rate_limit_state() -> Iterator[None]:
+    _reset_auth_rate_limit()
+    yield
+    _reset_auth_rate_limit()
 
 
 # ──────────────────────────────────────────────────────────────

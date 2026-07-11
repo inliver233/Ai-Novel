@@ -16,6 +16,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from app.main import app
+from app.core.errors import AppError
 
 
 @pytest.fixture(scope="module")
@@ -69,3 +70,49 @@ def test_method_not_allowed_returns_unified_error_envelope(client: TestClient) -
     }
     assert resp.headers["X-Request-Id"] == request_id
     assert "GET" in {method.strip() for method in resp.headers["Allow"].split(",")}
+
+
+def test_app_error_merges_safe_retry_header_and_owns_request_id(client: TestClient) -> None:
+    @app.get("/api/__test_app_error_headers__")
+    def _raise_app_error() -> None:
+        raise AppError(
+            code="AUTH_RATE_LIMITED",
+            message="limited",
+            status_code=429,
+            headers={
+                "Retry-After": "7",
+                "X-REQUEST-ID": "attacker",
+                "Bad\r\nHeader": "ignored",
+                "Content-Type": "text/plain",
+                "Content-Length": "1",
+                "Set-Cookie": "stolen=yes",
+                "Connection": "close",
+                "X-Custom": "not-allowed",
+                "WWW-Authenticate": "Bearer realm=\"auth\"",
+            },
+        )
+
+    response = client.get("/api/__test_app_error_headers__", headers={"X-Request-Id": "trusted-rid"})
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "7"
+    assert response.headers["X-Request-Id"] == "trusted-rid"
+    assert response.headers["Content-Type"].startswith("application/json")
+    assert response.headers["Content-Length"] != "1"
+    assert "Set-Cookie" not in response.headers
+    assert "Connection" not in response.headers
+    assert "X-Custom" not in response.headers
+    assert response.headers["WWW-Authenticate"] == 'Bearer realm="auth"'
+
+
+def test_app_error_rejects_control_and_oversized_allowed_header_values(client: TestClient) -> None:
+    @app.get("/api/__test_app_error_bad_headers__")
+    def _raise_bad_headers() -> None:
+        raise AppError(
+            code="BAD_HEADERS",
+            message="bad",
+            headers={"Retry-After": "1\r\nSet-Cookie: bad=1", "WWW-Authenticate": "x" * 1025},
+        )
+
+    response = client.get("/api/__test_app_error_bad_headers__")
+    assert "Retry-After" not in response.headers
+    assert "WWW-Authenticate" not in response.headers
