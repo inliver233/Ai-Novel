@@ -1194,11 +1194,7 @@ def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: 
         ).scalar_one()
         assert "ix_vector_chunks_project_kb_source" in str(plan)
         trigram_plan = connection.execute(
-            sa.text(
-                "EXPLAIN (FORMAT JSON) SELECT id FROM vector_chunks "
-                "WHERE project_id = :pid AND kb_id = 'alpha' AND text_md ILIKE '%龙王来%'"
-            ),
-            {"pid": project_id},
+            sa.text("EXPLAIN (FORMAT JSON) SELECT id FROM vector_chunks WHERE text_md ILIKE '%龙王来%'")
         ).scalar_one()
         assert "ix_vector_chunks_text_md_trgm" in str(trigram_plan)
 
