@@ -458,7 +458,7 @@ def _assert_postgres_chapter_replace_transaction(session_factory: sessionmaker) 
     with session_factory() as db:
         db.add(User(id=user_id, display_name="Chapter Replace User"))
         db.commit()
-        db.add(Project(id=project_id, owner_user_id=user_id, name="Chapter Replace", active_outline_id=outline_id))
+        db.add(Project(id=project_id, owner_user_id=user_id, name="Chapter Replace"))
         db.commit()
         db.add_all(
             [
@@ -466,6 +466,10 @@ def _assert_postgres_chapter_replace_transaction(session_factory: sessionmaker) 
                 Outline(id=other_outline_id, project_id=project_id, title="Collision Source"),
             ]
         )
+        db.commit()
+        project = db.get(Project, project_id)
+        assert project is not None
+        project.active_outline_id = outline_id
         db.commit()
         db.add_all(
             [
