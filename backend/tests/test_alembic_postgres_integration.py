@@ -24,6 +24,8 @@ from app.models.llm_preset import LLMPreset
 from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_settings import ProjectSettings
+from app.models.project_task import ProjectTask
+from app.models.project_task_event import ProjectTaskEvent
 from app.models.prompt_preset import PromptPreset
 from app.models.user import User
 from app.schemas.batch_generation import BatchGenerationCreateRequest
@@ -462,6 +464,188 @@ def _assert_postgres_worker_control_races(session_factory: sessionmaker) -> None
             db.delete(item)
             db.delete(task)
             db.commit()
+
+
+def _assert_postgres_batch_worker_claim_races(session_factory: sessionmaker) -> None:
+    task_id = "pg-worker-claim"
+    item_id = "pg-worker-claim-item"
+    with session_factory() as db:
+        db.add(
+            BatchGenerationTask(
+                id=task_id,
+                project_id="quota-project-1",
+                outline_id="outline-quota-project-1",
+                actor_user_id="quota-user-1",
+                runtime_provider="openai",
+                status="queued",
+                total_count=1,
+                params_json='{"context": {}}',
+            )
+        )
+        db.add(BatchGenerationTaskItem(id=item_id, task_id=task_id, chapter_number=1, status="queued"))
+        db.commit()
+
+    def _race(claim):  # type: ignore[no-untyped-def]
+        barrier = threading.Barrier(2)
+        results: list[bool] = []
+        errors: list[BaseException] = []
+
+        def _run(index: int) -> None:
+            try:
+                with session_factory() as db:
+                    barrier.wait(timeout=10)
+                    results.append(bool(claim(db, index)))
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_run, args=(1,)), threading.Thread(target=_run, args=(2,))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert not errors
+        assert all(not thread.is_alive() for thread in threads)
+        assert sorted(results) == [False, True]
+
+    def _claim_task(db, _index):  # type: ignore[no-untyped-def]
+        claimed = batch_generation_commands.claim_batch_generation_task_for_worker(db, task_id=task_id)
+        db.commit()
+        return claimed
+
+    _race(_claim_task)
+    _race(
+        lambda db, index: batch_generation_commands.claim_batch_generation_item_for_worker(
+            db, task_id=task_id, item_id=item_id, request_id=f"pg-claim-{index}"
+        )
+    )
+    with session_factory() as db:
+        task = db.get(BatchGenerationTask, task_id)
+        item = db.get(BatchGenerationTaskItem, item_id)
+        assert task is not None and item is not None
+        assert task.status == "running"
+        assert item.status == "running"
+        assert item.attempt_count == 1
+        assert item.last_request_id in {"pg-claim-1", "pg-claim-2"}
+        db.delete(item)
+        db.delete(task)
+        db.commit()
+
+    worker_task_id = "pg-worker-e2e-claim"
+    worker_item_id = "pg-worker-e2e-item"
+    worker_chapter_id = "pg-worker-e2e-chapter"
+    project_task_id = "pg-worker-e2e-project-task"
+    with session_factory() as db:
+        db.add(
+            ProjectTask(
+                id=project_task_id,
+                project_id="quota-project-1",
+                actor_user_id="quota-user-1",
+                kind="batch_generation",
+                status="queued",
+                idempotency_key=f"batch_generation:{worker_task_id}",
+            )
+        )
+        db.add(
+            Chapter(
+                id=worker_chapter_id,
+                project_id="quota-project-1",
+                outline_id="outline-quota-project-1",
+                number=99,
+                title="Claim Chapter",
+                plan="Claim Plan",
+            )
+        )
+        db.commit()
+        db.add(
+            BatchGenerationTask(
+                id=worker_task_id,
+                project_id="quota-project-1",
+                outline_id="outline-quota-project-1",
+                actor_user_id="quota-user-1",
+                project_task_id=project_task_id,
+                runtime_provider="openai",
+                status="queued",
+                total_count=1,
+                params_json='{"context": {}}',
+            )
+        )
+        db.commit()
+        db.add(
+            BatchGenerationTaskItem(
+                id=worker_item_id,
+                task_id=worker_task_id,
+                chapter_id=worker_chapter_id,
+                chapter_number=99,
+                status="queued",
+            )
+        )
+        db.commit()
+
+    prepare_entered = threading.Event()
+    release_prepare = threading.Event()
+    prepare_calls: list[str] = []
+    llm_calls: list[str] = []
+    worker_errors: list[BaseException] = []
+    llm_call = batch_generation_service.PreparedLlmCall(
+        provider="openai",
+        model="test",
+        base_url="https://llm.invalid",
+        timeout_seconds=10,
+        params={},
+        params_json="{}",
+        extra={},
+    )
+
+    def _prepare(**_kwargs):  # type: ignore[no-untyped-def]
+        prepare_calls.append("called")
+        prepare_entered.set()
+        if not release_prepare.wait(timeout=15):
+            raise RuntimeError("postgres duplicate worker prepare timed out")
+        return (SimpleNamespace(id="quota-project-1"), llm_call, "key", "", "", "", "", "", {})
+
+    def _generate(**_kwargs):  # type: ignore[no-untyped-def]
+        llm_calls.append("called")
+        return SimpleNamespace(data={"content_md": "Generated", "summary": "Summary"}, run_id=None)
+
+    def _worker() -> None:
+        try:
+            batch_generation_service.run_batch_generation_task(task_id=worker_task_id)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            worker_errors.append(exc)
+
+    with (
+        patch.object(batch_generation_service, "SessionLocal", session_factory),
+        patch.object(batch_generation_service, "_prepare_project_context", side_effect=_prepare),
+        patch.object(batch_generation_service, "assemble_chapter_generate_render_values", return_value=({}, {})),
+        patch.object(
+            batch_generation_service,
+            "render_preset_for_task",
+            return_value=("", "", [], None, None, None, {}),
+        ),
+        patch.object(batch_generation_service, "run_chapter_generate_llm_step", side_effect=_generate),
+    ):
+        winner = threading.Thread(target=_worker)
+        winner.start()
+        assert prepare_entered.wait(timeout=15)
+        duplicate = threading.Thread(target=_worker)
+        duplicate.start()
+        duplicate.join(timeout=15)
+        release_prepare.set()
+        winner.join(timeout=30)
+
+    assert not worker_errors
+    assert not winner.is_alive() and not duplicate.is_alive()
+    assert prepare_calls == ["called"]
+    assert llm_calls == ["called"]
+    with session_factory() as db:
+        item = db.get(BatchGenerationTaskItem, worker_item_id)
+        assert item is not None and item.attempt_count == 1 and item.status == "succeeded"
+        assert (
+            db.query(ProjectTaskEvent)
+            .filter(ProjectTaskEvent.task_id == project_task_id, ProjectTaskEvent.event_type == "step_started")
+            .count()
+            == 1
+        )
 
 
 def _assert_postgres_chapter_replace_transaction(session_factory: sessionmaker) -> None:
@@ -1052,6 +1236,7 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
         _assert_postgres_create_route_race(session_factory)
         _assert_postgres_batch_command_races(session_factory)
         _assert_postgres_worker_control_races(session_factory)
+        _assert_postgres_batch_worker_claim_races(session_factory)
         _assert_postgres_chapter_replace_transaction(session_factory)
         _assert_postgres_vector_kb_isolation(session_factory, engine)
         _assert_postgres_quota_race(

@@ -37,6 +37,8 @@ from app.services.batch_generation_helpers import (
 from app.services.batch_generation_commands import (
     TERMINAL_BATCH_GENERATION_STATUSES,
     apply_batch_generation_worker_control,
+    claim_batch_generation_item_for_worker,
+    claim_batch_generation_task_for_worker,
     lock_batch_generation_task_for_worker,
 )
 from app.services.chapter_context_service import (
@@ -47,7 +49,12 @@ from app.services.chapter_context_service import (
     load_previous_chapter_context,
 )
 from app.services.generation_service import PreparedLlmCall, with_param_overrides
-from app.services.generation_pipeline import run_chapter_generate_llm_step, run_content_optimize_step, run_plan_llm_step, run_post_edit_step
+from app.services.generation_pipeline import (
+    run_chapter_generate_llm_step,
+    run_content_optimize_step,
+    run_plan_llm_step,
+    run_post_edit_step,
+)
 from app.services.length_control import estimate_max_tokens
 from app.services.llm_task_preset_resolver import resolve_task_llm_config
 from app.services.style_resolution_service import resolve_style_guide
@@ -155,36 +162,37 @@ def run_batch_generation_task(*, task_id: str) -> None:
     IMPORTANT: Do not write generated content into `chapters` (demo contract: user must click Save).
     """
     with SessionLocal() as db:
-        task = lock_batch_generation_task_for_worker(db, task_id=task_id)
-        if task is None:
-            return
-        if task.status in TERMINAL_BATCH_GENERATION_STATUSES or task.status == "paused":
-            db.rollback()
-            return
-        if apply_batch_generation_worker_control(
-            db,
-            task=task,
-            cancel_reason="cancel_requested_before_start",
-            pause_reason="pause_requested_before_start",
-        ):
-            db.commit()
-            return
-        task.status = "running"
-        sync_batch_generation_checkpoint(task)
-        mark_batch_project_task_running(db, batch_task=task)
-        params = _parse_params(task)
-        actor_user_id = task.actor_user_id or "local-user"
-        project_id = str(task.project_id)
-        outline_id = str(task.outline_id)
-        runtime_provider = str(task.runtime_provider or "")
+        try:
+            if not claim_batch_generation_task_for_worker(db, task_id=task_id):
+                db.rollback()
+                return
+            task = db.get(BatchGenerationTask, task_id)
+            if task is None:
+                db.rollback()
+                return
+            sync_batch_generation_checkpoint(task)
+            mark_batch_project_task_running(db, batch_task=task)
+            params = _parse_params(task)
+            actor_user_id = task.actor_user_id or "local-user"
+            project_id = str(task.project_id)
+            outline_id = str(task.outline_id)
+            runtime_provider = str(task.runtime_provider or "")
 
-        rows = db.execute(
-            select(BatchGenerationTaskItem.id, BatchGenerationTaskItem.chapter_id, BatchGenerationTaskItem.chapter_number, BatchGenerationTaskItem.status)
-            .where(BatchGenerationTaskItem.task_id == task_id)
-            .order_by(BatchGenerationTaskItem.chapter_number.asc())
-        ).all()
-        recalculate_batch_generation_counts(db, batch_task=task)
-        db.commit()
+            rows = db.execute(
+                select(
+                    BatchGenerationTaskItem.id,
+                    BatchGenerationTaskItem.chapter_id,
+                    BatchGenerationTaskItem.chapter_number,
+                    BatchGenerationTaskItem.status,
+                )
+                .where(BatchGenerationTaskItem.task_id == task_id)
+                .order_by(BatchGenerationTaskItem.chapter_number.asc())
+            ).all()
+            recalculate_batch_generation_counts(db, batch_task=task)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
     try:
         (
@@ -236,6 +244,32 @@ def run_batch_generation_task(*, task_id: str) -> None:
             continue
 
         with SessionLocal() as db:
+            chapter_request_id = f"batch:{task_id}:{str(chapter_id or '')[:8]}"
+            if not claim_batch_generation_item_for_worker(
+                db,
+                task_id=task_id,
+                item_id=str(item_id),
+                request_id=chapter_request_id,
+            ):
+                task = lock_batch_generation_task_for_worker(db, task_id=task_id)
+                if task is None:
+                    return
+                item = db.get(BatchGenerationTaskItem, item_id)
+                if apply_batch_generation_worker_control(
+                    db,
+                    task=task,
+                    cancel_reason="cancel_requested_before_step",
+                    pause_reason="pause_requested_before_step",
+                    item=item,
+                    payload={"chapter_number": int(chapter_number)},
+                ):
+                    db.commit()
+                    return
+                db.rollback()
+                if item is not None and item.status in {"succeeded", "skipped", "failed", "canceled"}:
+                    continue
+                return
+
             task = lock_batch_generation_task_for_worker(db, task_id=task_id)
             if task is None:
                 return
@@ -272,14 +306,6 @@ def run_batch_generation_task(*, task_id: str) -> None:
             if item.status in {"succeeded", "skipped", "failed", "canceled"}:
                 continue
 
-            chapter_request_id = f"batch:{task_id}:{str(chapter_id or '')[:8]}"
-            item.status = "running"
-            item.attempt_count = int(getattr(item, "attempt_count", 0) or 0) + 1
-            item.started_at = utc_now()
-            item.finished_at = None
-            item.last_request_id = chapter_request_id
-            item.last_error_json = None
-            item.error_message = None
             append_batch_project_task_event(
                 db,
                 batch_task=task,
@@ -451,7 +477,11 @@ def run_batch_generation_task(*, task_id: str) -> None:
             if params.target_word_count is not None:
                 llm_call = with_param_overrides(
                     llm_call,
-                    {"max_tokens": estimate_max_tokens(target_word_count=params.target_word_count, provider=llm_call.provider, model=llm_call.model)},
+                    {
+                        "max_tokens": estimate_max_tokens(
+                            target_word_count=params.target_word_count, provider=llm_call.provider, model=llm_call.model
+                        )
+                    },
                 )
 
             gen_step = run_chapter_generate_llm_step(
@@ -487,7 +517,10 @@ def run_batch_generation_task(*, task_id: str) -> None:
                         raw_content=raw_content,
                         macro_seed=f"{chapter_request_id}:post_edit",
                         post_edit_sanitize=bool(params.post_edit_sanitize),
-                        run_params_extra_json={**run_params_extra_json, "post_edit_sanitize": bool(params.post_edit_sanitize)},
+                        run_params_extra_json={
+                            **run_params_extra_json,
+                            "post_edit_sanitize": bool(params.post_edit_sanitize),
+                        },
                     )
                     if step.warnings:
                         rewrite_warnings["post_edit"] = list(step.warnings)
@@ -595,7 +628,9 @@ def run_batch_generation_task(*, task_id: str) -> None:
                 if item is not None:
                     item.status = "failed"
                     item.error_message = f"{exc.message} ({exc.code})"
-                    item.last_error_json = _json_dumps({"code": exc.code, "message": exc.message, "details": exc.details})
+                    item.last_error_json = _json_dumps(
+                        {"code": exc.code, "message": exc.message, "details": exc.details}
+                    )
                     item.last_request_id = chapter_request_id
                     item.finished_at = utc_now()
                 pause_batch_generation(

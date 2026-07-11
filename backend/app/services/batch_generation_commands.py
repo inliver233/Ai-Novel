@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Final
 
-from sqlalchemy import select
+from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
@@ -116,6 +116,70 @@ def lock_batch_generation_task_for_worker(
     ).scalar_one_or_none()
 
 
+def claim_batch_generation_task_for_worker(db: Session, *, task_id: str) -> bool:
+    """Claim a queued delivery inside the caller's initialization transaction.
+
+    Running tasks are deliberately never reclaimed here. Crash recovery needs a
+    separately designed stale-running lease and is outside this claim contract.
+    """
+
+    _begin_batch_task_mutation(db)
+    now = utc_now()
+    result = db.execute(
+        update(BatchGenerationTask)
+        .where(
+            BatchGenerationTask.id == task_id,
+            BatchGenerationTask.status == "queued",
+            BatchGenerationTask.cancel_requested.is_(False),
+            BatchGenerationTask.pause_requested.is_(False),
+        )
+        .values(status="running", updated_at=now)
+    )
+    return bool(getattr(result, "rowcount", 0))
+
+
+def claim_batch_generation_item_for_worker(
+    db: Session,
+    *,
+    task_id: str,
+    item_id: str,
+    request_id: str,
+) -> bool:
+    """Claim one queued step without holding a transaction across external work."""
+
+    _begin_batch_task_mutation(db)
+    now = utc_now()
+    runnable_task = exists(
+        select(BatchGenerationTask.id).where(
+            BatchGenerationTask.id == task_id,
+            BatchGenerationTask.status == "running",
+            BatchGenerationTask.cancel_requested.is_(False),
+            BatchGenerationTask.pause_requested.is_(False),
+        )
+    )
+    result = db.execute(
+        update(BatchGenerationTaskItem)
+        .where(
+            BatchGenerationTaskItem.id == item_id,
+            BatchGenerationTaskItem.task_id == task_id,
+            BatchGenerationTaskItem.status == "queued",
+            runnable_task,
+        )
+        .values(
+            status="running",
+            attempt_count=BatchGenerationTaskItem.attempt_count + 1,
+            started_at=now,
+            finished_at=None,
+            last_request_id=request_id,
+            last_error_json=None,
+            error_message=None,
+            updated_at=now,
+        )
+    )
+    db.commit()
+    return bool(getattr(result, "rowcount", 0))
+
+
 def apply_batch_generation_worker_control(
     db: Session,
     *,
@@ -132,12 +196,16 @@ def apply_batch_generation_worker_control(
     if task.cancel_requested:
         task.status = "canceled"
         task.pause_requested = False
-        active_items = db.execute(
-            select(BatchGenerationTaskItem).where(
-                BatchGenerationTaskItem.task_id == str(task.id),
-                BatchGenerationTaskItem.status.in_(["queued", "running"]),
+        active_items = (
+            db.execute(
+                select(BatchGenerationTaskItem).where(
+                    BatchGenerationTaskItem.task_id == str(task.id),
+                    BatchGenerationTaskItem.status.in_(["queued", "running"]),
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for active_item in active_items:
             active_item.status = "canceled"
             active_item.finished_at = active_item.finished_at or utc_now()
@@ -275,12 +343,16 @@ def _compensate_create_enqueue_failure(
     task.failed_count = max(int(task.failed_count or 0), 1)
     task.error_json = json.dumps(error, ensure_ascii=False)
     sync_batch_generation_checkpoint(task)
-    items = db.execute(
-        select(BatchGenerationTaskItem).where(
-            BatchGenerationTaskItem.task_id == task_id,
-            BatchGenerationTaskItem.status == "queued",
+    items = (
+        db.execute(
+            select(BatchGenerationTaskItem).where(
+                BatchGenerationTaskItem.task_id == task_id,
+                BatchGenerationTaskItem.status == "queued",
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for item in items:
         item.status = "failed"
         item.error_message = f"{error['message']} ({error['code']})"
@@ -418,14 +490,18 @@ def resume_batch_generation_task(
     if task.status not in BATCH_GENERATION_TRANSITIONS["resume"]:
         return _command_noop(db, task=task)
 
-    failed_numbers = db.execute(
-        select(BatchGenerationTaskItem.chapter_number)
-        .where(
-            BatchGenerationTaskItem.task_id == task_id,
-            BatchGenerationTaskItem.status == "failed",
+    failed_numbers = (
+        db.execute(
+            select(BatchGenerationTaskItem.chapter_number)
+            .where(
+                BatchGenerationTaskItem.task_id == task_id,
+                BatchGenerationTaskItem.status == "failed",
+            )
+            .order_by(BatchGenerationTaskItem.chapter_number.asc())
         )
-        .order_by(BatchGenerationTaskItem.chapter_number.asc())
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if failed_numbers:
         db.rollback()
         raise AppError.conflict(
@@ -476,14 +552,18 @@ def retry_failed_batch_generation_task(
     if task.status not in BATCH_GENERATION_TRANSITIONS["retry_failed"]:
         return _command_noop(db, task=task)
 
-    failed_items = db.execute(
-        select(BatchGenerationTaskItem)
-        .where(
-            BatchGenerationTaskItem.task_id == task_id,
-            BatchGenerationTaskItem.status == "failed",
+    failed_items = (
+        db.execute(
+            select(BatchGenerationTaskItem)
+            .where(
+                BatchGenerationTaskItem.task_id == task_id,
+                BatchGenerationTaskItem.status == "failed",
+            )
+            .order_by(BatchGenerationTaskItem.chapter_number.asc())
         )
-        .order_by(BatchGenerationTaskItem.chapter_number.asc())
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not failed_items:
         return _command_noop(db, task=task)
 
@@ -549,24 +629,31 @@ def skip_failed_batch_generation_task(
     if task.status not in BATCH_GENERATION_TRANSITIONS["skip_failed"]:
         return _command_noop(db, task=task)
 
-    failed_items = db.execute(
-        select(BatchGenerationTaskItem)
-        .where(
-            BatchGenerationTaskItem.task_id == task_id,
-            BatchGenerationTaskItem.status == "failed",
+    failed_items = (
+        db.execute(
+            select(BatchGenerationTaskItem)
+            .where(
+                BatchGenerationTaskItem.task_id == task_id,
+                BatchGenerationTaskItem.status == "failed",
+            )
+            .order_by(BatchGenerationTaskItem.chapter_number.asc())
         )
-        .order_by(BatchGenerationTaskItem.chapter_number.asc())
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not failed_items:
         return _command_noop(db, task=task)
-    has_pending_items = db.execute(
-        select(BatchGenerationTaskItem.id)
-        .where(
-            BatchGenerationTaskItem.task_id == task_id,
-            BatchGenerationTaskItem.status == "queued",
-        )
-        .limit(1)
-    ).scalar_one_or_none() is not None
+    has_pending_items = (
+        db.execute(
+            select(BatchGenerationTaskItem.id)
+            .where(
+                BatchGenerationTaskItem.task_id == task_id,
+                BatchGenerationTaskItem.status == "queued",
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
 
     if has_pending_items:
         from app.services.batch_generation_quota import lock_and_enforce_batch_generation_quotas
@@ -654,12 +741,16 @@ def cancel_batch_generation_task(
     if original_status in {"queued", "paused"}:
         reason = "manual_cancel" if original_status == "queued" else "manual_cancel_from_paused"
         task.status = "canceled"
-        items = db.execute(
-            select(BatchGenerationTaskItem).where(
-                BatchGenerationTaskItem.task_id == task_id,
-                BatchGenerationTaskItem.status.in_(["queued", "running"]),
+        items = (
+            db.execute(
+                select(BatchGenerationTaskItem).where(
+                    BatchGenerationTaskItem.task_id == task_id,
+                    BatchGenerationTaskItem.status.in_(["queued", "running"]),
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for item in items:
             item.status = "canceled"
             item.finished_at = item.finished_at or utc_now()
