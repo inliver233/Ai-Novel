@@ -12,12 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.testclient import TestClient
 
-from app.api.routes.auth import (
-    _LINUXDO_OIDC_NEXT_COOKIE,
-    _LINUXDO_OIDC_STATE_COOKIE,
-    _LINUXDO_OIDC_VERIFIER_COOKIE,
-    router as auth_router,
-)
+from app.api.routes.auth import router as auth_router
 from app.core.config import settings
 from app.core.errors import AppError
 from app.db.session import get_db
@@ -25,7 +20,11 @@ from app.main import app_error_handler, auth_session_middleware
 from app.models.auth_external_account import AuthExternalAccount
 from app.models.user import User
 from app.models.user_password import UserPassword
-from app.services.authentication import oidc_client
+from app.services.authentication import linuxdo, oidc_client
+
+_LINUXDO_OIDC_NEXT_COOKIE = linuxdo._NEXT_COOKIE
+_LINUXDO_OIDC_STATE_COOKIE = linuxdo._STATE_COOKIE
+_LINUXDO_OIDC_VERIFIER_COOKIE = linuxdo._VERIFIER_COOKIE
 
 
 def _make_test_app(SessionLocal: sessionmaker) -> FastAPI:
@@ -90,14 +89,18 @@ class TestLinuxDoOidcEndpoints(unittest.TestCase):
 
     def test_oidc_start_redirects_and_sets_cookies_when_enabled(self) -> None:
         client = TestClient(self.app)
-        with patch.object(settings, "linuxdo_oidc_client_id", "cid"), patch.object(settings, "linuxdo_oidc_client_secret", "sec"), patch(
-            "app.services.authentication.oidc_client.get_linuxdo_discovery",
-            return_value={
-                "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
-                "token_endpoint": "https://connect.linux.do/oauth2/token",
-                "userinfo_endpoint": "https://connect.linux.do/api/user",
-                "issuer": "https://connect.linux.do/",
-            },
+        with (
+            patch.object(settings, "linuxdo_oidc_client_id", "cid"),
+            patch.object(settings, "linuxdo_oidc_client_secret", "sec"),
+            patch(
+                "app.services.authentication.oidc_client.get_linuxdo_discovery",
+                return_value={
+                    "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
+                    "token_endpoint": "https://connect.linux.do/oauth2/token",
+                    "userinfo_endpoint": "https://connect.linux.do/api/user",
+                    "issuer": "https://connect.linux.do/",
+                },
+            ),
         ):
             resp = client.get("/api/auth/oidc/linuxdo/start?next=%2Fprojects%2Fp1", follow_redirects=False)
 
@@ -105,7 +108,7 @@ class TestLinuxDoOidcEndpoints(unittest.TestCase):
         self.assertIn("https://connect.linux.do/oauth2/authorize", resp.headers.get("location") or "")
         self.assertIsNotNone(client.cookies.get(_LINUXDO_OIDC_STATE_COOKIE))
         self.assertIsNotNone(client.cookies.get(_LINUXDO_OIDC_VERIFIER_COOKIE))
-        self.assertEqual(str(client.cookies.get(_LINUXDO_OIDC_NEXT_COOKIE) or "").strip().strip('\"'), "/projects/p1")
+        self.assertEqual(str(client.cookies.get(_LINUXDO_OIDC_NEXT_COOKIE) or "").strip().strip('"'), "/projects/p1")
 
     def test_oidc_start_then_callback_reuses_cached_discovery(self) -> None:
         client = TestClient(self.app)
@@ -165,27 +168,33 @@ class TestLinuxDoOidcEndpoints(unittest.TestCase):
         client.cookies.set(_LINUXDO_OIDC_VERIFIER_COOKIE, "verifier1")
         client.cookies.set(_LINUXDO_OIDC_NEXT_COOKIE, "/")
 
-        with patch.object(settings, "linuxdo_oidc_client_id", "cid"), patch.object(settings, "linuxdo_oidc_client_secret", "sec"), patch(
-            "app.services.authentication.oidc_client.get_linuxdo_discovery",
-            return_value={
-                "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
-                "token_endpoint": "https://connect.linux.do/oauth2/token",
-                "userinfo_endpoint": "https://connect.linux.do/api/user",
-                "issuer": "https://connect.linux.do/",
-            },
-        ), patch(
-            "app.services.authentication.oidc_client.exchange_linuxdo_code_for_token",
-            return_value={"access_token": "at-123"},
-        ), patch(
-            "app.services.authentication.oidc_client.fetch_linuxdo_userinfo",
-            return_value={
-                "sub": "sub-123",
-                "login": "alice",
-                "username": "alice",
-                "name": "Alice",
-                "email": "alice@example.com",
-                "avatar_url": "https://example.com/avatar.png",
-            },
+        with (
+            patch.object(settings, "linuxdo_oidc_client_id", "cid"),
+            patch.object(settings, "linuxdo_oidc_client_secret", "sec"),
+            patch(
+                "app.services.authentication.oidc_client.get_linuxdo_discovery",
+                return_value={
+                    "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
+                    "token_endpoint": "https://connect.linux.do/oauth2/token",
+                    "userinfo_endpoint": "https://connect.linux.do/api/user",
+                    "issuer": "https://connect.linux.do/",
+                },
+            ),
+            patch(
+                "app.services.authentication.oidc_client.exchange_linuxdo_code_for_token",
+                return_value={"access_token": "at-123"},
+            ),
+            patch(
+                "app.services.authentication.oidc_client.fetch_linuxdo_userinfo",
+                return_value={
+                    "sub": "sub-123",
+                    "login": "alice",
+                    "username": "alice",
+                    "name": "Alice",
+                    "email": "alice@example.com",
+                    "avatar_url": "https://example.com/avatar.png",
+                },
+            ),
         ):
             resp = client.get("/api/auth/oidc/linuxdo/callback?code=code123&state=state1", follow_redirects=False)
 
@@ -205,7 +214,14 @@ class TestLinuxDoOidcEndpoints(unittest.TestCase):
     def test_oidc_callback_is_idempotent_when_commit_hits_integrity_error(self) -> None:
         with self.SessionLocal() as db:
             user = User(id="linuxdo_alice", email=None, display_name=None, is_admin=False)
-            ext = AuthExternalAccount(provider="linuxdo", subject="sub-123", user_id="linuxdo_alice", username=None, email=None, avatar_url=None)
+            ext = AuthExternalAccount(
+                provider="linuxdo",
+                subject="sub-123",
+                user_id="linuxdo_alice",
+                username=None,
+                email=None,
+                avatar_url=None,
+            )
             db.add(user)
             db.flush([user])
             db.add(ext)
@@ -216,27 +232,33 @@ class TestLinuxDoOidcEndpoints(unittest.TestCase):
         client.cookies.set(_LINUXDO_OIDC_VERIFIER_COOKIE, "verifier1")
         client.cookies.set(_LINUXDO_OIDC_NEXT_COOKIE, "/")
 
-        with patch.object(settings, "linuxdo_oidc_client_id", "cid"), patch.object(settings, "linuxdo_oidc_client_secret", "sec"), patch(
-            "app.services.authentication.oidc_client.get_linuxdo_discovery",
-            return_value={
-                "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
-                "token_endpoint": "https://connect.linux.do/oauth2/token",
-                "userinfo_endpoint": "https://connect.linux.do/api/user",
-                "issuer": "https://connect.linux.do/",
-            },
-        ), patch(
-            "app.services.authentication.oidc_client.exchange_linuxdo_code_for_token",
-            return_value={"access_token": "at-123"},
-        ), patch(
-            "app.services.authentication.oidc_client.fetch_linuxdo_userinfo",
-            return_value={
-                "sub": "sub-123",
-                "login": "alice",
-                "username": "alice",
-                "name": "Alice",
-                "email": "alice@example.com",
-                "avatar_url": "https://example.com/avatar.png",
-            },
+        with (
+            patch.object(settings, "linuxdo_oidc_client_id", "cid"),
+            patch.object(settings, "linuxdo_oidc_client_secret", "sec"),
+            patch(
+                "app.services.authentication.oidc_client.get_linuxdo_discovery",
+                return_value={
+                    "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
+                    "token_endpoint": "https://connect.linux.do/oauth2/token",
+                    "userinfo_endpoint": "https://connect.linux.do/api/user",
+                    "issuer": "https://connect.linux.do/",
+                },
+            ),
+            patch(
+                "app.services.authentication.oidc_client.exchange_linuxdo_code_for_token",
+                return_value={"access_token": "at-123"},
+            ),
+            patch(
+                "app.services.authentication.oidc_client.fetch_linuxdo_userinfo",
+                return_value={
+                    "sub": "sub-123",
+                    "login": "alice",
+                    "username": "alice",
+                    "name": "Alice",
+                    "email": "alice@example.com",
+                    "avatar_url": "https://example.com/avatar.png",
+                },
+            ),
         ):
             original_commit = Session.commit
             calls: dict[str, int] = {"n": 0}
@@ -264,27 +286,33 @@ class TestLinuxDoOidcEndpoints(unittest.TestCase):
         client.cookies.set(_LINUXDO_OIDC_VERIFIER_COOKIE, "verifier1")
         client.cookies.set(_LINUXDO_OIDC_NEXT_COOKIE, "https://evil.example/")
 
-        with patch.object(settings, "linuxdo_oidc_client_id", "cid"), patch.object(settings, "linuxdo_oidc_client_secret", "sec"), patch(
-            "app.services.authentication.oidc_client.get_linuxdo_discovery",
-            return_value={
-                "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
-                "token_endpoint": "https://connect.linux.do/oauth2/token",
-                "userinfo_endpoint": "https://connect.linux.do/api/user",
-                "issuer": "https://connect.linux.do/",
-            },
-        ), patch(
-            "app.services.authentication.oidc_client.exchange_linuxdo_code_for_token",
-            return_value={"access_token": "at-123"},
-        ), patch(
-            "app.services.authentication.oidc_client.fetch_linuxdo_userinfo",
-            return_value={
-                "sub": "sub-123",
-                "login": "alice",
-                "username": "alice",
-                "name": "Alice",
-                "email": "alice@example.com",
-                "avatar_url": "https://example.com/avatar.png",
-            },
+        with (
+            patch.object(settings, "linuxdo_oidc_client_id", "cid"),
+            patch.object(settings, "linuxdo_oidc_client_secret", "sec"),
+            patch(
+                "app.services.authentication.oidc_client.get_linuxdo_discovery",
+                return_value={
+                    "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
+                    "token_endpoint": "https://connect.linux.do/oauth2/token",
+                    "userinfo_endpoint": "https://connect.linux.do/api/user",
+                    "issuer": "https://connect.linux.do/",
+                },
+            ),
+            patch(
+                "app.services.authentication.oidc_client.exchange_linuxdo_code_for_token",
+                return_value={"access_token": "at-123"},
+            ),
+            patch(
+                "app.services.authentication.oidc_client.fetch_linuxdo_userinfo",
+                return_value={
+                    "sub": "sub-123",
+                    "login": "alice",
+                    "username": "alice",
+                    "name": "Alice",
+                    "email": "alice@example.com",
+                    "avatar_url": "https://example.com/avatar.png",
+                },
+            ),
         ):
             resp = client.get("/api/auth/oidc/linuxdo/callback?code=code123&state=state1", follow_redirects=False)
 
@@ -301,30 +329,37 @@ class TestLinuxDoOidcEndpoints(unittest.TestCase):
         client.cookies.set(_LINUXDO_OIDC_VERIFIER_COOKIE, "verifier1")
         client.cookies.set(_LINUXDO_OIDC_NEXT_COOKIE, "/")
 
-        with patch.object(settings, "linuxdo_oidc_client_id", "cid"), patch.object(settings, "linuxdo_oidc_client_secret", "sec"), patch(
-            "app.services.authentication.oidc_client.get_linuxdo_discovery",
-            return_value={
-                "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
-                "token_endpoint": "https://connect.linux.do/oauth2/token",
-                "userinfo_endpoint": "https://connect.linux.do/api/user",
-                "issuer": "https://connect.linux.do/",
-            },
-        ), patch(
-            "app.services.authentication.oidc_client.exchange_linuxdo_code_for_token",
-            return_value={"access_token": "at-123"},
-        ), patch(
-            "app.services.authentication.oidc_client.fetch_linuxdo_userinfo",
-            return_value={
-                "sub": "sub-123",
-                "login": "alice",
-                "username": "alice",
-                "name": "Alice",
-                "email": "alice@example.com",
-                "avatar_url": "https://example.com/avatar.png",
-            },
-        ), patch(
-            "app.api.routes.auth._linuxdo_suggest_user_id",
-            return_value="linuxdo_alice",
+        with (
+            patch.object(settings, "linuxdo_oidc_client_id", "cid"),
+            patch.object(settings, "linuxdo_oidc_client_secret", "sec"),
+            patch(
+                "app.services.authentication.oidc_client.get_linuxdo_discovery",
+                return_value={
+                    "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
+                    "token_endpoint": "https://connect.linux.do/oauth2/token",
+                    "userinfo_endpoint": "https://connect.linux.do/api/user",
+                    "issuer": "https://connect.linux.do/",
+                },
+            ),
+            patch(
+                "app.services.authentication.oidc_client.exchange_linuxdo_code_for_token",
+                return_value={"access_token": "at-123"},
+            ),
+            patch(
+                "app.services.authentication.oidc_client.fetch_linuxdo_userinfo",
+                return_value={
+                    "sub": "sub-123",
+                    "login": "alice",
+                    "username": "alice",
+                    "name": "Alice",
+                    "email": "alice@example.com",
+                    "avatar_url": "https://example.com/avatar.png",
+                },
+            ),
+            patch(
+                "app.services.authentication.linuxdo.suggest_user_id",
+                return_value="linuxdo_alice",
+            ),
         ):
             resp = client.get("/api/auth/oidc/linuxdo/callback?code=code123&state=state1", follow_redirects=False)
 

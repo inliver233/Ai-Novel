@@ -11,7 +11,7 @@ from fastapi.params import Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import AdminUserDep, get_admin_user
-from app.api.routes import auth as auth_routes
+from app.api.routes import auth_admin as auth_routes
 from app.core.errors import AppError
 from app.models.user import User
 from app.models.user_activity_stat import UserActivityStat
@@ -29,7 +29,7 @@ from tests.support import (
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-AUTH_ROUTE_PATH = BACKEND_ROOT / "app" / "api" / "routes" / "auth.py"
+AUTH_ROUTE_PATH = BACKEND_ROOT / "app" / "api" / "routes" / "auth_admin.py"
 ADMIN_HANDLERS = {"set_user_disabled", "list_users", "create_user", "reset_user_password"}
 ADMIN_MODELS = [User, UserPassword, UserActivityStat, UserUsageStat]
 

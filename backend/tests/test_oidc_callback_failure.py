@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 
 from app.api.routes import auth as auth_routes
 from app.core.config import settings
-from app.services.authentication import oidc_client
+from app.services.authentication import linuxdo, oidc_client
 
 from tests.support import create_tables, make_session_factory, make_sqlite_engine, make_test_app
 
@@ -37,9 +37,9 @@ def test_linuxdo_oidc_callback_missing_access_token_returns_error(
     monkeypatch.setattr(settings, "linuxdo_oidc_client_secret", "test-client-secret")
 
     client = TestClient(app, raise_server_exceptions=False)
-    client.cookies.set(auth_routes._LINUXDO_OIDC_STATE_COOKIE, "state-fixed")
-    client.cookies.set(auth_routes._LINUXDO_OIDC_VERIFIER_COOKIE, "verifier-fixed")
-    client.cookies.set(auth_routes._LINUXDO_OIDC_NEXT_COOKIE, "/projects/p1")
+    client.cookies.set(linuxdo._STATE_COOKIE, "state-fixed")
+    client.cookies.set(linuxdo._VERIFIER_COOKIE, "verifier-fixed")
+    client.cookies.set(linuxdo._NEXT_COOKIE, "/projects/p1")
 
     fake_discovery = {
         "authorization_endpoint": "https://connect.linux.do/oauth2/authorize",
@@ -71,14 +71,11 @@ def test_linuxdo_oidc_callback_missing_access_token_returns_error(
 
         set_cookie_headers = response.headers.get_list("set-cookie")
         for cookie_name in (
-            auth_routes._LINUXDO_OIDC_STATE_COOKIE,
-            auth_routes._LINUXDO_OIDC_VERIFIER_COOKIE,
-            auth_routes._LINUXDO_OIDC_NEXT_COOKIE,
+            linuxdo._STATE_COOKIE,
+            linuxdo._VERIFIER_COOKIE,
+            linuxdo._NEXT_COOKIE,
         ):
-            assert any(
-                header.startswith(f"{cookie_name}=") and "Max-Age=0" in header
-                for header in set_cookie_headers
-            )
+            assert any(header.startswith(f"{cookie_name}=") and "Max-Age=0" in header for header in set_cookie_headers)
 
         assert settings.auth_cookie_user_id_name not in response.cookies
         assert settings.auth_cookie_expire_at_name not in response.cookies

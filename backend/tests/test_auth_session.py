@@ -158,7 +158,8 @@ class TestAuthEndpoints(unittest.TestCase):
 
     def test_register_rejects_reserved_admin_user_id(self) -> None:
         # Admin-id reservation is opt-in via settings.auth_admin_user_id
-        # (auth.py:350-352). Patch it to the id being registered so the
+        # The registration conflict pre-check normally returns before commit. Patch it
+        # to the id being registered so the
         # reservation fires and registration is forbidden.
         client = TestClient(self.app)
         with patch.object(settings, "auth_admin_user_id", "admin"):
@@ -237,7 +238,6 @@ class TestAuthEndpoints(unittest.TestCase):
         payload = resp.json()["data"]
         self.assertTrue(payload["refreshed"])
         self.assertGreater(payload["session"]["expire_at"], int(near_exp.timestamp()))
-
 
     def test_login_sets_secure_cookie_flags_in_prod(self) -> None:
         self._seed_user(user_id="u1", password="password123")

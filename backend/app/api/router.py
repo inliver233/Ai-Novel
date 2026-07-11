@@ -3,7 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.routes import (
-    auth,
+    auth_admin,
+    auth_local,
+    auth_oidc_linuxdo,
+    auth_session,
     batch_generation,
     chapters,
     characters,
@@ -38,7 +41,10 @@ from app.api.routes import outline_parse
 api_router = APIRouter(prefix="/api")
 
 api_router.include_router(health.router, tags=["health"])
-api_router.include_router(auth.router, tags=["auth"])
+api_router.include_router(auth_session.router, tags=["auth"])
+api_router.include_router(auth_local.router, tags=["auth"])
+api_router.include_router(auth_oidc_linuxdo.router, tags=["auth"])
+api_router.include_router(auth_admin.router, tags=["auth"])
 api_router.include_router(projects.router, tags=["projects"])
 api_router.include_router(memory.router, tags=["memory"])
 api_router.include_router(mcp.router, tags=["mcp"])

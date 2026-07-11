@@ -4,13 +4,13 @@ import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
 
-from app.api.routes.auth import (
+from app.api.routes.auth import router as auth_router
+from app.schemas.auth import (
     AdminCreateUserRequest,
     AdminResetPasswordRequest,
     ChangePasswordRequest,
     LocalLoginRequest,
     LocalRegisterRequest,
-    router as auth_router,
 )
 from app.core.auth_password import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 
@@ -48,9 +48,12 @@ def test_new_password_fields_share_minimum_and_maximum_boundaries(model, payload
 
 def test_login_and_old_password_keep_existing_minimum_contract() -> None:
     assert LocalLoginRequest.model_validate({"user_id": "u1", "password": "x"}).password == "x"
-    assert ChangePasswordRequest.model_validate(
-        {"old_password": "x", "new_password": "x" * PASSWORD_MIN_LENGTH}
-    ).old_password == "x"
+    assert (
+        ChangePasswordRequest.model_validate(
+            {"old_password": "x", "new_password": "x" * PASSWORD_MIN_LENGTH}
+        ).old_password
+        == "x"
+    )
 
 
 @pytest.mark.parametrize("blank_password", [None, "", " ", "        "])

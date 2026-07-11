@@ -3,7 +3,7 @@
 覆盖两部分当前正确的活功能：
 
 1. ``GET /api/health`` —— 健康检查（无需登录、无 DB 依赖）。
-2. ``app/api/routes/auth.py`` 的 admin 用户管理端点（需 admin 登录）：
+2. ``app/api/routes/auth_admin.py`` 的 admin 用户管理端点（需 admin 登录）：
 
      GET    /api/auth/admin/users
      POST   /api/auth/admin/users
