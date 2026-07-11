@@ -803,8 +803,8 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             assert actor_user_id["type"].length == 36
             connection.execute(
                 sa.text(
-                    "INSERT INTO users (id, display_name, created_at, updated_at) "
-                    "VALUES ('legacy-vector-user', 'Legacy Vector User', now(), now())"
+                    "INSERT INTO users (id, display_name, created_at, updated_at, is_admin) "
+                    "VALUES ('legacy-vector-user', 'Legacy Vector User', now(), now(), false)"
                 )
             )
             connection.execute(
