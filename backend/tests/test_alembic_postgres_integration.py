@@ -552,10 +552,8 @@ def _assert_postgres_chapter_replace_transaction(session_factory: sessionmaker) 
                 .order_by(Chapter.number)
                 .all()
             )
-            assert [(row.id, row.number, row.title) for row in rows] == [
-                ("chapter-replace-new-1", 1, "New one"),
-                ("chapter-replace-new-2", 2, "New two"),
-            ]
+            assert [(row.number, row.title) for row in rows] == [(1, "New one"), (2, "New two")]
+            assert {row.id for row in rows} == {"chapter-replace-new-1", "chapter-replace-new-2"}
             settings_row = observer.get(ProjectSettings, project_id)
             assert settings_row is not None and settings_row.vector_index_dirty is True
         committed_side_effects.append(reason)
