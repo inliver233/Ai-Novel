@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.auth_session import build_session, set_session_cookies
+from app.core.auth_session import build_session, clear_session_cookies, set_session_cookies
 from app.core.config import settings
 from app.core.errors import AppError
 from app.core.logging import log_event
@@ -116,6 +116,8 @@ def callback(request: Request, db: Session, code: str | None = None, state: str 
             status_code=302,
         )
         clear(resp)
+        if error_code == "ACCOUNT_DISABLED":
+            clear_session_cookies(resp)
         return resp
 
     response = RedirectResponse(url=next_path, status_code=302)
@@ -267,6 +269,14 @@ def callback(request: Request, db: Session, code: str | None = None, state: str 
             error_code="OIDC_DB_ERROR",
         )
         return fail("OIDC_DB_ERROR")
-    session = build_session(user_id=user.id)
-    set_session_cookies(response, user_id=user.id, expires_at=session.expires_at)
+    if user.disabled_at is not None:
+        return fail("ACCOUNT_DISABLED")
+    session = build_session(user_id=user.id, session_version=int(user.session_version or 0))
+    set_session_cookies(
+        response,
+        user_id=user.id,
+        expires_at=session.expires_at,
+        issued_at=session.issued_at,
+        session_version=session.session_version,
+    )
     return response

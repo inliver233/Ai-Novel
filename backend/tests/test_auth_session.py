@@ -23,7 +23,9 @@ from app.db.utils import utc_now
 from app.main import app_error_handler, auth_session_middleware, validation_error_handler
 from app.models.user import User
 from app.models.user_password import UserPassword
+from app.schemas.auth import DisableUserRequest
 from app.services.auth_service import hash_password
+from app.services.authentication import admin as auth_admin
 
 
 def _make_test_app(SessionLocal: sessionmaker) -> FastAPI:
@@ -74,6 +76,10 @@ class TestAuthSessionCookie(unittest.TestCase):
         tampered = ".".join([parts[0], tampered_payload_b64, parts[2]])
         self.assertIsNone(decode_session_cookie(tampered, now=now))
 
+    def test_decode_rejects_legacy_v1_cookie(self) -> None:
+        value = encode_session_cookie(user_id="u1", expires_at=utc_now() + timedelta(minutes=5))
+        self.assertIsNone(decode_session_cookie("v1." + value.split(".", 1)[1]))
+
 
 class TestAuthEndpoints(unittest.TestCase):
     def setUp(self) -> None:
@@ -90,7 +96,12 @@ class TestAuthEndpoints(unittest.TestCase):
 
     def _seed_user(self, *, user_id: str, password: str, is_admin: bool = False, disabled: bool = False) -> None:
         with self.SessionLocal() as db:
-            user = User(id=user_id, display_name=user_id, is_admin=is_admin)
+            user = User(
+                id=user_id,
+                display_name=user_id,
+                is_admin=is_admin,
+                disabled_at=utc_now() if disabled else None,
+            )
             db.add(user)
             db.add(
                 UserPassword(
@@ -106,6 +117,18 @@ class TestAuthEndpoints(unittest.TestCase):
         resp = client.get("/api/auth/user")
         self.assertEqual(resp.status_code, 401)
         self.assertEqual(resp.json()["error"]["code"], "UNAUTHORIZED")
+
+    def test_signed_cookie_for_missing_user_is_revoked(self) -> None:
+        client = TestClient(self.app)
+        expires_at = utc_now() + timedelta(minutes=5)
+        client.cookies.set(
+            settings.auth_cookie_user_id_name,
+            encode_session_cookie(user_id="missing-user", expires_at=expires_at),
+        )
+        response = client.get("/api/auth/user")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["code"], "ACCOUNT_DISABLED")
+        self.assertIn(settings.auth_cookie_user_id_name, response.headers.get("set-cookie", ""))
 
     def test_login_then_auth_user(self) -> None:
         self._seed_user(user_id="u1", password="password123")
@@ -136,6 +159,59 @@ class TestAuthEndpoints(unittest.TestCase):
         client = TestClient(self.app)
         resp = client.post("/api/auth/local/login", json={"user_id": "u1", "password": "password123"})
         self.assertEqual(resp.status_code, 401)
+
+    def test_admin_can_disable_and_enable_oidc_only_user(self) -> None:
+        with self.SessionLocal() as db:
+            db.add(User(id="oidc-only", display_name="OIDC Only"))
+            db.commit()
+            request = type("Request", (), {"state": type("State", (), {"request_id": "rid"})()})()
+            auth_admin.set_user_disabled(request, db, "oidc-only", DisableUserRequest(disabled=True))
+            user = db.get(User, "oidc-only")
+            assert user is not None and user.disabled_at is not None
+            assert user.session_version == 1
+            invalid_before = user.session_invalid_before
+            auth_admin.set_user_disabled(request, db, "oidc-only", DisableUserRequest(disabled=False))
+            db.refresh(user)
+            assert user.disabled_at is None
+            assert user.session_invalid_before == invalid_before
+
+    def test_disabling_user_revokes_existing_cookie_and_requires_new_login(self) -> None:
+        self._seed_user(user_id="u1", password="password123")
+        client = TestClient(self.app)
+        login = client.post("/api/auth/local/login", json={"user_id": "u1", "password": "password123"})
+        self.assertEqual(login.status_code, 200)
+        old_cookie = client.cookies.get(settings.auth_cookie_user_id_name)
+        self.assertTrue(old_cookie)
+        with self.SessionLocal() as db:
+            user = db.get(User, "u1")
+            assert user is not None
+            disabled_at = utc_now()
+            user.disabled_at = disabled_at
+            user.session_invalid_before = disabled_at
+            user.session_version += 1
+            db.commit()
+            self.assertEqual(user.session_version, 1)
+
+        revoked = client.get("/api/auth/user")
+        self.assertEqual(revoked.status_code, 401)
+        self.assertEqual(revoked.json()["error"]["code"], "ACCOUNT_DISABLED")
+        set_cookie = revoked.headers.get("set-cookie", "")
+        self.assertIn(settings.auth_cookie_user_id_name, set_cookie)
+        self.assertIn(settings.auth_cookie_expire_at_name, set_cookie)
+
+        with self.SessionLocal() as db:
+            user = db.get(User, "u1")
+            assert user is not None
+            user.disabled_at = None
+            db.commit()
+        client.cookies.set(settings.auth_cookie_user_id_name, str(old_cookie))
+        still_revoked = client.post("/api/auth/refresh")
+        self.assertEqual(still_revoked.status_code, 401)
+        self.assertEqual(still_revoked.json()["error"]["code"], "ACCOUNT_DISABLED")
+        client = TestClient(self.app)
+        relogin = client.post("/api/auth/local/login", json={"user_id": "u1", "password": "password123"})
+        self.assertEqual(relogin.status_code, 200)
+        self.assertEqual(client.get("/api/auth/user").status_code, 200)
 
     def test_register_then_auth_user(self) -> None:
         client = TestClient(self.app)
@@ -228,6 +304,7 @@ class TestAuthEndpoints(unittest.TestCase):
         self.assertEqual(resp3.status_code, 401)
 
     def test_refresh_extends_when_near_expiry(self) -> None:
+        self._seed_user(user_id="u1", password="password123")
         client = TestClient(self.app)
         now = utc_now()
         near_exp = now + timedelta(seconds=max(1, settings.auth_refresh_threshold_seconds - 1))

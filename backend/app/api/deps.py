@@ -15,6 +15,7 @@ from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_membership import ProjectMembership
 from app.models.user import User
+from app.db.datetime_compat import coerce_utc_datetime
 
 if TYPE_CHECKING:
     # Entry 采用惰性运行时导入（见 require_entry_*），此处仅用于类型注解解析，
@@ -39,8 +40,43 @@ def get_authenticated_user_id(request: Request) -> str:
 
 
 DbDep = Annotated[Session, Depends(get_db)]
-UserIdDep = Annotated[str, Depends(get_current_user_id)]
-AuthenticatedUserIdDep = Annotated[str, Depends(get_authenticated_user_id)]
+
+
+def load_enabled_user(db: Session, *, user_id: str) -> User:
+    user = db.get(User, user_id)
+    if user is None or user.disabled_at is not None:
+        raise AppError(code="ACCOUNT_DISABLED", message="账号已禁用", status_code=401)
+    return user
+
+
+def get_enabled_current_user_id(request: Request, db: DbDep) -> str:
+    user = load_enabled_user(db, user_id=get_current_user_id(request))
+    _require_current_session(request, user)
+    return str(user.id)
+
+
+def get_enabled_authenticated_user_id(request: Request, db: DbDep) -> str:
+    user = load_enabled_user(db, user_id=get_authenticated_user_id(request))
+    _require_current_session(request, user)
+    return str(user.id)
+
+
+def _require_current_session(request: Request, user: User) -> None:
+    cookie_version = getattr(request.state, "session_version", None)
+    if cookie_version is not None:
+        if int(cookie_version) != int(user.session_version or 0):
+            raise AppError(code="ACCOUNT_DISABLED", message="账号已禁用", status_code=401)
+        return
+    invalid_before = coerce_utc_datetime(user.session_invalid_before)
+    if invalid_before is None:
+        return
+    issued_at = coerce_utc_datetime(getattr(request.state, "session_issued_at", None))
+    if issued_at is None or issued_at <= invalid_before:
+        raise AppError(code="ACCOUNT_DISABLED", message="账号已禁用", status_code=401)
+
+
+UserIdDep = Annotated[str, Depends(get_enabled_current_user_id)]
+AuthenticatedUserIdDep = Annotated[str, Depends(get_enabled_authenticated_user_id)]
 
 
 def get_admin_user(db: DbDep, user_id: AuthenticatedUserIdDep) -> User:
@@ -111,8 +147,9 @@ def require_character_editor(db: Session, *, character_id: str, user_id: str) ->
     return character
 
 
-def require_entry_viewer(db: Session, *, entry_id: str, user_id: str) -> 'Entry':
+def require_entry_viewer(db: Session, *, entry_id: str, user_id: str) -> "Entry":
     from app.models.entry import Entry
+
     entry = db.get(Entry, entry_id)
     if entry is None:
         raise AppError.not_found()
@@ -120,8 +157,9 @@ def require_entry_viewer(db: Session, *, entry_id: str, user_id: str) -> 'Entry'
     return entry
 
 
-def require_entry_editor(db: Session, *, entry_id: str, user_id: str) -> 'Entry':
+def require_entry_editor(db: Session, *, entry_id: str, user_id: str) -> "Entry":
     from app.models.entry import Entry
+
     entry = db.get(Entry, entry_id)
     if entry is None:
         raise AppError.not_found()
@@ -182,7 +220,6 @@ def require_generation_run_editor(db: Session, *, run_id: str, user_id: str) -> 
         raise AppError.not_found()
     require_project_editor(db, project_id=run.project_id, user_id=user_id)
     return run
-
 
 
 # Backward-compatible alias (owner-only).

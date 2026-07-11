@@ -74,7 +74,7 @@ from app.core.config import settings
 #   decode_session_cookie() 负责从 Cookie 值中解码出 AuthSession(user_id, expires_at)
 #   签名密钥来源优先级：auth_session_signing_key > secret_encryption_key > 随机生成(仅dev)
 #   Cookie 格式：v1.<base64url_payload>.<base64url_signature>
-from app.core.auth_session import decode_session_cookie
+from app.core.auth_session import clear_session_cookies, decode_session_cookie
 
 # 【统一错误体系】全局业务异常类和标准化错误响应格式
 #   定义位置：app/core/errors.py
@@ -334,6 +334,8 @@ async def auth_session_middleware(request: Request, call_next):  # type: ignore[
     request.state.user_id = None
     request.state.authenticated_user_id = None
     request.state.session_expire_at = None
+    request.state.session_issued_at = None
+    request.state.session_version = None
     request.state.auth_source = None
 
     cookie_value = request.cookies.get(settings.auth_cookie_user_id_name)
@@ -343,6 +345,8 @@ async def auth_session_middleware(request: Request, call_next):  # type: ignore[
         request.state.user_id = session.user_id
         request.state.authenticated_user_id = session.user_id
         request.state.session_expire_at = session.expires_at
+        request.state.session_issued_at = session.issued_at
+        request.state.session_version = session.session_version
         request.state.auth_source = "session"
     else:
         fallback_user_id = settings.auth_dev_fallback_user_id if settings.app_env == "dev" else None
@@ -512,7 +516,10 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     payload = error_payload(request_id=rid, code=exc.code, message=exc.message, details=exc.details)
     headers = safe_app_error_headers(exc.headers)
     headers["X-Request-Id"] = rid
-    return JSONResponse(payload, status_code=exc.status_code, headers=headers)
+    response = JSONResponse(payload, status_code=exc.status_code, headers=headers)
+    if exc.code == "ACCOUNT_DISABLED":
+        clear_session_cookies(response)
+    return response
 
 
 # ── 5.3 请求参数校验异常处理器 ──────────────────────────────────────
@@ -531,9 +538,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     """
     rid = getattr(request.state, "request_id", new_request_id())
     safe_errors = [
-        {k: v for k, v in e.items() if k in ("loc", "msg", "type")}
-        for e in exc.errors()
-        if isinstance(e, dict)
+        {k: v for k, v in e.items() if k in ("loc", "msg", "type")} for e in exc.errors() if isinstance(e, dict)
     ]
     log_event(
         logger,

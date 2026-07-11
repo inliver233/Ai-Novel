@@ -46,7 +46,12 @@ def refresh_session(request: Request, user_id: str) -> JSONResponse:
         )
     )
     if refreshed:
-        set_session_cookies(response, user_id=user_id, expires_at=out_expires_at)
+        set_session_cookies(
+            response,
+            user_id=user_id,
+            expires_at=out_expires_at,
+            session_version=int(getattr(request.state, "session_version", 0) or 0),
+        )
     return response
 
 
@@ -57,7 +62,7 @@ def logout(request: Request) -> JSONResponse:
 
 
 def login_response(request: Request, user: User) -> JSONResponse:
-    session = build_session(user_id=user.id)
+    session = build_session(user_id=user.id, session_version=int(user.session_version or 0))
     response = JSONResponse(
         ok_payload(
             request_id=request.state.request_id,
@@ -67,5 +72,11 @@ def login_response(request: Request, user: User) -> JSONResponse:
             },
         )
     )
-    set_session_cookies(response, user_id=user.id, expires_at=session.expires_at)
+    set_session_cookies(
+        response,
+        user_id=user.id,
+        expires_at=session.expires_at,
+        issued_at=session.issued_at,
+        session_version=session.session_version,
+    )
     return response

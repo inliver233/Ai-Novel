@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.testclient import TestClient
 
+from app.api.deps import get_enabled_current_user_id
 from app.api.routes import llm as llm_routes
 from app.core.errors import AppError
 from app.main import app_error_handler, validation_error_handler
@@ -15,6 +16,9 @@ from app.main import app_error_handler, validation_error_handler
 
 def _make_test_app() -> FastAPI:
     app = FastAPI()
+
+    def _test_user_id(request: Request) -> str:
+        return str(request.state.user_id)
 
     @app.middleware("http")
     async def _test_user_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -28,6 +32,7 @@ def _make_test_app() -> FastAPI:
 
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
+    app.dependency_overrides[get_enabled_current_user_id] = _test_user_id
     app.include_router(llm_routes.router, prefix="/api")
     return app
 

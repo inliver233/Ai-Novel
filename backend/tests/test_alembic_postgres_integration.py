@@ -54,7 +54,7 @@ from scripts import migrate_sqlite_to_postgres as sqlite_pg_migrator
 
 
 PRE_CLEANUP_REVISION = "9f3a7c2d1e4b"
-HEAD_REVISION = "a4c9d2e7f1b3"
+HEAD_REVISION = "b6d1e8f3a5c7"
 EXPECTED_DATABASE = "ainovel_schema_ci"
 DESTRUCTIVE_SENTINEL = "I_UNDERSTAND_THIS_DROPS_PUBLIC_SCHEMA"
 RETIRED_TABLES = {
@@ -1314,6 +1314,11 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             }.issubset(batch_indexes)
             is_admin = next(column for column in inspector.get_columns("users") if column["name"] == "is_admin")
             assert is_admin["default"] is not None
+            user_columns = {column["name"]: column for column in inspector.get_columns("users")}
+            assert user_columns["disabled_at"]["nullable"] is True
+            assert user_columns["session_invalid_before"]["nullable"] is True
+            assert user_columns["session_version"]["nullable"] is False
+            assert user_columns["session_version"]["default"] is not None
             current = tuple(MigrationContext.configure(connection).get_current_heads())
             assert current == (HEAD_REVISION,)
             assert migration_head(database_url) == HEAD_REVISION

@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -43,7 +43,7 @@ def user_admin_public(
         "email": user.email,
         "display_name": user.display_name,
         "is_admin": bool(user.is_admin),
-        "disabled": bool(getattr(pwd, "disabled_at", None) is not None),
+        "disabled": bool(user.disabled_at is not None),
         "password_updated_at": getattr(pwd, "password_updated_at", None),
         "created_at": user.created_at,
         "updated_at": user.updated_at,
@@ -65,10 +65,26 @@ def user_admin_public(
 
 
 def set_user_disabled(request: Request, db: Session, target_user_id: str, body: DisableUserRequest) -> dict:
-    pwd = db.get(UserPassword, target_user_id)
-    if pwd is None:
+    user = db.get(User, target_user_id)
+    if user is None:
         raise AppError.not_found()
-    pwd.disabled_at = utc_now() if body.disabled else None
+    disabled_at = utc_now() if body.disabled else None
+    if body.disabled:
+        db.execute(
+            update(User)
+            .where(User.id == target_user_id)
+            .values(
+                disabled_at=disabled_at,
+                session_invalid_before=disabled_at,
+                session_version=User.session_version + 1,
+                updated_at=disabled_at,
+            )
+        )
+    else:
+        user.disabled_at = None
+    pwd = db.get(UserPassword, target_user_id)
+    if pwd is not None:
+        pwd.disabled_at = disabled_at
     db.commit()
     return ok_payload(request_id=request.state.request_id, data={})
 
@@ -140,10 +156,7 @@ def list_users(
                     db.execute(select(func.count(User.id)).where(User.is_admin.is_(True))).scalar() or 0
                 ),
                 "total_disabled_users": int(
-                    db.execute(
-                        select(func.count(UserPassword.user_id)).where(UserPassword.disabled_at.is_not(None))
-                    ).scalar()
-                    or 0
+                    db.execute(select(func.count(User.id)).where(User.disabled_at.is_not(None))).scalar() or 0
                 ),
                 "total_online_users": int(
                     db.execute(

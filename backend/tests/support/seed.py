@@ -59,7 +59,14 @@ def _create_and_commit(
     disabled: bool,
     display_name: str | None,
 ) -> None:
-    db.add(User(id=user_id, display_name=display_name or user_id, is_admin=is_admin))
+    db.add(
+        User(
+            id=user_id,
+            display_name=display_name or user_id,
+            is_admin=is_admin,
+            disabled_at=utc_now() if disabled else None,
+        )
+    )
     db.add(
         UserPassword(
             user_id=user_id,

@@ -21,8 +21,8 @@ def local_login(request: Request, db: Session, body: LocalLoginRequest) -> JSONR
     pwd = db.get(UserPassword, body.user_id)
     if user is None or pwd is None:
         raise AppError.unauthorized("用户名或密码错误")
-    if pwd.disabled_at is not None:
-        raise AppError.unauthorized("账号已禁用")
+    if user.disabled_at is not None:
+        raise AppError(code="ACCOUNT_DISABLED", message="账号已禁用", status_code=401)
     if not verify_password(body.password, pwd.password_hash):
         raise AppError.unauthorized("用户名或密码错误")
     return login_response(request, user)
@@ -59,7 +59,8 @@ def local_register(request: Request, db: Session, body: LocalRegisterRequest) ->
 
 def change_password(request: Request, db: Session, user_id: str, body: ChangePasswordRequest) -> dict:
     pwd = db.get(UserPassword, user_id)
-    if pwd is None or pwd.disabled_at is not None:
+    user = db.get(User, user_id)
+    if user is None or user.disabled_at is not None or pwd is None:
         raise AppError.unauthorized()
     if not verify_password(body.old_password, pwd.password_hash):
         raise AppError.unauthorized("旧密码错误")
