@@ -486,7 +486,7 @@ def test_entrypoint_exports_done_only_after_successful_shared_cli(tmp_path: Path
             None,
             [
                 "|-m app.bootstrap",
-                "1|-m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1",
+                "1|-m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-proxy-headers",
             ],
             None,
         ),
@@ -494,7 +494,7 @@ def test_entrypoint_exports_done_only_after_successful_shared_cli(tmp_path: Path
         (
             "run_false_no_args",
             "false",
-            ["|-m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"],
+            ["|-m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-proxy-headers"],
             None,
         ),
     ],
