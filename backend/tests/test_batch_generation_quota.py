@@ -24,6 +24,7 @@ from app.services.batch_generation_quota import (
     enter_batch_generation_quota_admission,
     lock_and_enforce_batch_generation_quotas,
 )
+from app.services import batch_generation_application
 
 
 def _session_factory(database_path: Path) -> tuple[sa.Engine, sessionmaker[Session]]:
@@ -255,7 +256,7 @@ def test_sqlite_create_route_serializes_after_default_outline_commit(tmp_path: P
     outline_write_lock = threading.Lock()
     results: list[str] = []
     errors: list[BaseException] = []
-    original_ensure = batch_generation_routes.ensure_active_outline
+    original_ensure = batch_generation_application.ensure_active_outline
 
     def _ensure_with_candidate(db: Session, *, project: Project):
         before_outline.wait(timeout=10)
@@ -299,8 +300,8 @@ def test_sqlite_create_route_serializes_after_default_outline_commit(tmp_path: P
             errors.append(exc)
 
     with (
-        patch.object(batch_generation_routes, "ensure_active_outline", side_effect=_ensure_with_candidate),
-        patch.object(batch_generation_routes, "get_task_queue", return_value=_NoopQueue()),
+        patch.object(batch_generation_application, "ensure_active_outline", side_effect=_ensure_with_candidate),
+        patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()),
         patch.object(settings, "batch_generation_project_active_limit", 1),
         patch.object(settings, "batch_generation_user_active_limit", 10),
         patch.object(settings, "batch_generation_provider_active_limit", 10),

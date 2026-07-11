@@ -28,7 +28,7 @@ from app.models.project import Project
 from app.models.project_task import ProjectTask
 from app.models.project_task_event import ProjectTaskEvent
 from app.models.user import User
-from app.services import batch_generation_service
+from app.services import batch_generation_application, batch_generation_service
 
 
 def _make_test_app(SessionLocal: sessionmaker) -> FastAPI:
@@ -125,7 +125,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             resp = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner"},
@@ -170,7 +170,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             created = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner"},
@@ -209,7 +209,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             created = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner"},
@@ -251,7 +251,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             created = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner"},
@@ -291,7 +291,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             created = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner"},
@@ -357,7 +357,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             created = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner"},
@@ -416,7 +416,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             resp = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner"},
@@ -444,7 +444,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             resp = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner", "X-LLM-Provider": "anthropic"},
@@ -478,8 +478,8 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
                 return task_id
 
         with (
-            patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()),
-            patch.object(batch_generation_routes.settings, "batch_generation_project_active_limit", 2),
+            patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()),
+            patch.object(batch_generation_application.settings, "batch_generation_project_active_limit", 2),
         ):
             first = client.post(
                 "/api/projects/p1/batch_generation_tasks",
@@ -502,7 +502,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             def enqueue_batch_generation_task(self, task_id: str) -> str:
                 return task_id
 
-        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+        with patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()):
             created = client.post(
                 "/api/projects/p1/batch_generation_tasks",
                 headers={"X-Test-User": "u_owner"},

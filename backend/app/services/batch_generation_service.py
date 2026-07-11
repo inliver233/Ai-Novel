@@ -34,6 +34,11 @@ from app.services.batch_generation_helpers import (
     sync_batch_generation_checkpoint,
     touch_batch_project_task,
 )
+from app.services.batch_generation_commands import (
+    TERMINAL_BATCH_GENERATION_STATUSES,
+    apply_batch_generation_worker_control,
+    lock_batch_generation_task_for_worker,
+)
 from app.services.chapter_context_service import (
     PREVIOUS_CHAPTER_ENDING_CHARS,
     assemble_chapter_generate_render_values,
@@ -50,37 +55,6 @@ from app.services.prompt_presets import ensure_default_plan_preset, render_prese
 from app.services.prompt_store import format_characters
 
 logger = logging.getLogger("ainovel")
-
-
-def _cancel_task(task_id: str) -> None:
-    with SessionLocal() as db:
-        task = db.get(BatchGenerationTask, task_id)
-        if task is None:
-            return
-        task.status = "canceled"
-        task.pause_requested = False
-        sync_batch_generation_checkpoint(task)
-        items = (
-            db.execute(
-                select(BatchGenerationTaskItem).where(
-                    BatchGenerationTaskItem.task_id == task_id, BatchGenerationTaskItem.status.in_(["queued", "running"])
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for item in items:
-            item.status = "canceled"
-            item.finished_at = utc_now()
-        finalize_batch_project_task(
-            db,
-            batch_task=task,
-            status="canceled",
-            event_type="canceled",
-            result={"canceled": True, "batch_task_id": str(task.id)},
-            payload={"reason": "batch_generation_cancel"},
-        )
-        db.commit()
 
 
 def _prepare_project_context(
@@ -181,45 +155,28 @@ def run_batch_generation_task(*, task_id: str) -> None:
     IMPORTANT: Do not write generated content into `chapters` (demo contract: user must click Save).
     """
     with SessionLocal() as db:
-        task = db.get(BatchGenerationTask, task_id)
+        task = lock_batch_generation_task_for_worker(db, task_id=task_id)
         if task is None:
             return
-        if task.status in ("succeeded", "failed", "canceled", "paused"):
+        if task.status in TERMINAL_BATCH_GENERATION_STATUSES or task.status == "paused":
+            db.rollback()
             return
-        if task.cancel_requested:
-            task.status = "canceled"
-            task.pause_requested = False
-            sync_batch_generation_checkpoint(task)
-            finalize_batch_project_task(
-                db,
-                batch_task=task,
-                status="canceled",
-                event_type="canceled",
-                result={"canceled": True, "batch_task_id": str(task.id)},
-                payload={"reason": "cancel_requested_before_start"},
-            )
-            db.commit()
-            return
-        if task.pause_requested:
-            task.status = "paused"
-            sync_batch_generation_checkpoint(task)
-            finalize_batch_project_task(
-                db,
-                batch_task=task,
-                status="paused",
-                event_type="paused",
-                result={"paused": True, "batch_task_id": str(task.id)},
-                payload={"reason": "pause_requested_before_start"},
-            )
+        if apply_batch_generation_worker_control(
+            db,
+            task=task,
+            cancel_reason="cancel_requested_before_start",
+            pause_reason="pause_requested_before_start",
+        ):
             db.commit()
             return
         task.status = "running"
         sync_batch_generation_checkpoint(task)
         mark_batch_project_task_running(db, batch_task=task)
-        db.commit()
-
         params = _parse_params(task)
         actor_user_id = task.actor_user_id or "local-user"
+        project_id = str(task.project_id)
+        outline_id = str(task.outline_id)
+        runtime_provider = str(task.runtime_provider or "")
 
         rows = db.execute(
             select(BatchGenerationTaskItem.id, BatchGenerationTaskItem.chapter_id, BatchGenerationTaskItem.chapter_number, BatchGenerationTaskItem.status)
@@ -241,25 +198,34 @@ def run_batch_generation_task(*, task_id: str) -> None:
             outline_text,
             style_resolution,
         ) = _prepare_project_context(
-            project_id=task.project_id,
-            outline_id=task.outline_id,
+            project_id=project_id,
+            outline_id=outline_id,
             actor_user_id=actor_user_id,
             params=params,
-            expected_runtime_provider=str(task.runtime_provider or ""),
+            expected_runtime_provider=runtime_provider,
         )
         run_params_extra_json = {"style_resolution": style_resolution}
     except AppError as exc:
         with SessionLocal() as db:
-            task = db.get(BatchGenerationTask, task_id)
-            if task is not None:
-                pause_batch_generation(
-                    db,
-                    batch_task=task,
-                    reason="prepare_project_context_failed",
-                    source="batch_generation_worker",
-                    error={"code": exc.code, "message": exc.message, "details": exc.details},
-                )
+            task = lock_batch_generation_task_for_worker(db, task_id=task_id)
+            if task is None:
+                return
+            if apply_batch_generation_worker_control(
+                db,
+                task=task,
+                cancel_reason="cancel_requested_during_prepare",
+                pause_reason="pause_requested_during_prepare",
+            ):
                 db.commit()
+                return
+            pause_batch_generation(
+                db,
+                batch_task=task,
+                reason="prepare_project_context_failed",
+                source="batch_generation_worker",
+                error={"code": exc.code, "message": exc.message, "details": exc.details},
+            )
+            db.commit()
         return
 
     prev_content_md: str | None = None
@@ -270,27 +236,25 @@ def run_batch_generation_task(*, task_id: str) -> None:
             continue
 
         with SessionLocal() as db:
-            task = db.get(BatchGenerationTask, task_id)
+            task = lock_batch_generation_task_for_worker(db, task_id=task_id)
             if task is None:
                 return
-            if task.cancel_requested:
-                db.commit()
-                _cancel_task(task_id)
-                return
-            if task.pause_requested:
-                pause_batch_generation(
-                    db,
-                    batch_task=task,
-                    reason="pause_requested_before_step",
-                    source="batch_generation_worker",
-                    payload={"chapter_number": int(chapter_number)},
-                )
+            if apply_batch_generation_worker_control(
+                db,
+                task=task,
+                cancel_reason="cancel_requested_before_step",
+                pause_reason="pause_requested_before_step",
+                payload={"chapter_number": int(chapter_number)},
+            ):
                 db.commit()
                 return
             touch_batch_project_task(db, batch_task=task)
 
             item = db.get(BatchGenerationTaskItem, item_id)
             if item is None:
+                if task.status in TERMINAL_BATCH_GENERATION_STATUSES:
+                    db.rollback()
+                    return
                 task.status = "failed"
                 task.failed_count = max(int(getattr(task, "failed_count", 0) or 0), 1)
                 task.error_json = json.dumps({"code": "DB_ERROR", "message": "任务 item 不存在"}, ensure_ascii=False)
@@ -305,7 +269,7 @@ def run_batch_generation_task(*, task_id: str) -> None:
                 )
                 db.commit()
                 return
-            if item.status in {"succeeded", "skipped", "failed"}:
+            if item.status in {"succeeded", "skipped", "failed", "canceled"}:
                 continue
 
             chapter_request_id = f"batch:{task_id}:{str(chapter_id or '')[:8]}"
@@ -331,6 +295,21 @@ def run_batch_generation_task(*, task_id: str) -> None:
 
             chapter = db.get(Chapter, chapter_id) if chapter_id else None
             if chapter is None:
+                task = lock_batch_generation_task_for_worker(db, task_id=task_id)
+                item = db.get(BatchGenerationTaskItem, item_id)
+                if task is None or item is None:
+                    db.rollback()
+                    return
+                if apply_batch_generation_worker_control(
+                    db,
+                    task=task,
+                    cancel_reason="cancel_requested_after_missing_chapter",
+                    pause_reason="pause_requested_after_missing_chapter",
+                    item=item,
+                    payload={"chapter_number": int(chapter_number)},
+                ):
+                    db.commit()
+                    return
                 item.status = "failed"
                 item.finished_at = utc_now()
                 item.last_request_id = chapter_request_id
@@ -362,8 +341,8 @@ def run_batch_generation_task(*, task_id: str) -> None:
             else:
                 prev_text, prev_ending = load_previous_chapter_context(
                     db,
-                    project_id=task.project_id,
-                    outline_id=task.outline_id,
+                    project_id=project_id,
+                    outline_id=outline_id,
                     chapter_number=int(chapter.number),
                     previous_chapter=mode,
                 )
@@ -374,8 +353,8 @@ def run_batch_generation_task(*, task_id: str) -> None:
             if params.include_smart_context:
                 smart_recent_summaries, smart_recent_full, smart_story_skeleton = build_smart_context(
                     db,
-                    project_id=task.project_id,
-                    outline_id=task.outline_id,
+                    project_id=project_id,
+                    outline_id=outline_id,
                     chapter_number=int(chapter.number),
                 )
 
@@ -427,13 +406,13 @@ def run_batch_generation_task(*, task_id: str) -> None:
                     if resolved_plan is not None:
                         plan_llm_call = resolved_plan.llm_call
                         plan_api_key = resolved_plan.api_key
-                    ensure_default_plan_preset(db, project_id=task.project_id)
+                    ensure_default_plan_preset(db, project_id=project_id)
                     plan_values = dict(values)
                     plan_values["instruction"] = base_instruction
                     plan_values["user"] = {"instruction": base_instruction, "requirements": requirements_obj}
                     plan_system, plan_user, plan_messages, _, _, _, plan_render_log = render_preset_for_task(
                         db,
-                        project_id=task.project_id,
+                        project_id=project_id,
                         task="plan_chapter",
                         values=plan_values,  # type: ignore[arg-type]
                         macro_seed=f"{chapter_request_id}:plan",
@@ -444,7 +423,7 @@ def run_batch_generation_task(*, task_id: str) -> None:
                     logger=logger,
                     request_id=f"{chapter_request_id}:plan",
                     actor_user_id=actor_user_id,
-                    project_id=task.project_id,
+                    project_id=project_id,
                     chapter_id=chapter_id,
                     api_key=str(plan_api_key),
                     llm_call=plan_llm_call,
@@ -461,7 +440,7 @@ def run_batch_generation_task(*, task_id: str) -> None:
             with SessionLocal() as db:
                 prompt_system, prompt_user, prompt_messages, _, _, _, render_log = render_preset_for_task(
                     db,
-                    project_id=task.project_id,
+                    project_id=project_id,
                     task="chapter_generate",
                     values=render_values,  # type: ignore[arg-type]
                     macro_seed=chapter_request_id,
@@ -479,7 +458,7 @@ def run_batch_generation_task(*, task_id: str) -> None:
                 logger=logger,
                 request_id=chapter_request_id,
                 actor_user_id=actor_user_id,
-                project_id=task.project_id,
+                project_id=project_id,
                 chapter_id=chapter_id,
                 run_type="chapter",
                 api_key=str(resolved_api_key),
@@ -500,7 +479,7 @@ def run_batch_generation_task(*, task_id: str) -> None:
                         logger=logger,
                         request_id=f"{chapter_request_id}:post_edit",
                         actor_user_id=actor_user_id,
-                        project_id=task.project_id,
+                        project_id=project_id,
                         chapter_id=chapter_id,
                         api_key=str(resolved_api_key),
                         llm_call=llm_call,
@@ -522,7 +501,7 @@ def run_batch_generation_task(*, task_id: str) -> None:
                         logger=logger,
                         request_id=f"{chapter_request_id}:content_optimize",
                         actor_user_id=actor_user_id,
-                        project_id=task.project_id,
+                        project_id=project_id,
                         chapter_id=chapter_id,
                         api_key=str(resolved_api_key),
                         llm_call=llm_call,
@@ -542,9 +521,13 @@ def run_batch_generation_task(*, task_id: str) -> None:
             prev_summary = final_summary
 
             with SessionLocal() as db:
-                task = db.get(BatchGenerationTask, task_id)
+                task = lock_batch_generation_task_for_worker(db, task_id=task_id)
                 item = db.get(BatchGenerationTaskItem, item_id)
                 if task is None or item is None:
+                    db.rollback()
+                    return
+                if task.status in TERMINAL_BATCH_GENERATION_STATUSES or task.status == "paused":
+                    db.rollback()
                     return
                 item.status = "succeeded"
                 item.generation_run_id = gen_step.run_id
@@ -567,15 +550,14 @@ def run_batch_generation_task(*, task_id: str) -> None:
                     source="batch_generation_worker",
                     payload=success_payload,
                 )
-                if task.pause_requested:
-                    pause_batch_generation(
-                        db,
-                        batch_task=task,
-                        reason="pause_requested_after_step",
-                        source="batch_generation_worker",
-                        item=item,
-                        payload={"chapter_number": int(chapter_number)},
-                    )
+                if apply_batch_generation_worker_control(
+                    db,
+                    task=task,
+                    cancel_reason="cancel_requested_after_step",
+                    pause_reason="pause_requested_after_step",
+                    item=item,
+                    payload={"chapter_number": int(chapter_number)},
+                ):
                     db.commit()
                     return
                 db.commit()
@@ -591,24 +573,40 @@ def run_batch_generation_task(*, task_id: str) -> None:
                 },
             )
             with SessionLocal() as db:
-                task = db.get(BatchGenerationTask, task_id)
+                task = lock_batch_generation_task_for_worker(db, task_id=task_id)
                 item = db.get(BatchGenerationTaskItem, item_id)
+                if task is None:
+                    db.rollback()
+                    return
+                if task.status in TERMINAL_BATCH_GENERATION_STATUSES or task.status == "paused":
+                    db.rollback()
+                    return
+                if task.cancel_requested:
+                    apply_batch_generation_worker_control(
+                        db,
+                        task=task,
+                        cancel_reason="cancel_requested_after_failed_step",
+                        pause_reason="pause_requested_after_failed_step",
+                        item=item,
+                        payload={"chapter_number": int(chapter_number)},
+                    )
+                    db.commit()
+                    return
                 if item is not None:
                     item.status = "failed"
                     item.error_message = f"{exc.message} ({exc.code})"
                     item.last_error_json = _json_dumps({"code": exc.code, "message": exc.message, "details": exc.details})
                     item.last_request_id = chapter_request_id
                     item.finished_at = utc_now()
-                if task is not None:
-                    pause_batch_generation(
-                        db,
-                        batch_task=task,
-                        reason="chapter_failed",
-                        source="batch_generation_worker",
-                        error={"code": exc.code, "message": exc.message, "details": exc.details},
-                        item=item,
-                        payload={"chapter_number": int(chapter_number)},
-                    )
+                pause_batch_generation(
+                    db,
+                    batch_task=task,
+                    reason="chapter_failed",
+                    source="batch_generation_worker",
+                    error={"code": exc.code, "message": exc.message, "details": exc.details},
+                    item=item,
+                    payload={"chapter_number": int(chapter_number)},
+                )
                 db.commit()
             return
         except Exception as exc:
@@ -623,68 +621,74 @@ def run_batch_generation_task(*, task_id: str) -> None:
                 },
             )
             with SessionLocal() as db:
-                task = db.get(BatchGenerationTask, task_id)
+                task = lock_batch_generation_task_for_worker(db, task_id=task_id)
                 item = db.get(BatchGenerationTaskItem, item_id)
+                if task is None:
+                    db.rollback()
+                    return
+                if task.status in TERMINAL_BATCH_GENERATION_STATUSES or task.status == "paused":
+                    db.rollback()
+                    return
+                if task.cancel_requested:
+                    apply_batch_generation_worker_control(
+                        db,
+                        task=task,
+                        cancel_reason="cancel_requested_after_exception",
+                        pause_reason="pause_requested_after_exception",
+                        item=item,
+                        payload={"chapter_number": int(chapter_number)},
+                    )
+                    db.commit()
+                    return
                 if item is not None:
                     item.status = "failed"
                     item.error_message = "批量生成失败"
                     item.last_error_json = _json_dumps({"code": "INTERNAL_ERROR", "message": type(exc).__name__})
                     item.last_request_id = chapter_request_id
                     item.finished_at = utc_now()
-                if task is not None:
-                    pause_batch_generation(
-                        db,
-                        batch_task=task,
-                        reason="chapter_exception",
-                        source="batch_generation_worker",
-                        error={"code": "INTERNAL_ERROR", "message": "批量生成失败"},
-                        item=item,
-                        payload={"chapter_number": int(chapter_number)},
-                    )
+                pause_batch_generation(
+                    db,
+                    batch_task=task,
+                    reason="chapter_exception",
+                    source="batch_generation_worker",
+                    error={"code": "INTERNAL_ERROR", "message": "批量生成失败"},
+                    item=item,
+                    payload={"chapter_number": int(chapter_number)},
+                )
                 db.commit()
             return
 
     with SessionLocal() as db:
-        task = db.get(BatchGenerationTask, task_id)
+        task = lock_batch_generation_task_for_worker(db, task_id=task_id)
         if task is None:
             return
-        if task.cancel_requested:
-            task.status = "canceled"
-            task.pause_requested = False
-            sync_batch_generation_checkpoint(task)
-            finalize_batch_project_task(
-                db,
-                batch_task=task,
-                status="canceled",
-                event_type="canceled",
-                result={"canceled": True, "batch_task_id": str(task.id)},
-                payload={"reason": "cancel_requested_after_loop"},
-            )
-        elif task.status == "paused" or task.pause_requested:
-            if task.status != "paused":
-                pause_batch_generation(
-                    db,
-                    batch_task=task,
-                    reason="pause_requested_after_loop",
-                    source="batch_generation_worker",
-                )
-        elif task.status != "failed":
-            task.pause_requested = False
-            recalculate_batch_generation_counts(db, batch_task=task)
-            task.status = "succeeded"
-            sync_batch_generation_checkpoint(task)
-            finalize_batch_project_task(
-                db,
-                batch_task=task,
-                status="succeeded",
-                event_type="succeeded",
-                result={
-                    "batch_task_id": str(task.id),
-                    "total_count": int(task.total_count or 0),
-                    "completed_count": int(task.completed_count or 0),
-                    "failed_count": int(getattr(task, "failed_count", 0) or 0),
-                    "skipped_count": int(getattr(task, "skipped_count", 0) or 0),
-                },
-                payload={"reason": "batch_generation_done"},
-            )
+        if task.status in TERMINAL_BATCH_GENERATION_STATUSES or task.status == "paused":
+            db.rollback()
+            return
+        if apply_batch_generation_worker_control(
+            db,
+            task=task,
+            cancel_reason="cancel_requested_after_loop",
+            pause_reason="pause_requested_after_loop",
+        ):
+            db.commit()
+            return
+        task.pause_requested = False
+        recalculate_batch_generation_counts(db, batch_task=task)
+        task.status = "succeeded"
+        sync_batch_generation_checkpoint(task)
+        finalize_batch_project_task(
+            db,
+            batch_task=task,
+            status="succeeded",
+            event_type="succeeded",
+            result={
+                "batch_task_id": str(task.id),
+                "total_count": int(task.total_count or 0),
+                "completed_count": int(task.completed_count or 0),
+                "failed_count": int(getattr(task, "failed_count", 0) or 0),
+                "skipped_count": int(getattr(task, "skipped_count", 0) or 0),
+            },
+            payload={"reason": "batch_generation_done"},
+        )
         db.commit()

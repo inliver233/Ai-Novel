@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -16,7 +17,7 @@ from app.db.utils import new_id
 from app.core.config import settings
 from app.core.errors import AppError
 from app.api.routes import batch_generation as batch_generation_routes
-from app.models.batch_generation_task import BatchGenerationQuotaGuard, BatchGenerationTask
+from app.models.batch_generation_task import BatchGenerationQuotaGuard, BatchGenerationTask, BatchGenerationTaskItem
 from app.models.chapter import Chapter
 from app.models.llm_preset import LLMPreset
 from app.models.outline import Outline
@@ -29,6 +30,9 @@ from app.services.batch_generation_quota import (
     enter_batch_generation_quota_admission,
     lock_and_enforce_batch_generation_quotas,
 )
+from app.services import batch_generation_commands
+from app.services import batch_generation_application
+from app.services import batch_generation_service
 from scripts.check_alembic import (
     SchemaContractError,
     assert_schema_matches_metadata,
@@ -214,7 +218,7 @@ def _assert_postgres_create_route_race(session_factory: sessionmaker) -> None:
     after_chapter = threading.Barrier(2)
     results: list[str] = []
     errors: list[BaseException] = []
-    original_ensure = batch_generation_routes.ensure_active_outline
+    original_ensure = batch_generation_application.ensure_active_outline
 
     def _ensure_with_candidate(db, *, project):  # type: ignore[no-untyped-def]
         before_outline.wait(timeout=10)
@@ -257,8 +261,8 @@ def _assert_postgres_create_route_race(session_factory: sessionmaker) -> None:
             errors.append(exc)
 
     with (
-        patch.object(batch_generation_routes, "ensure_active_outline", side_effect=_ensure_with_candidate),
-        patch.object(batch_generation_routes, "get_task_queue", return_value=_NoopQueue()),
+        patch.object(batch_generation_application, "ensure_active_outline", side_effect=_ensure_with_candidate),
+        patch("app.services.batch_generation_commands.get_task_queue", return_value=_NoopQueue()),
         patch.object(settings, "batch_generation_project_active_limit", 1),
         patch.object(settings, "batch_generation_user_active_limit", 10),
         patch.object(settings, "batch_generation_provider_active_limit", 10),
@@ -274,6 +278,160 @@ def _assert_postgres_create_route_race(session_factory: sessionmaker) -> None:
     assert sorted(results) == ["admitted", "project"]
     with session_factory() as db:
         assert db.query(BatchGenerationTask).filter_by(project_id="quota-create-project").count() == 1
+
+
+def _assert_postgres_batch_command_races(session_factory: sessionmaker) -> None:
+    class _NoopQueue:
+        def enqueue_batch_generation_task(self, task_id: str) -> str:
+            return task_id
+
+    for competing_action in ("resume", "retry_failed"):
+        task_id = f"pg-{competing_action}"
+        item_id = f"item-{competing_action}"
+        with session_factory() as db:
+            db.add(
+                BatchGenerationTask(
+                    id=task_id,
+                    project_id="quota-project-1",
+                    outline_id="outline-quota-project-1",
+                    actor_user_id="quota-user-1",
+                    runtime_provider="openai",
+                    status="paused",
+                    total_count=1,
+                    failed_count=1 if competing_action == "retry_failed" else 0,
+                    pause_requested=True,
+                )
+            )
+            db.add(
+                BatchGenerationTaskItem(
+                    id=item_id,
+                    task_id=task_id,
+                    chapter_id=None,
+                    chapter_number=1,
+                    status="failed" if competing_action == "retry_failed" else "queued",
+                )
+            )
+            db.commit()
+
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def _run(action: str) -> None:
+            try:
+                with session_factory() as db:
+                    barrier.wait(timeout=10)
+                    if action == "cancel":
+                        batch_generation_commands.cancel_batch_generation_task(
+                            db,
+                            task_id=task_id,
+                            authorized_project_id="quota-project-1",
+                        )
+                    elif action == "resume":
+                        batch_generation_commands.resume_batch_generation_task(
+                            db,
+                            task_id=task_id,
+                            authorized_project_id="quota-project-1",
+                            actor_user_id="quota-user-1",
+                        )
+                    else:
+                        batch_generation_commands.retry_failed_batch_generation_task(
+                            db,
+                            task_id=task_id,
+                            authorized_project_id="quota-project-1",
+                            actor_user_id="quota-user-1",
+                        )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        with patch.object(batch_generation_commands, "get_task_queue", return_value=_NoopQueue()):
+            threads = [
+                threading.Thread(target=_run, args=("cancel",)),
+                threading.Thread(target=_run, args=(competing_action,)),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        assert not errors
+        assert all(not thread.is_alive() for thread in threads)
+        with session_factory() as db:
+            task = db.get(BatchGenerationTask, task_id)
+            item = db.get(BatchGenerationTaskItem, item_id)
+            assert task is not None
+            assert item is not None
+            assert task.status == "canceled"
+            assert task.cancel_requested is True
+            assert item.status != "queued"
+            db.delete(item)
+            db.delete(task)
+            db.commit()
+
+
+def _assert_postgres_worker_control_races(session_factory: sessionmaker) -> None:
+    for action in ("cancel", "pause"):
+        task_id = f"pg-worker-{action}"
+        item_id = f"item-worker-{action}"
+        with session_factory() as db:
+            db.add(
+                BatchGenerationTask(
+                    id=task_id,
+                    project_id="quota-project-1",
+                    outline_id="outline-quota-project-1",
+                    actor_user_id="quota-user-1",
+                    runtime_provider="openai",
+                    status="queued",
+                    total_count=1,
+                    params_json='{"context": {}}',
+                )
+            )
+            db.add(BatchGenerationTaskItem(id=item_id, task_id=task_id, chapter_id=None, chapter_number=1, status="queued"))
+            db.commit()
+
+        prepare_entered = threading.Event()
+        release_prepare = threading.Event()
+        errors: list[BaseException] = []
+
+        def _blocked_prepare(**_kwargs):  # type: ignore[no-untyped-def]
+            prepare_entered.set()
+            if not release_prepare.wait(timeout=15):
+                raise RuntimeError("postgres worker race timed out")
+            return (SimpleNamespace(id="quota-project-1"), SimpleNamespace(provider="openai"), "key", "", "", "", "", "", {})
+
+        def _run_worker() -> None:
+            try:
+                batch_generation_service.run_batch_generation_task(task_id=task_id)
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        with (
+            patch.object(batch_generation_service, "SessionLocal", session_factory),
+            patch.object(batch_generation_service, "_prepare_project_context", side_effect=_blocked_prepare),
+        ):
+            worker = threading.Thread(target=_run_worker)
+            worker.start()
+            assert prepare_entered.wait(timeout=15)
+            with session_factory() as db:
+                command = (
+                    batch_generation_commands.cancel_batch_generation_task
+                    if action == "cancel"
+                    else batch_generation_commands.pause_batch_generation_task
+                )
+                command(db, task_id=task_id, authorized_project_id="quota-project-1")
+            release_prepare.set()
+            worker.join(timeout=30)
+
+        assert not errors
+        assert not worker.is_alive()
+        with session_factory() as db:
+            task = db.get(BatchGenerationTask, task_id)
+            item = db.get(BatchGenerationTaskItem, item_id)
+            assert task is not None and item is not None
+            assert task.status == {"cancel": "canceled", "pause": "paused"}[action]
+            assert item.status == {"cancel": "canceled", "pause": "queued"}[action]
+            db.delete(item)
+            db.delete(task)
+            db.commit()
 
 
 @pytest.mark.postgres_integration
@@ -444,6 +602,8 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             db.commit()
 
         _assert_postgres_create_route_race(session_factory)
+        _assert_postgres_batch_command_races(session_factory)
+        _assert_postgres_worker_control_races(session_factory)
         _assert_postgres_quota_race(
             session_factory,
             dimension="project",

@@ -10,9 +10,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.errors import AppError
 from app.models.batch_generation_task import BatchGenerationQuotaGuard, BatchGenerationTask
+from app.services.batch_generation_commands import ACTIVE_BATCH_GENERATION_STATUSES
 
-
-ACTIVE_BATCH_GENERATION_STATUSES = ("queued", "running", "paused")
 
 
 def enter_batch_generation_quota_admission(db: Session) -> None:
