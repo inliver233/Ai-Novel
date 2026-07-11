@@ -11,6 +11,9 @@ from app.core.secrets import SecretCryptoError, decrypt_secret, encrypt_secret, 
 from app.models.project_settings import ProjectSettings
 from app.schemas.settings import ProjectSettingsOut, ProjectSettingsUpdate, QueryPreprocessingConfig
 from app.services.embedding_service import embedding_enabled_reason, resolve_embedding_config
+from app.services.embedding_contract import validate_embedding_expected_dimension
+from app.services.vector_embedding_overrides import embedding_config_fingerprint
+from app.services.vector_index_state import mark_vector_index_dirty
 
 router = APIRouter()
 
@@ -64,7 +67,9 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
     constraints = (row.constraints or "") if row is not None else ""
     context_optimizer_enabled = bool(getattr(row, "context_optimizer_enabled", False)) if row is not None else False
 
-    auto_update_worldbook_enabled = bool(getattr(row, "auto_update_worldbook_enabled", True)) if row is not None else True
+    auto_update_worldbook_enabled = (
+        bool(getattr(row, "auto_update_worldbook_enabled", True)) if row is not None else True
+    )
     auto_update_characters_enabled = (
         bool(getattr(row, "auto_update_characters_enabled", True)) if row is not None else True
     )
@@ -78,7 +83,9 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
     auto_update_tables_enabled = bool(getattr(row, "auto_update_tables_enabled", True)) if row is not None else True
 
     qp_default = QueryPreprocessingConfig()
-    qp_override = _parse_query_preprocessing_json((row.query_preprocessing_json or "").strip() if row is not None else None)
+    qp_override = _parse_query_preprocessing_json(
+        (row.query_preprocessing_json or "").strip() if row is not None else None
+    )
     qp_effective = qp_override or qp_default
     qp_source = "project" if qp_override is not None else "default"
 
@@ -91,7 +98,9 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
     rerank_default_method = "auto"
     rerank_default_top_k = int(getattr(settings, "vector_max_candidates", 20) or 20)
 
-    rerank_effective_enabled = rerank_override_enabled if rerank_override_enabled is not None else rerank_default_enabled
+    rerank_effective_enabled = (
+        rerank_override_enabled if rerank_override_enabled is not None else rerank_default_enabled
+    )
     rerank_effective_method = rerank_override_method or rerank_default_method
     rerank_effective_top_k = rerank_override_top_k if rerank_override_top_k is not None else rerank_default_top_k
 
@@ -118,7 +127,9 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
     rerank_override_timeout_seconds = getattr(row, "vector_rerank_timeout_seconds", None) if row is not None else None
     rerank_override_hybrid_alpha = getattr(row, "vector_rerank_hybrid_alpha", None) if row is not None else None
     rerank_override_ciphertext = getattr(row, "vector_rerank_api_key_ciphertext", None) if row is not None else None
-    rerank_override_masked = (getattr(row, "vector_rerank_api_key_masked", None) or "").strip() if row is not None else ""
+    rerank_override_masked = (
+        (getattr(row, "vector_rerank_api_key_masked", None) or "").strip() if row is not None else ""
+    )
     rerank_override_has_api_key = bool(str(rerank_override_ciphertext or "").strip())
 
     env_rerank_provider = "external_rerank_api"
@@ -133,10 +144,18 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
     rerank_effective_provider = rerank_override_provider or (env_rerank_provider if env_rerank_base_url else "")
     rerank_effective_base_url = rerank_override_base_url or env_rerank_base_url
     rerank_effective_model = rerank_override_model or env_rerank_model
-    rerank_effective_timeout_seconds = int(rerank_override_timeout_seconds) if rerank_override_timeout_seconds is not None else env_rerank_timeout_seconds
-    rerank_effective_hybrid_alpha = float(rerank_override_hybrid_alpha) if rerank_override_hybrid_alpha is not None else 0.0
+    rerank_effective_timeout_seconds = (
+        int(rerank_override_timeout_seconds)
+        if rerank_override_timeout_seconds is not None
+        else env_rerank_timeout_seconds
+    )
+    rerank_effective_hybrid_alpha = (
+        float(rerank_override_hybrid_alpha) if rerank_override_hybrid_alpha is not None else 0.0
+    )
     rerank_effective_has_api_key = rerank_override_has_api_key or env_rerank_has_api_key
-    rerank_effective_masked_api_key = rerank_override_masked if rerank_override_has_api_key else env_rerank_masked_api_key
+    rerank_effective_masked_api_key = (
+        rerank_override_masked if rerank_override_has_api_key else env_rerank_masked_api_key
+    )
 
     rerank_config_project_fields = {
         "provider": bool(rerank_override_provider),
@@ -160,16 +179,20 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
     override_azure_deployment = (row.vector_embedding_azure_deployment or "").strip() if row is not None else ""
     override_azure_api_version = (row.vector_embedding_azure_api_version or "").strip() if row is not None else ""
     override_st_model = (row.vector_embedding_sentence_transformers_model or "").strip() if row is not None else ""
+    override_dimension = int(getattr(row, "vector_embedding_expected_dimension", 1536) or 1536)
     override_ciphertext = row.vector_embedding_api_key_ciphertext if row is not None else None
     override_masked = (row.vector_embedding_api_key_masked or "").strip() if row is not None else ""
     override_has_api_key = bool(override_ciphertext)
 
-    env_provider = str(getattr(settings, "vector_embedding_provider", "openai_compatible") or "openai_compatible").strip()
+    env_provider = str(
+        getattr(settings, "vector_embedding_provider", "openai_compatible") or "openai_compatible"
+    ).strip()
     env_base_url = str(settings.vector_embedding_base_url or "").strip()
     env_model = str(settings.vector_embedding_model or "").strip()
     env_azure_deployment = str(getattr(settings, "vector_embedding_azure_deployment", "") or "").strip()
     env_azure_api_version = str(getattr(settings, "vector_embedding_azure_api_version", "") or "").strip()
     env_st_model = str(getattr(settings, "vector_embedding_sentence_transformers_model", "") or "").strip()
+    env_dimension = int(getattr(settings, "vector_embedding_expected_dimension", 1536) or 1536)
     env_api_key = str(settings.vector_embedding_api_key or "").strip()
     env_has_api_key = bool(env_api_key)
     env_masked = mask_api_key(env_api_key) if env_api_key else ""
@@ -188,6 +211,7 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
     effective_azure_deployment = override_azure_deployment or env_azure_deployment
     effective_azure_api_version = override_azure_api_version or env_azure_api_version
     effective_st_model = override_st_model or env_st_model
+    effective_dimension = override_dimension or env_dimension
     effective_has_api_key = override_api_key_ok or env_has_api_key
     effective_masked = override_masked if override_api_key_ok else env_masked
 
@@ -279,6 +303,7 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
         vector_embedding_azure_deployment=override_azure_deployment,
         vector_embedding_azure_api_version=override_azure_api_version,
         vector_embedding_sentence_transformers_model=override_st_model,
+        vector_embedding_expected_dimension=override_dimension,
         vector_embedding_has_api_key=override_has_api_key,
         vector_embedding_masked_api_key=override_masked,
         vector_embedding_effective_provider=effective_provider,
@@ -287,6 +312,7 @@ def _build_settings_payload(*, project_id: str, row: ProjectSettings | None) -> 
         vector_embedding_effective_azure_deployment=effective_azure_deployment,
         vector_embedding_effective_azure_api_version=effective_azure_api_version,
         vector_embedding_effective_sentence_transformers_model=effective_st_model,
+        vector_embedding_effective_expected_dimension=effective_dimension,
         vector_embedding_effective_has_api_key=effective_has_api_key,
         vector_embedding_effective_masked_api_key=effective_masked,
         vector_embedding_effective_disabled_reason=disabled_reason,
@@ -312,6 +338,7 @@ def put_settings(request: Request, db: DbDep, user_id: UserIdDep, project_id: st
     if row is None:
         row = ProjectSettings(project_id=project_id, world_setting="", style_guide="", constraints="")
         db.add(row)
+    embedding_before = embedding_config_fingerprint(row)
 
     if body.world_setting is not None:
         row.world_setting = body.world_setting
@@ -327,7 +354,10 @@ def put_settings(request: Request, db: DbDep, user_id: UserIdDep, project_id: st
         row.auto_update_worldbook_enabled = bool(body.auto_update_worldbook_enabled)
     if "auto_update_characters_enabled" in body.model_fields_set and body.auto_update_characters_enabled is not None:
         row.auto_update_characters_enabled = bool(body.auto_update_characters_enabled)
-    if "auto_update_story_memory_enabled" in body.model_fields_set and body.auto_update_story_memory_enabled is not None:
+    if (
+        "auto_update_story_memory_enabled" in body.model_fields_set
+        and body.auto_update_story_memory_enabled is not None
+    ):
         row.auto_update_story_memory_enabled = bool(body.auto_update_story_memory_enabled)
     if "auto_update_graph_enabled" in body.model_fields_set and body.auto_update_graph_enabled is not None:
         row.auto_update_graph_enabled = bool(body.auto_update_graph_enabled)
@@ -381,10 +411,14 @@ def put_settings(request: Request, db: DbDep, user_id: UserIdDep, project_id: st
             row.vector_rerank_model = body.vector_rerank_model.strip() or None
 
     if "vector_rerank_timeout_seconds" in body.model_fields_set:
-        row.vector_rerank_timeout_seconds = int(body.vector_rerank_timeout_seconds) if body.vector_rerank_timeout_seconds is not None else None
+        row.vector_rerank_timeout_seconds = (
+            int(body.vector_rerank_timeout_seconds) if body.vector_rerank_timeout_seconds is not None else None
+        )
 
     if "vector_rerank_hybrid_alpha" in body.model_fields_set:
-        row.vector_rerank_hybrid_alpha = float(body.vector_rerank_hybrid_alpha) if body.vector_rerank_hybrid_alpha is not None else None
+        row.vector_rerank_hybrid_alpha = (
+            float(body.vector_rerank_hybrid_alpha) if body.vector_rerank_hybrid_alpha is not None else None
+        )
 
     if body.vector_rerank_api_key is not None:
         raw = body.vector_rerank_api_key.strip()
@@ -412,7 +446,17 @@ def put_settings(request: Request, db: DbDep, user_id: UserIdDep, project_id: st
     if body.vector_embedding_azure_api_version is not None:
         row.vector_embedding_azure_api_version = body.vector_embedding_azure_api_version.strip() or None
     if body.vector_embedding_sentence_transformers_model is not None:
-        row.vector_embedding_sentence_transformers_model = body.vector_embedding_sentence_transformers_model.strip() or None
+        row.vector_embedding_sentence_transformers_model = (
+            body.vector_embedding_sentence_transformers_model.strip() or None
+        )
+    if "vector_embedding_expected_dimension" in body.model_fields_set:
+        dimension_value = body.vector_embedding_expected_dimension or 1536
+        dialect = str(getattr(getattr(db.get_bind(), "dialect", None), "name", "") or "")
+        row.vector_embedding_expected_dimension = validate_embedding_expected_dimension(
+            dimension_value,
+            configured_backend=str(getattr(settings, "vector_backend", "auto") or "auto"),
+            dialect_name=dialect,
+        )
     if body.vector_embedding_api_key is not None:
         raw = body.vector_embedding_api_key.strip()
         if not raw:
@@ -428,6 +472,9 @@ def put_settings(request: Request, db: DbDep, user_id: UserIdDep, project_id: st
                     details={"field": "vector_embedding_api_key"},
                 ) from exc
 
+    db.flush()
+    if embedding_config_fingerprint(row) != embedding_before:
+        mark_vector_index_dirty(db, project_id=project_id)
     db.commit()
     db.refresh(row)
     payload = _build_settings_payload(project_id=project_id, row=row)

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.config import settings
+from app.core.errors import AppError
 from app.llm.http_client import get_llm_http_client
 from app.llm.utils import normalize_base_url
 
@@ -41,6 +42,7 @@ class EmbeddingConfig(BaseModel):
     sentence_transformers_device: str | None = None
 
     timeout_seconds: float = Field(default=60.0, ge=1.0, le=120.0)
+    expected_dimension: int = Field(default=1536, ge=1, le=65535)
 
     model_config = ConfigDict(extra="allow")
 
@@ -92,15 +94,21 @@ class EmbeddingConfig(BaseModel):
 
 
 def resolve_embedding_config(embedding: dict[str, Any] | None = None) -> EmbeddingConfig:
-    provider = str((embedding or {}).get("provider") or getattr(settings, "vector_embedding_provider", "") or "").strip()
+    provider = str(
+        (embedding or {}).get("provider") or getattr(settings, "vector_embedding_provider", "") or ""
+    ).strip()
     provider = provider or "openai_compatible"
 
     base_url = (embedding or {}).get("base_url") or settings.vector_embedding_base_url
     model = (embedding or {}).get("model") or settings.vector_embedding_model
     api_key = (embedding or {}).get("api_key") or settings.vector_embedding_api_key
 
-    azure_deployment = (embedding or {}).get("azure_deployment") or getattr(settings, "vector_embedding_azure_deployment", None)
-    azure_api_version = (embedding or {}).get("azure_api_version") or getattr(settings, "vector_embedding_azure_api_version", None)
+    azure_deployment = (embedding or {}).get("azure_deployment") or getattr(
+        settings, "vector_embedding_azure_deployment", None
+    )
+    azure_api_version = (embedding or {}).get("azure_api_version") or getattr(
+        settings, "vector_embedding_azure_api_version", None
+    )
 
     st_model = (embedding or {}).get("sentence_transformers_model") or getattr(
         settings, "vector_embedding_sentence_transformers_model", None
@@ -108,9 +116,14 @@ def resolve_embedding_config(embedding: dict[str, Any] | None = None) -> Embeddi
     st_cache_dir = (embedding or {}).get("sentence_transformers_cache_dir") or getattr(
         settings, "vector_embedding_sentence_transformers_cache_dir", None
     )
-    st_device = (embedding or {}).get("sentence_transformers_device") or getattr(settings, "vector_embedding_sentence_transformers_device", None)
+    st_device = (embedding or {}).get("sentence_transformers_device") or getattr(
+        settings, "vector_embedding_sentence_transformers_device", None
+    )
 
     timeout_seconds = (embedding or {}).get("timeout_seconds")
+    expected_dimension = (embedding or {}).get("expected_dimension") or getattr(
+        settings, "vector_embedding_expected_dimension", 1536
+    )
 
     payload: dict[str, Any] = {
         **(embedding or {}),
@@ -123,6 +136,7 @@ def resolve_embedding_config(embedding: dict[str, Any] | None = None) -> Embeddi
         "sentence_transformers_model": st_model,
         "sentence_transformers_cache_dir": st_cache_dir,
         "sentence_transformers_device": st_device,
+        "expected_dimension": expected_dimension,
     }
     if timeout_seconds is not None:
         payload["timeout_seconds"] = timeout_seconds
@@ -172,6 +186,13 @@ def embedding_enabled_reason(config: EmbeddingConfig) -> tuple[bool, str | None]
 
 def embed_texts(texts: list[str], *, embedding: dict[str, Any] | None = None) -> dict[str, Any]:
     config = resolve_embedding_config(embedding)
+    if not texts:
+        raise AppError(
+            code="EMBEDDING_BATCH_EMPTY",
+            message="Embedding 输入不能为空",
+            status_code=422,
+            details={"expected_dimension": config.expected_dimension},
+        )
     enabled, disabled_reason = embedding_enabled_reason(config)
     if not enabled:
         return {
@@ -208,13 +229,37 @@ def embed_texts(texts: list[str], *, embedding: dict[str, Any] | None = None) ->
             "error": str(exc),
         }
 
+    _validate_embedding_vectors(texts=texts, vectors=vectors, expected_dimension=config.expected_dimension)
     return {
         "enabled": True,
         "disabled_reason": None,
         "provider": config.provider,
         "vectors": vectors,
         "error": None,
+        "dimension": config.expected_dimension,
     }
+
+
+def _validate_embedding_vectors(*, texts: list[str], vectors: list[list[float]], expected_dimension: int) -> None:
+    dimensions = [len(vector) for vector in vectors]
+    if (
+        len(vectors) != len(texts)
+        or not vectors
+        or any(dimension <= 0 for dimension in dimensions)
+        or len(set(dimensions)) != 1
+        or dimensions[0] != int(expected_dimension)
+    ):
+        raise AppError(
+            code="EMBEDDING_DIMENSION_MISMATCH",
+            message="Embedding 向量维度与配置不一致",
+            status_code=422,
+            details={
+                "inputs": len(texts),
+                "vectors": len(vectors),
+                "dimensions": dimensions,
+                "expected_dimension": int(expected_dimension),
+            },
+        )
 
 
 def _embed_openai_compatible(texts: list[str], *, config: EmbeddingConfig) -> list[list[float]]:

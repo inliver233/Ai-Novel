@@ -25,6 +25,7 @@ from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
 from app.models.story_memory import StoryMemory
 from app.services.vector_embedding_overrides import vector_embedding_overrides
+from app.services.embedding_contract import validate_embedding_expected_dimension
 from app.services.vector_rag_service import purge_document_vectors, rebuild_kb_vectors
 
 
@@ -411,6 +412,9 @@ def export_project_bundle(db: Session, *, project_id: str) -> dict[str, Any]:
                 )
                 if settings_row
                 else None,
+                "expected_dimension": int(getattr(settings_row, "vector_embedding_expected_dimension", 1536) or 1536)
+                if settings_row
+                else 1536,
                 "has_api_key": bool(getattr(settings_row, "vector_embedding_api_key_ciphertext", None) or "")
                 if settings_row
                 else False,
@@ -619,6 +623,11 @@ def _import_project_bundle_impl(
     settings_row.vector_embedding_azure_api_version = str(embedding_obj.get("azure_api_version") or "") or None
     settings_row.vector_embedding_sentence_transformers_model = (
         str(embedding_obj.get("sentence_transformers_model") or "") or None
+    )
+    settings_row.vector_embedding_expected_dimension = validate_embedding_expected_dimension(
+        embedding_obj.get("expected_dimension") or 1536,
+        configured_backend=str(getattr(settings, "vector_backend", "auto") or "auto"),
+        dialect_name=str(getattr(getattr(db.get_bind(), "dialect", None), "name", "") or ""),
     )
 
     has_key = bool(embedding_obj.get("has_api_key"))

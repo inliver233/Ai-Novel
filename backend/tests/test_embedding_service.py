@@ -31,6 +31,7 @@ class TestEmbeddingService(unittest.TestCase):
                         "base_url": "http://stubbed-openai.local/v1/",
                         "model": "text-embedding-test",
                         "api_key": "openai-test-SECRET",
+                        "expected_dimension": 2,
                     },
                 )
 
@@ -63,6 +64,7 @@ class TestEmbeddingService(unittest.TestCase):
                         "api_key": "azure-test-SECRET",
                         "azure_deployment": "embd-depl",
                         "azure_api_version": "2023-05-15",
+                        "expected_dimension": 3,
                     },
                 )
 
@@ -96,6 +98,7 @@ class TestEmbeddingService(unittest.TestCase):
                         "base_url": "http://stubbed-gemini.local",
                         "model": "text-embedding-004",
                         "api_key": "google-test-SECRET",
+                        "expected_dimension": 2,
                     },
                 )
 

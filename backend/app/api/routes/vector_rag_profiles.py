@@ -28,6 +28,7 @@ def _to_out(row: VectorRagProfile) -> dict:
         vector_embedding_provider=row.vector_embedding_provider,
         vector_embedding_base_url=row.vector_embedding_base_url,
         vector_embedding_model=row.vector_embedding_model,
+        vector_embedding_expected_dimension=int(row.vector_embedding_expected_dimension or 1536),
         vector_embedding_has_api_key=bool(row.vector_embedding_api_key_ciphertext),
         vector_embedding_masked_api_key=row.vector_embedding_api_key_masked,
         vector_rerank_provider=row.vector_rerank_provider,
@@ -82,6 +83,7 @@ def create_profile(request: Request, db: DbDep, user_id: UserIdDep, body: Vector
         vector_embedding_provider=(body.vector_embedding_provider or "").strip() or None,
         vector_embedding_base_url=(body.vector_embedding_base_url or "").strip() or None,
         vector_embedding_model=(body.vector_embedding_model or "").strip() or None,
+        vector_embedding_expected_dimension=int(body.vector_embedding_expected_dimension),
         vector_rerank_provider=(body.vector_rerank_provider or "").strip() or None,
         vector_rerank_base_url=(body.vector_rerank_base_url or "").strip() or None,
         vector_rerank_model=(body.vector_rerank_model or "").strip() or None,
@@ -110,6 +112,8 @@ def update_profile(
         row.vector_embedding_base_url = (body.vector_embedding_base_url or "").strip() or None
     if "vector_embedding_model" in body.model_fields_set:
         row.vector_embedding_model = (body.vector_embedding_model or "").strip() or None
+    if "vector_embedding_expected_dimension" in body.model_fields_set:
+        row.vector_embedding_expected_dimension = int(body.vector_embedding_expected_dimension or 1536)
     if "vector_embedding_api_key" in body.model_fields_set:
         _set_api_key(row, "vector_embedding", body.vector_embedding_api_key)
 

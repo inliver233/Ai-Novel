@@ -224,3 +224,33 @@ def test_put_settings_creates_row_when_missing() -> None:
         row = db.get(ProjectSettings, "p1")
         assert row is not None
         assert row.world_setting == "从零开始"
+
+
+def test_embedding_identity_change_marks_vector_index_dirty_once() -> None:
+    client, factory = _new_client_and_factory()
+    _seed_project(factory, project_id="p1")
+    _seed_settings(factory, project_id="p1")
+
+    response = client.put(
+        "/api/projects/p1/settings",
+        json={"vector_embedding_model": "new-model", "vector_embedding_expected_dimension": 768},
+    )
+    assert response.status_code == 200
+    payload = response.json()["data"]["settings"]
+    assert payload["vector_embedding_expected_dimension"] == 768
+    assert payload["vector_embedding_effective_expected_dimension"] == 768
+    with factory() as db:
+        row = db.get(ProjectSettings, "p1")
+        assert row is not None
+        assert row.vector_index_dirty is True
+        assert row.vector_dirty_revision == 1
+
+    same = client.put(
+        "/api/projects/p1/settings",
+        json={"vector_embedding_model": "new-model", "vector_embedding_expected_dimension": 768},
+    )
+    assert same.status_code == 200
+    with factory() as db:
+        row = db.get(ProjectSettings, "p1")
+        assert row is not None
+        assert row.vector_dirty_revision == 1

@@ -308,6 +308,7 @@ class Settings(BaseSettings):
     vector_embedding_sentence_transformers_model: OptionalString = None
     vector_embedding_sentence_transformers_cache_dir: OptionalBackendPath = None
     vector_embedding_sentence_transformers_device: OptionalString = None
+    vector_embedding_expected_dimension: Annotated[int, Field(ge=1, le=65535)] = 1536
     vector_backend: VectorBackend = "auto"
     vector_hybrid_enabled: bool = True
     vector_priority_retrieval_enabled: bool = False

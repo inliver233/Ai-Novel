@@ -358,7 +358,10 @@ def rebuild_vector_index(
                 ProjectSettings.project_id == project_id,
                 ProjectSettings.vector_dirty_revision == build_revision,
             )
-            .values(vector_index_dirty=False, last_vector_build_at=utc_now())
+            .values(
+                vector_index_dirty=False,
+                last_vector_build_at=utc_now(),
+            )
         )
         db.commit()
         revision_matched = bool(getattr(cleared, "rowcount", 0))

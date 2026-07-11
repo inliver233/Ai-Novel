@@ -61,7 +61,7 @@ from scripts import migrate_sqlite_to_postgres as sqlite_pg_migrator
 
 
 PRE_CLEANUP_REVISION = "9f3a7c2d1e4b"
-HEAD_REVISION = "c7e2f9a4b6d8"
+HEAD_REVISION = "d1f6a9b3c8e2"
 EXPECTED_DATABASE = "ainovel_schema_ci"
 DESTRUCTIVE_SENTINEL = "I_UNDERSTAND_THIS_DROPS_PUBLIC_SCHEMA"
 RETIRED_TABLES = {
@@ -1008,12 +1008,16 @@ def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: 
             row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"
         ] == beta_before_rebuild
 
-        with patch.object(
-            vector_storage,
-            "embed_texts_with_providers",
-            return_value={"enabled": True, "vectors": [[0.0]]},
+        with (
+            patch.object(
+                vector_storage,
+                "embed_texts_with_providers",
+                return_value={"enabled": True, "vectors": [[0.0]]},
+            ),
+            patch.object(vector_storage, "_get_collection") as chroma_fallback,
+            pytest.raises(AppError) as dimension_error,
         ):
-            failed = vector_storage.rebuild_project(
+            vector_storage.rebuild_project(
                 project_id=project_id,
                 kb_id="beta",
                 chunks=[_chunk("replacement", "must roll back", "replacement")],
@@ -1024,7 +1028,8 @@ def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: 
                     "api_key": "test",
                 },
             )
-        assert failed["skipped"] is True
+        assert dimension_error.value.code == "PGVECTOR_DIMENSION_UNSUPPORTED"
+        chroma_fallback.assert_not_called()
         assert [
             row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"
         ] == beta_before_rebuild
@@ -1137,6 +1142,47 @@ def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: 
         row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"
     ] == beta_before_single_kb
 
+    with patch.object(vector_storage, "SessionLocal", session_factory):
+        vector_storage._pgvector_upsert_chunks(
+            project_id=project_id,
+            kb_id="alpha",
+            chunks=[
+                VectorChunk(
+                    id="alpha-cjk",
+                    text="龙王来到长安城",
+                    metadata={"source": "chapter", "source_id": "alpha-cjk", "chunk_index": 0},
+                )
+            ],
+            embeddings=[_embedding(0.7)],
+        )
+        for query in ("长安", "龙王"):
+            lexical = vector_storage._pgvector_hybrid_fetch(
+                project_id=project_id,
+                kb_id="alpha",
+                query_text=query,
+                query_vec=_embedding(0.0),
+                sources=["chapter"],
+                vector_k=0,
+                fts_k=10,
+                rrf_k=60,
+            )
+            candidate = next(candidate for candidate in lexical["candidates"] if candidate["id"] == "alpha-cjk")
+            assert candidate["metadata"]["hybrid"]["fts_rank"] == 1
+            assert candidate["metadata"]["hybrid"]["fts_score"] > 0
+
+    with (
+        patch.object(vector_storage, "_prefer_pgvector", return_value=True),
+        patch.object(vector_storage, "_get_collection") as chroma_fallback,
+        pytest.raises(AppError, match="1536"),
+    ):
+        vector_storage.ingest_chunks_with_embeddings(
+            project_id=project_id,
+            kb_id="alpha",
+            chunks=[VectorChunk(id="bad-dimension", text="bad", metadata={"source": "chapter"})],
+            embeddings=[[0.0] * 768],
+        )
+    chroma_fallback.assert_not_called()
+
     with engine.begin() as connection:
         connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
         plan = connection.execute(
@@ -1147,6 +1193,14 @@ def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: 
             {"pid": project_id},
         ).scalar_one()
         assert "ix_vector_chunks_project_kb_source" in str(plan)
+        trigram_plan = connection.execute(
+            sa.text(
+                "EXPLAIN (FORMAT JSON) SELECT id FROM vector_chunks "
+                "WHERE project_id = :pid AND kb_id = 'alpha' AND text_md ILIKE '%龙王来%'"
+            ),
+            {"pid": project_id},
+        ).scalar_one()
+        assert "ix_vector_chunks_text_md_trgm" in str(trigram_plan)
 
 
 def _assert_postgres_migrator_digest_contract(engine: sa.Engine) -> None:
@@ -1482,7 +1536,15 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
                 "ix_vector_chunks_project_kb_source",
                 "ix_vector_chunks_content_tsv",
                 "ix_vector_chunks_embedding_ivfflat",
+                "ix_vector_chunks_text_md_trgm",
             }.issubset(vector_indexes)
+            assert connection.execute(
+                sa.text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')")
+            ).scalar_one()
+            project_settings_columns = {column["name"]: column for column in inspector.get_columns("project_settings")}
+            assert project_settings_columns["vector_embedding_expected_dimension"]["nullable"] is False
+            profile_columns = {column["name"]: column for column in inspector.get_columns("vector_rag_profiles")}
+            assert profile_columns["vector_embedding_expected_dimension"]["nullable"] is False
             migrated_legacy = connection.execute(
                 sa.text(
                     """

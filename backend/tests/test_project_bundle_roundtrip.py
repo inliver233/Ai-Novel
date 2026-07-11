@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
+from app.core.errors import AppError
 from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.knowledge_base import KnowledgeBase
@@ -122,6 +123,38 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
             self.assertEqual(_count(observer, select(PromptPreset)), 0)
             self.assertEqual(_count(observer, select(PromptBlock)), 0)
             self.assertEqual(_count(observer, select(KnowledgeBase)), 0)
+
+    def test_bundle_dimension_contract_is_atomic_and_backend_aware(self) -> None:
+        bundle = {
+            "schema_version": "project_bundle_v1",
+            "project": {"name": "Dimension Bundle"},
+            "settings": {"vector_embedding": {"expected_dimension": 768}},
+        }
+        with self.SessionLocal() as db:
+            db.add(User(id="u1", display_name="User 1", is_admin=False))
+            db.commit()
+        with patch.object(import_export_service.settings, "vector_backend", "chroma"), self.SessionLocal() as db:
+            imported = import_project_bundle(db, owner_user_id="u1", bundle=bundle)
+        self.assertTrue(imported["ok"])
+        with self.SessionLocal() as db:
+            row = db.get(ProjectSettings, imported["project_id"])
+            self.assertIsNotNone(row)
+            self.assertEqual(row.vector_embedding_expected_dimension, 768)
+
+        rejected_bundle = {
+            **bundle,
+            "project": {"name": "Rejected Dimension Bundle"},
+        }
+        with (
+            patch.object(import_export_service.settings, "vector_backend", "pgvector"),
+            self.SessionLocal() as db,
+            self.assertRaises(AppError),
+        ):
+            import_project_bundle(db, owner_user_id="u1", bundle=rejected_bundle)
+        with self.SessionLocal() as db:
+            self.assertIsNone(
+                db.execute(select(Project).where(Project.name == "Rejected Dimension Bundle")).scalar_one_or_none()
+            )
 
     def test_import_vector_preparation_failure_is_degraded_after_commit(self) -> None:
         bundle = {"schema_version": "project_bundle_v1", "project": {"name": "Vector Safe"}}

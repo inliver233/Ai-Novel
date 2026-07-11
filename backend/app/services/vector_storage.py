@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.config import settings
+from app.core.errors import AppError
 from app.core.logging import exception_log_fields, log_event
 from app.db.session import SessionLocal, engine
 from app.services.embedding_service import (
@@ -117,6 +118,32 @@ def _vector_enabled_reason(*, embedding: dict[str, str | None] | None = None) ->
 def _normalize_kb_id(kb_id: str | None) -> str:
     raw = str(kb_id or "").strip()
     return raw or "default"
+
+
+def _validate_embedding_dimensions(embeddings: list[list[float]], *, require_pg_dimension: bool) -> None:
+    dimensions = [len(vector) for vector in embeddings]
+    if any(dimension <= 0 for dimension in dimensions) or len(set(dimensions)) > 1:
+        raise AppError(
+            code="EMBEDDING_DIMENSION_MISMATCH",
+            message="Embedding 批次向量维度不一致",
+            status_code=422,
+            details={"dimensions": dimensions},
+        )
+    if require_pg_dimension and dimensions and dimensions[0] != 1536:
+        raise AppError(
+            code="PGVECTOR_DIMENSION_UNSUPPORTED",
+            message="PostgreSQL pgvector 后端仅支持 1536 维 embedding",
+            status_code=422,
+            details={"actual_dimension": dimensions[0], "supported_dimension": 1536},
+        )
+
+
+def _collection_embedding_dimension(collection: Any) -> int | None:
+    snapshot = collection.get(include=["embeddings"], limit=1)
+    embeddings = snapshot.get("embeddings")
+    if embeddings is None or len(embeddings) == 0:
+        return None
+    return len(embeddings[0])
 
 
 def _legacy_collection_name(project_id: str) -> str:
@@ -395,7 +422,15 @@ def _pgvector_hybrid_fetch(
 
     kb = _normalize_kb_id(kb_id)
     where_sql = "project_id = :project_id AND kb_id = :kb_id"
-    base_params: dict[str, Any] = {"project_id": project_id, "kb_id": kb, "qvec": qvec, "qtext": qtext}
+    is_cjk = bool(re.search(r"[\u3400-\u9fff]", qtext))
+    escaped = qtext.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    base_params: dict[str, Any] = {
+        "project_id": project_id,
+        "kb_id": kb,
+        "qvec": qvec,
+        "qtext": qtext,
+        "qpattern": f"%{escaped}%",
+    }
     if len(sources) == 1:
         where_sql += " AND source = :source"
         base_params["source"] = sources[0]
@@ -412,12 +447,18 @@ def _pgvector_hybrid_fetch(
         LIMIT :limit
         """.strip()
     )
+    if is_cjk:
+        lexical_score_sql = "GREATEST(similarity(text_md, :qtext), word_similarity(:qtext, text_md))"
+        lexical_where_sql = "(text_md ILIKE :qpattern ESCAPE '\\' OR text_md %> :qtext)"
+    else:
+        lexical_score_sql = "ts_rank_cd(content_tsv, plainto_tsquery('simple', :qtext))"
+        lexical_where_sql = "content_tsv @@ plainto_tsquery('simple', :qtext)"
     fts_sql = text(
         f"""
-        SELECT id, ts_rank_cd(content_tsv, plainto_tsquery('simple', :qtext)) AS score
+        SELECT id, {lexical_score_sql} AS score
         FROM {_PGVECTOR_TABLE}
-        WHERE {where_sql} AND content_tsv @@ plainto_tsquery('simple', :qtext)
-        ORDER BY score DESC
+        WHERE {where_sql} AND {lexical_where_sql}
+        ORDER BY score DESC, id ASC
         LIMIT :limit
         """.strip()
     )
@@ -447,7 +488,7 @@ def _pgvector_hybrid_fetch(
                 text_md,
                 metadata_json,
                 (embedding <=> (:qvec)::vector) AS distance,
-                ts_rank_cd(content_tsv, plainto_tsquery('simple', :qtext)) AS fts_score
+                {lexical_score_sql} AS fts_score
             FROM {_PGVECTOR_TABLE}
             WHERE project_id = :project_id
               AND kb_id = :kb_id
@@ -575,6 +616,7 @@ def ingest_chunks_with_embeddings(
 ) -> dict[str, Any]:
     if len(chunks) != len(embeddings):
         raise ValueError("chunks and embeddings must have identical lengths")
+    _validate_embedding_dimensions(embeddings, require_pg_dimension=_prefer_pgvector())
     if not chunks:
         return {
             "enabled": True,
@@ -603,6 +645,8 @@ def ingest_chunks_with_embeddings(
                 backend="pgvector",
             )
             return {**out, "timings_ms": {"upsert": write_ms}, "backend": "pgvector"}
+        except AppError:
+            raise
         except Exception as exc:  # pragma: no cover - env dependent
             log_event(
                 logger,
@@ -614,6 +658,12 @@ def ingest_chunks_with_embeddings(
                 fallback="chroma",
                 error_type=type(exc).__name__,
             )
+            raise AppError(
+                code="PGVECTOR_WRITE_FAILED",
+                message="pgvector 写入失败",
+                status_code=500,
+                details={"error_type": type(exc).__name__},
+            ) from exc
 
     try:
         collection = _get_collection(project_id=project_id, kb_id=kb_id)
@@ -626,6 +676,14 @@ def ingest_chunks_with_embeddings(
             "ingested": 0,
         }
 
+    existing_dimension = _collection_embedding_dimension(collection) if embeddings else None
+    if existing_dimension is not None and embeddings and existing_dimension != len(embeddings[0]):
+        raise AppError(
+            code="CHROMA_DIMENSION_MISMATCH",
+            message="Chroma collection 向量维度与当前 embedding 配置不一致，请先重建索引",
+            status_code=409,
+            details={"existing_dimension": existing_dimension, "actual_dimension": len(embeddings[0])},
+        )
     write_start = time.perf_counter()
     collection.upsert(ids=ids, documents=texts, metadatas=metadatas, embeddings=embeddings)
     write_ms = int((time.perf_counter() - write_start) * 1000)
@@ -693,6 +751,7 @@ def rebuild_project_with_embeddings(
 ) -> dict[str, Any]:
     if len(chunks) != len(embeddings):
         raise ValueError("chunks and embeddings must have identical lengths")
+    _validate_embedding_dimensions(embeddings, require_pg_dimension=_prefer_pgvector())
 
     if _prefer_pgvector():
         try:
@@ -724,6 +783,8 @@ def rebuild_project_with_embeddings(
                 "ingested": len(chunks),
                 "backend": "pgvector",
             }
+        except AppError:
+            raise
         except Exception as exc:  # pragma: no cover - env dependent
             log_event(
                 logger,
@@ -734,15 +795,12 @@ def rebuild_project_with_embeddings(
                 backend="pgvector",
                 error_type=type(exc).__name__,
             )
-            return {
-                "enabled": True,
-                "skipped": True,
-                "disabled_reason": "pgvector_rebuild_failed",
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-                "rebuilt": 0,
-                "backend": "pgvector",
-            }
+            raise AppError(
+                code="PGVECTOR_REBUILD_FAILED",
+                message="pgvector 重建失败",
+                status_code=500,
+                details={"error_type": type(exc).__name__},
+            ) from exc
 
     snapshots: dict[str, dict[str, Any]] = {}
     try:

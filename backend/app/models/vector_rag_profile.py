@@ -20,6 +20,9 @@ class VectorRagProfile(Base):
     vector_embedding_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     vector_embedding_base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     vector_embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    vector_embedding_expected_dimension: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1536, server_default="1536"
+    )
     vector_embedding_api_key_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     vector_embedding_api_key_masked: Mapped[str | None] = mapped_column(String(64), nullable=True)
 

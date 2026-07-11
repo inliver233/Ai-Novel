@@ -634,7 +634,10 @@ def run_project_task(*, task_id: str) -> str:
                         ProjectSettings.project_id == project_id,
                         ProjectSettings.vector_dirty_revision == build_revision,
                     )
-                    .values(vector_index_dirty=False, last_vector_build_at=utc_now())
+                    .values(
+                        vector_index_dirty=False,
+                        last_vector_build_at=utc_now(),
+                    )
                 )
                 revision_matched = bool(getattr(cleared, "rowcount", 0))
                 if revision_matched:

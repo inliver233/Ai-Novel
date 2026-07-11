@@ -7,10 +7,12 @@ import time
 from typing import Any
 
 from app.core.config import settings
+from app.core.errors import AppError
 from app.core.logging import log_event
 from app.services.context_budget_observability import build_budget_observability
 from app.services.embedding_service import embed_texts as embed_texts_with_providers
 from app.services.vector_storage import (
+    _collection_embedding_dimension,
     _get_collection,
     _normalize_kb_id,
     _pgvector_hybrid_query,
@@ -465,7 +467,7 @@ def vector_rag_status(
     *,
     project_id: str,
     sources: list[VectorSource] | None = None,
-    embedding: dict[str, str | None] | None = None,
+    embedding: dict[str, Any] | None = None,
     rerank: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     sources = sources or list(_ALL_SOURCES)
@@ -575,7 +577,7 @@ def query_project(
     kb_ids: list[str] | None = None,
     query_text: str,
     sources: list[VectorSource] | None = None,
-    embedding: dict[str, str | None] | None = None,
+    embedding: dict[str, Any] | None = None,
     rerank: dict[str, Any] | None = None,
     super_sort: dict[str, Any] | None = None,
     kb_weights: dict[str, float] | None = None,
@@ -720,6 +722,13 @@ def query_project(
     top_k = int(settings.vector_max_candidates or 20)
     pgvector_error: str | None = None
     if _prefer_pgvector() and bool(getattr(settings, "vector_hybrid_enabled", True)):
+        if len(qvec) != 1536:
+            raise AppError(
+                code="PGVECTOR_DIMENSION_UNSUPPORTED",
+                message="PostgreSQL pgvector 查询仅支持 1536 维 embedding",
+                status_code=422,
+                details={"actual_dimension": len(qvec), "supported_dimension": 1536},
+            )
         query_start = time.perf_counter()
         try:
             per_kb_hybrid: dict[str, dict[str, Any]] = {}
@@ -920,8 +929,15 @@ def query_project(
                     },
                 },
             }
+        except AppError:
+            raise
         except Exception as exc:  # pragma: no cover - env dependent
-            pgvector_error = type(exc).__name__
+            raise AppError(
+                code="PGVECTOR_QUERY_FAILED",
+                message="pgvector 查询失败",
+                status_code=500,
+                details={"error_type": type(exc).__name__},
+            ) from exc
 
     per_kb: dict[str, Any] = {}
     per_kb_candidates: dict[str, list[dict[str, Any]]] = {}
@@ -946,6 +962,14 @@ def query_project(
             continue
 
         query_start = time.perf_counter()
+        existing_dimension = _collection_embedding_dimension(collection)
+        if existing_dimension is not None and existing_dimension != len(qvec):
+            raise AppError(
+                code="CHROMA_DIMENSION_MISMATCH",
+                message="Chroma collection 向量维度与当前 embedding 配置不一致，请先重建索引",
+                status_code=409,
+                details={"existing_dimension": existing_dimension, "query_dimension": len(qvec)},
+            )
         where: dict[str, Any] | None = None
         if len(sources) == 1:
             where = {"source": sources[0]}

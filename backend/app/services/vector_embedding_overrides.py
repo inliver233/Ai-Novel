@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from typing import Any
+
 from app.core.secrets import SecretCryptoError, decrypt_secret
 from app.models.project_settings import ProjectSettings
+from app.services.embedding_service import resolve_embedding_config
 
 
-def vector_embedding_overrides(row: ProjectSettings | None) -> dict[str, str | None]:
+def _base_embedding_overrides(row: ProjectSettings | None) -> dict[str, Any]:
     """
     Resolve per-project embedding overrides from ProjectSettings.
 
@@ -15,7 +20,7 @@ def vector_embedding_overrides(row: ProjectSettings | None) -> dict[str, str | N
     if row is None:
         return {}
 
-    out: dict[str, str | None] = {}
+    out: dict[str, Any] = {}
 
     provider = str(getattr(row, "vector_embedding_provider", "") or "").strip()
     if provider:
@@ -41,6 +46,8 @@ def vector_embedding_overrides(row: ProjectSettings | None) -> dict[str, str | N
     if st_model:
         out["sentence_transformers_model"] = st_model
 
+    out["expected_dimension"] = int(getattr(row, "vector_embedding_expected_dimension", 1536) or 1536)
+
     if row.vector_embedding_api_key_ciphertext:
         try:
             api_key = decrypt_secret(row.vector_embedding_api_key_ciphertext).strip()
@@ -51,3 +58,23 @@ def vector_embedding_overrides(row: ProjectSettings | None) -> dict[str, str | N
 
     return out
 
+
+def embedding_config_fingerprint(row: ProjectSettings | None) -> str:
+    config = resolve_embedding_config(_base_embedding_overrides(row))
+    api_key_hash = hashlib.sha256(str(config.api_key or "").encode("utf-8")).hexdigest()
+    identity = {
+        "provider": config.provider,
+        "base_url": str(config.base_url or "").rstrip("/"),
+        "model": config.model,
+        "azure_deployment": config.azure_deployment,
+        "azure_api_version": config.azure_api_version,
+        "sentence_transformers_model": config.sentence_transformers_model,
+        "expected_dimension": int(config.expected_dimension),
+        "api_key_sha256": api_key_hash,
+    }
+    canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def vector_embedding_overrides(row: ProjectSettings | None) -> dict[str, Any]:
+    return _base_embedding_overrides(row)

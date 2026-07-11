@@ -117,14 +117,20 @@ def test_pgvector_rebuild_rolls_back_delete_when_upsert_fails(monkeypatch) -> No
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("write failed")),
     )
 
-    result = vector_storage.rebuild_project(
-        project_id="p1",
-        kb_id="kb-a",
-        chunks=[VectorChunk(id="c1", text="text", metadata={"source": "outline"})],
-        embedding={"provider": "openai", "base_url": "https://embedding.invalid", "model": "test", "api_key": "test"},
-    )
+    with pytest.raises(AppError) as exc_info:
+        vector_storage.rebuild_project(
+            project_id="p1",
+            kb_id="kb-a",
+            chunks=[VectorChunk(id="c1", text="text", metadata={"source": "outline"})],
+            embedding={
+                "provider": "openai",
+                "base_url": "https://embedding.invalid",
+                "model": "test",
+                "api_key": "test",
+            },
+        )
 
-    assert result["skipped"] is True
+    assert exc_info.value.code == "PGVECTOR_REBUILD_FAILED"
     db.execute.assert_called_once()
     db.commit.assert_not_called()
     db.rollback.assert_called_once()
