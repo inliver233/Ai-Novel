@@ -6,6 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
+import { QueryErrorCard } from "../components/atelier/QueryErrorCard";
 import { PaperContent } from "../components/layout/AppShell";
 import { ChapterVirtualList } from "../components/writing/ChapterVirtualList";
 import { Drawer } from "../components/ui/Drawer";
@@ -48,7 +49,7 @@ export function PreviewPage() {
     bumpLocal();
   }, [bumpLocal, projectId]);
 
-  const chapterListQuery = useChapterMetaList(projectId);
+  const chapterListQuery = useChapterMetaList(projectId, { toastOnError: false });
   const chapters = chapterListQuery.chapters as ChapterListItem[];
   const sortedChapters = useMemo(() => [...chapters].sort((a, b) => (a.number ?? 0) - (b.number ?? 0)), [chapters]);
   const doneCount = useMemo(
@@ -96,10 +97,31 @@ export function PreviewPage() {
     setMobileListOpen(false);
   }, []);
 
-  const { chapter: activeChapter, loading: loadingChapter } = useChapterDetail(effectiveActiveId, {
+  const chapterDetailQuery = useChapterDetail(effectiveActiveId, {
     enabled: Boolean(effectiveActiveId),
+    toastOnError: false,
   });
+  const activeChapter = chapterDetailQuery.chapter;
+  const loadingChapter = chapterDetailQuery.loading;
   const activeChapterSummary = activeChapter ?? activeChapterMeta;
+  const refreshChapterList = chapterListQuery.refresh;
+  const refreshActiveChapter = chapterDetailQuery.refresh;
+
+  const reloadChapterList = useCallback(async () => {
+    try {
+      await refreshChapterList();
+    } catch {
+      // The query snapshot owns retry errors; keep the click handler rejection-contained.
+    }
+  }, [refreshChapterList]);
+
+  const reloadActiveChapter = useCallback(async () => {
+    try {
+      await refreshActiveChapter();
+    } catch {
+      // The query snapshot owns retry errors; keep the click handler rejection-contained.
+    }
+  }, [refreshActiveChapter]);
 
   useEffect(() => {
     if (prevChapter) void chapterStore.prefetchChapterDetail(prevChapter.id);
@@ -173,10 +195,31 @@ export function PreviewPage() {
     </div>
   );
 
-  if (!chapterListQuery.hasLoaded && chapterListQuery.loading) return <div className="text-subtext">加载中...</div>;
+  if (!chapterListQuery.hasData && chapterListQuery.loading) return <div className="text-subtext">加载中...</div>;
+  if (!chapterListQuery.hasData && chapterListQuery.error) {
+    return (
+      <QueryErrorCard
+        error={chapterListQuery.error}
+        onRetry={() => void reloadChapterList()}
+        title="章节列表加载失败"
+      />
+    );
+  }
+
+  const chapterListRefreshError = chapterListQuery.hasData ? chapterListQuery.error : null;
+  const chapterDetailBlockingError = !chapterDetailQuery.hasData ? chapterDetailQuery.error : null;
+  const chapterDetailRefreshError = chapterDetailQuery.hasData ? chapterDetailQuery.error : null;
 
   return (
     <PaperContent className="grid gap-3 pb-[120px] sm:gap-4 sm:pb-24">
+      {chapterListRefreshError ? (
+        <QueryErrorCard
+          error={chapterListRefreshError}
+          onRetry={() => void reloadChapterList()}
+          title="章节列表刷新失败"
+          variant="warning"
+        />
+      ) : null}
       {/* PC 端工具栏 */}
       <div className="hidden items-center justify-between gap-3 sm:flex">
         <div className="flex items-center gap-2">
@@ -277,11 +320,31 @@ export function PreviewPage() {
                 </div>
 
                 <div className="mx-auto max-w-[720px] px-5 py-8 sm:px-12 sm:py-10">
-                  <div className="atelier-reader">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {loadingChapter ? "_(loading...)_" : activeChapter?.content_md || "_（空）_"}
-                    </ReactMarkdown>
-                  </div>
+                  {chapterDetailBlockingError ? (
+                    <QueryErrorCard
+                      error={chapterDetailBlockingError}
+                      onRetry={() => void reloadActiveChapter()}
+                      title="章节正文加载失败"
+                    />
+                  ) : !chapterDetailQuery.hasLoaded || (loadingChapter && !chapterDetailQuery.hasData) ? (
+                    <div className="text-sm text-subtext">章节加载中...</div>
+                  ) : activeChapter ? (
+                    <div className="grid gap-4">
+                      {chapterDetailRefreshError ? (
+                        <QueryErrorCard
+                          error={chapterDetailRefreshError}
+                          onRetry={() => void reloadActiveChapter()}
+                          title="章节正文刷新失败"
+                          variant="warning"
+                        />
+                      ) : null}
+                      <div className="atelier-reader">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeChapter.content_md || "_（空）_"}</ReactMarkdown>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-subtext">暂无可预览内容</div>
+                  )}
                 </div>
               </>
             ) : (

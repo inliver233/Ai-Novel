@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   reload: vi.fn(async () => undefined),
   error: null as ApiError | null,
   capturedWizardBarProps: null as Record<string, unknown> | null,
+  chapterMetaOptions: null as Record<string, unknown> | null,
+  chapterDetailOptions: null as Record<string, unknown> | null,
 }));
 
 vi.mock("@/hooks/useWizardProgress", () => ({
@@ -21,10 +23,32 @@ vi.mock("@/hooks/useWizardProgress", () => ({
   }),
 }));
 vi.mock("@/hooks/useChapterMetaList", () => ({
-  useChapterMetaList: () => ({ chapters: [], hasLoaded: true, loading: false }),
+  useChapterMetaList: (_projectId: string, options: Record<string, unknown>) => {
+    mocks.chapterMetaOptions = options;
+    return {
+      chapters: [],
+      error: null,
+      hasData: true,
+      hasLoaded: true,
+      loading: false,
+      refresh: vi.fn(async () => []),
+      stale: false,
+    };
+  },
 }));
 vi.mock("@/hooks/useChapterDetail", () => ({
-  useChapterDetail: () => ({ chapter: null, loading: false }),
+  useChapterDetail: (_chapterId: string | null, options: Record<string, unknown>) => {
+    mocks.chapterDetailOptions = options;
+    return {
+      chapter: null,
+      error: null,
+      hasData: false,
+      hasLoaded: false,
+      loading: false,
+      refresh: vi.fn(async () => null),
+      stale: false,
+    };
+  },
 }));
 vi.mock("react-router-dom", () => ({
   useParams: () => ({ projectId: "project-1" }),
@@ -62,5 +86,7 @@ describe("PreviewPage wizard error wiring", () => {
     const captured = mocks.capturedWizardBarProps as Record<string, unknown> | null;
     expect(captured?.loadError).toBe(mocks.error);
     expect(captured?.onRetryLoad).toBe(mocks.reload);
+    expect(mocks.chapterMetaOptions).toMatchObject({ toastOnError: false });
+    expect(mocks.chapterDetailOptions).toMatchObject({ toastOnError: false });
   });
 });

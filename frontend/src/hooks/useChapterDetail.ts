@@ -16,10 +16,11 @@ const EMPTY_SNAPSHOT = Object.freeze({
 
 export function useChapterDetail(
   chapterId: string | null | undefined,
-  options: { enabled?: boolean } = {},
+  options: { enabled?: boolean; toastOnError?: boolean } = {},
 ): {
   chapter: ChapterDetail | null;
   error: ApiError | null;
+  hasData: boolean;
   hasLoaded: boolean;
   loading: boolean;
   refresh: () => Promise<ChapterDetail | null>;
@@ -46,7 +47,7 @@ export function useChapterDetail(
 
   useEffect(() => {
     if (!chapterId || !enabled) return;
-    void chapterStore.loadChapterDetail(chapterId);
+    void chapterStore.loadChapterDetail(chapterId).catch(() => undefined);
   }, [chapterId, enabled]);
 
   useEffect(() => {
@@ -54,11 +55,12 @@ export function useChapterDetail(
       lastErrorKeyRef.current = null;
       return;
     }
+    if (!(options.toastOnError ?? true)) return;
     const errorKey = `${snapshot.error.code}:${snapshot.error.requestId}:${snapshot.error.message}`;
     if (lastErrorKeyRef.current === errorKey) return;
     lastErrorKeyRef.current = errorKey;
     toastApiError(toast, snapshot.error);
-  }, [snapshot.error, toast]);
+  }, [options.toastOnError, snapshot.error, toast]);
 
   const refresh = useCallback(async () => {
     if (!chapterId || !enabled) return null;
@@ -68,6 +70,7 @@ export function useChapterDetail(
   return {
     chapter: snapshot.data,
     error: snapshot.error,
+    hasData: snapshot.data !== null,
     hasLoaded: snapshot.hasLoaded,
     loading: snapshot.loading,
     refresh,
