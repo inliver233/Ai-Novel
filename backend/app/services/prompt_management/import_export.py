@@ -5,14 +5,14 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.routes.prompt_route_helpers import (
+from app.services.prompt_management.crud import (
     _build_prompt_block_row,
     _build_prompt_preset_row,
     _list_prompt_block_rows,
     _list_prompt_preset_rows,
 )
-from app.api.routes.prompt_route_mappers import _build_prompt_preset_export_model, _preset_to_out
-from app.api.routes.prompt_route_models import PromptImportAllState
+from app.services.prompt_management.mappers import _build_prompt_preset_export_model, _preset_to_out
+from app.services.prompt_management.models import _PromptImportAllState
 from app.core.errors import AppError
 from app.db.utils import utc_now
 from app.models.prompt_block import PromptBlock
@@ -64,7 +64,7 @@ def _apply_prompt_import_all_item(
     dry_run: bool,
     item: object,
     matches: list[PromptPreset],
-    state: PromptImportAllState,
+    state: _PromptImportAllState,
 ) -> None:
     key = (str(getattr(item.preset, "name", "") or "").strip(), str(getattr(item.preset, "scope", "") or "").strip())
     if len(matches) > 1:
@@ -127,7 +127,7 @@ def _build_prompt_import_all_payload(
         key = (str(row.name or "").strip(), str(row.scope or "").strip())
         by_key.setdefault(key, []).append(row)
 
-    state = PromptImportAllState()
+    state = _PromptImportAllState()
     for item in body.presets:
         key = (str(item.preset.name or "").strip(), str(item.preset.scope or "").strip())
         _apply_prompt_import_all_item(

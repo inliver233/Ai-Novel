@@ -7,13 +7,17 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes.prompt_route_helpers import (
-    _build_prompt_preset_list_payload,
-    _build_prompt_preset_resources_payload,
-    _reorder_prompt_blocks_payload,
+from app.services.prompt_management.app import (
+    build_prompt_import_all_payload,
+    build_prompt_preset_list_payload,
+    build_prompt_preset_resources_payload,
+    build_prompt_preview_response,
+    reorder_prompt_blocks_payload,
 )
-from app.api.routes.prompt_route_import_export import _build_prompt_import_all_payload
-from app.api.routes.prompt_route_preview import _build_prompt_preview_response
+from app.services.prompt_management import app as prompt_app
+from app.services.prompt_management import crud as prompt_crud
+from app.services.prompt_management import import_export as prompt_import_export
+from app.services.prompt_management import preview as prompt_preview
 from app.core.errors import AppError
 from app.db.base import Base
 from app.models.llm_preset import LLMPreset
@@ -24,7 +28,35 @@ from app.models.user import User
 from app.schemas.prompt_presets import PromptPresetImportAllRequest, PromptPreviewRequest
 
 
-class TestPromptRouteHelpers(unittest.TestCase):
+class TestPromptManagementService(unittest.TestCase):
+    def test_facade_exposes_exactly_the_19_route_entrypoints(self) -> None:
+        expected = {
+            "build_prompt_import_all_payload": prompt_import_export._build_prompt_import_all_payload,
+            "build_prompt_preset_detail_payload": prompt_crud._build_prompt_preset_detail_payload,
+            "build_prompt_preset_export_payload": prompt_import_export._build_prompt_preset_export_payload,
+            "build_prompt_preset_list_payload": prompt_crud._build_prompt_preset_list_payload,
+            "build_prompt_preset_resources_payload": prompt_crud._build_prompt_preset_resources_payload,
+            "build_prompt_presets_export_all_payload": prompt_import_export._build_prompt_presets_export_all_payload,
+            "build_prompt_preview_response": prompt_preview._build_prompt_preview_response,
+            "create_prompt_block_payload": prompt_crud._create_prompt_block_payload,
+            "create_prompt_preset_payload": prompt_crud._create_prompt_preset_payload,
+            "delete_prompt_block_payload": prompt_crud._delete_prompt_block_payload,
+            "delete_prompt_preset_payload": prompt_crud._delete_prompt_preset_payload,
+            "import_prompt_preset_payload": prompt_import_export._import_prompt_preset_payload,
+            "reorder_prompt_blocks_payload": prompt_crud._reorder_prompt_blocks_payload,
+            "require_prompt_block_with_preset": prompt_crud._require_prompt_block_with_preset,
+            "require_prompt_preset": prompt_crud._require_prompt_preset,
+            "reset_prompt_block_payload": prompt_crud._reset_prompt_block_payload,
+            "reset_prompt_preset_payload": prompt_crud._reset_prompt_preset_payload,
+            "update_prompt_block_payload": prompt_crud._update_prompt_block_payload,
+            "update_prompt_preset_payload": prompt_crud._update_prompt_preset_payload,
+        }
+        self.assertEqual(set(prompt_app.__all__), set(expected))
+        self.assertEqual(len(prompt_app.__all__), 19)
+        for name, implementation in expected.items():
+            with self.subTest(name=name):
+                self.assertIs(getattr(prompt_app, name), implementation)
+
     def setUp(self) -> None:
         engine = create_engine(
             "sqlite:///:memory:",
@@ -51,11 +83,11 @@ class TestPromptRouteHelpers(unittest.TestCase):
 
     def test_list_payload_ensures_baseline_and_resource_join(self) -> None:
         with self.SessionLocal() as db:
-            payload = _build_prompt_preset_list_payload(db, project_id="p1")
+            payload = build_prompt_preset_list_payload(db, project_id="p1")
             presets = payload["presets"]
             self.assertTrue(any(str(item.get("resource_key") or "") == "plan_chapter_v1" for item in presets))
 
-            resource_payload = _build_prompt_preset_resources_payload(db, project_id="p1")
+            resource_payload = build_prompt_preset_resources_payload(db, project_id="p1")
             resources = resource_payload["resources"]
             plan_resource = next((item for item in resources if item.get("key") == "plan_chapter_v1"), None)
             self.assertIsNotNone(plan_resource)
@@ -113,10 +145,10 @@ class TestPromptRouteHelpers(unittest.TestCase):
             db.commit()
 
             with self.assertRaises(AppError) as ctx:
-                _reorder_prompt_blocks_payload(db, preset=preset, ordered_block_ids=["block-1"])
+                reorder_prompt_blocks_payload(db, preset=preset, ordered_block_ids=["block-1"])
             self.assertIn("expected=2 got=1", str(ctx.exception.message))
 
-            payload = _reorder_prompt_blocks_payload(
+            payload = reorder_prompt_blocks_payload(
                 db,
                 preset=preset,
                 ordered_block_ids=["block-2", "block-1"],
@@ -229,7 +261,7 @@ class TestPromptRouteHelpers(unittest.TestCase):
                     ],
                 }
             )
-            dry_run_payload = _build_prompt_import_all_payload(db, project_id="p1", body=dry_run)
+            dry_run_payload = build_prompt_import_all_payload(db, project_id="p1", body=dry_run)
             self.assertTrue(dry_run_payload["dry_run"])
             self.assertEqual(dry_run_payload["created"], 1)
             self.assertEqual(dry_run_payload["updated"], 1)
@@ -237,7 +269,7 @@ class TestPromptRouteHelpers(unittest.TestCase):
             self.assertEqual(len(dry_run_payload["conflicts"]), 1)
 
             apply_body = dry_run.model_copy(update={"dry_run": False})
-            apply_payload = _build_prompt_import_all_payload(db, project_id="p1", body=apply_body)
+            apply_payload = build_prompt_import_all_payload(db, project_id="p1", body=apply_body)
             self.assertFalse(apply_payload["dry_run"])
 
         with self.SessionLocal() as db:
@@ -292,7 +324,7 @@ class TestPromptRouteHelpers(unittest.TestCase):
                     "values": {"name": "Alice"},
                 }
             )
-            payload = _build_prompt_preview_response(db, project_id="p1", request_id="rid-test", body=body)
+            payload = build_prompt_preview_response(db, project_id="p1", request_id="rid-test", body=body)
 
         preview = payload["preview"]
         self.assertEqual(preview["preset_id"], "preview-preset")

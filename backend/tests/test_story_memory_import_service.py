@@ -1,20 +1,12 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes.memory_route_models import StoryMemoryImportV1Item
-from app.api.routes.memory_route_story_helpers import (
-    _ensure_story_memory_rebuild_dirty,
-    _import_story_memories_payload,
-    _validate_story_memory_import_schema_version,
-)
-from app.api.routes.memory_route_story_mappers import _build_story_memory_import_row
 from app.core.errors import AppError
 from app.db.base import Base
 from app.models.chapter import Chapter
@@ -23,17 +15,12 @@ from app.models.project import Project
 from app.models.project_settings import ProjectSettings
 from app.models.story_memory import StoryMemory
 from app.models.user import User
+from app.schemas.story_memory_import import StoryMemoryImportV1Item
+from app.services.story_memory_import_service import import_story_memories
 
-UTC = timezone.utc
 
-
-class TestMemoryRouteStoryHelpers(unittest.TestCase):
-    """story_memory 导入路径与重建脏标记的活功能测试。
-
-    注：历史版本还覆盖了 "open_loops 列表" / "foreshadow 解析" 等子功能，
-    这些 helper 已随 lite 裁剪删除（story_memory 路由仅保留 CRUD + merge + import），
-    故此处只测当前仍存在的导入与脏标记路径。
-    """
+class TestStoryMemoryImportService(unittest.TestCase):
+    """Exercise the public story-memory import application service."""
 
     def setUp(self) -> None:
         engine = create_engine(
@@ -62,56 +49,21 @@ class TestMemoryRouteStoryHelpers(unittest.TestCase):
             db.add(Chapter(id='c1', project_id='p1', outline_id='o1', number=1, title='Ch1', status='done'))
             db.commit()
 
-    def test_build_story_memory_import_row_trims_and_skips_blank_content(self) -> None:
-        now = datetime(2026, 3, 17, 8, 0, tzinfo=UTC)
-        row = _build_story_memory_import_row(
-            project_id='p1',
-            item=StoryMemoryImportV1Item(
-                memory_type=' fact ',
-                title='  Imported  ',
-                content='  imported content  ',
-                importance_score=0.4,
-                story_timeline=7,
-                is_foreshadow=1,
-            ),
-            now=now,
-        )
-        self.assertIsNotNone(row)
-        assert row is not None
-        self.assertEqual(row.memory_type, 'fact')
-        self.assertEqual(row.title, 'Imported')
-        self.assertEqual(row.content, 'imported content')
-        self.assertEqual(row.metadata_json, '{"source": "import_all"}')
-
-        blank = _build_story_memory_import_row(
-            project_id='p1',
-            item=StoryMemoryImportV1Item(memory_type='fact', title=None, content='   ', importance_score=0.0, story_timeline=0, is_foreshadow=0),
-            now=now,
-        )
-        self.assertIsNone(blank)
-
-    def test_validate_story_memory_import_schema_version_rejects_unknown(self) -> None:
-        _validate_story_memory_import_schema_version('story_memory_import_v1')
-        with self.assertRaises(AppError):
-            _validate_story_memory_import_schema_version('story_memory_import_v2')
-        with self.assertRaises(AppError):
-            _validate_story_memory_import_schema_version(None)
-
     def test_import_story_memories_payload_creates_rows_and_marks_rebuild_dirty(self) -> None:
         with self.SessionLocal() as db, patch(
-            'app.api.routes.memory_route_story_helpers.schedule_vector_rebuild_task',
+            'app.services.story_memory_import_service.schedule_vector_rebuild_task',
             return_value='vector-task',
         ) as mock_vector, patch(
-            'app.api.routes.memory_route_story_helpers.schedule_search_rebuild_task',
+            'app.services.story_memory_import_service.schedule_search_rebuild_task',
             return_value='search-task',
         ) as mock_search:
-            payload = _import_story_memories_payload(
+            payload = import_story_memories(
                 db,
                 project_id='p1',
                 schema_version='story_memory_import_v1',
                 items=[
                     StoryMemoryImportV1Item(
-                        memory_type='fact',
+                        memory_type=' fact ',
                         title=' Imported ',
                         content=' imported payload ',
                         importance_score=0.2,
@@ -121,7 +73,6 @@ class TestMemoryRouteStoryHelpers(unittest.TestCase):
                 ],
                 actor_user_id='u_owner',
                 request_id='rid-import',
-                row_builder=_build_story_memory_import_row,
             )
             self.assertEqual(payload['created'], 1)
             self.assertEqual(len(payload['ids']), 1)
@@ -134,18 +85,59 @@ class TestMemoryRouteStoryHelpers(unittest.TestCase):
             self.assertIsNotNone(settings)
             assert settings is not None
             self.assertTrue(settings.vector_index_dirty)
+            row = db.query(StoryMemory).one()
+            self.assertEqual(row.memory_type, 'fact')
+            self.assertEqual(row.title, 'Imported')
+            self.assertEqual(row.content, 'imported payload')
+            self.assertEqual(row.importance_score, 0.2)
+            self.assertEqual(row.story_timeline, 40)
+            self.assertEqual(row.metadata_json, '{"source": "import_all"}')
+
+    def test_import_story_memories_rejects_unknown_or_missing_schema(self) -> None:
+        for schema_version in ('story_memory_import_v2', None):
+            with self.subTest(schema_version=schema_version), self.SessionLocal() as db:
+                with self.assertRaises(AppError):
+                    import_story_memories(
+                        db,
+                        project_id='p1',
+                        schema_version=schema_version,
+                        items=[],
+                        actor_user_id='u_owner',
+                        request_id='rid-import',
+                    )
+
+    def test_import_story_memories_skips_blank_content(self) -> None:
+        with self.SessionLocal() as db:
+            with self.assertRaises(AppError):
+                import_story_memories(
+                    db,
+                    project_id='p1',
+                    schema_version='story_memory_import_v1',
+                    items=[
+                        StoryMemoryImportV1Item(
+                            memory_type='fact',
+                            content='   ',
+                            title=None,
+                            importance_score=0.0,
+                            story_timeline=0,
+                            is_foreshadow=0,
+                        )
+                    ],
+                    actor_user_id='u_owner',
+                    request_id='rid-import',
+                )
+            self.assertEqual(db.query(StoryMemory).count(), 0)
 
     def test_import_story_memories_payload_rejects_empty_items(self) -> None:
         with self.SessionLocal() as db:
             with self.assertRaises(AppError):
-                _import_story_memories_payload(
+                import_story_memories(
                     db,
                     project_id='p1',
                     schema_version='story_memory_import_v1',
                     items=[],
                     actor_user_id='u_owner',
                     request_id='rid-import',
-                    row_builder=_build_story_memory_import_row,
                 )
 
 

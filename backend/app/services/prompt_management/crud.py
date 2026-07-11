@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.routes.prompt_route_mappers import _block_to_out, _preset_to_out, _resource_to_out
+from app.services.prompt_management.mappers import _block_to_out, _preset_to_out, _resource_to_out
 from app.core.errors import AppError
 from app.db.utils import new_id, utc_now
 from app.models.prompt_block import PromptBlock

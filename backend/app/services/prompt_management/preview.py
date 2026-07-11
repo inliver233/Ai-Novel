@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.api.routes.prompt_route_mappers import _build_prompt_preview_payload
+from app.services.prompt_management.mappers import _build_prompt_preview_payload
 from app.core.errors import AppError
 from app.models.llm_preset import LLMPreset
 from app.schemas.prompt_presets import PromptPreviewRequest

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class PromptImportAllState:
+class _PromptImportAllState:
     created: int = 0
     updated: int = 0
     skipped: int = 0

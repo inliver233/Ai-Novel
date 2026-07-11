@@ -21,7 +21,3 @@ class StoryMemoryImportV1Item(RequestModel):
 class StoryMemoryImportV1Request(RequestModel):
     schema_version: StoryMemoryImportSchemaVersion = "story_memory_import_v1"
     memories: list[StoryMemoryImportV1Item] = Field(default_factory=list, min_length=1, max_length=50)
-
-
-class StoryMemoryForeshadowResolveRequest(RequestModel):
-    resolved_at_chapter_id: str | None = Field(default=None, max_length=64)
