@@ -166,6 +166,32 @@ class _InMemoryCollection:
                 out["embeddings"] = [list(self._embs.get(rid, [])) for rid in sliced]
             return out
 
+    def delete(
+        self,
+        *,
+        ids: list[str] | None = None,
+        where: dict[str, Any] | None = None,
+    ) -> None:
+        requested_ids = {str(value) for value in (ids or [])}
+        filters = dict(where or {})
+
+        def _matches(rid: str) -> bool:
+            if requested_ids and rid not in requested_ids:
+                return False
+            meta = self._metas.get(rid) or {}
+            return all(str(meta.get(key)) == str(value) for key, value in filters.items())
+
+        with self._lock:
+            candidates = list(self._docs)
+            if not requested_ids and not filters:
+                candidates = []
+            for rid in candidates:
+                if not _matches(rid):
+                    continue
+                self._docs.pop(rid, None)
+                self._metas.pop(rid, None)
+                self._embs.pop(rid, None)
+
 
 _INMEMORY_CHROMA: dict[str, dict[str, _InMemoryCollection]] = {}
 _INMEMORY_CHROMA_LOCK = threading.RLock()

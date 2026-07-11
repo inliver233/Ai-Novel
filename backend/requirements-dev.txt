@@ -5,4 +5,5 @@ ruff==0.11.13
 # pytest 兼容既有 unittest 风格测试（无需改写旧测试），并提供 fixture / 参数化 / marker。
 pytest==8.4.1
 pytest-cov==6.3.0
+chromadb==1.0.20
 PyYAML==6.0.3

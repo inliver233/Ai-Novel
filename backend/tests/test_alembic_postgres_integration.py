@@ -30,6 +30,7 @@ from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_membership import ProjectMembership
 from app.models.knowledge_base import KnowledgeBase
+from app.models.project_source_document import ProjectSourceDocument, ProjectSourceDocumentChunk
 from app.models.prompt_block import PromptBlock
 from app.models.project_settings import ProjectSettings
 from app.models.project_task import ProjectTask
@@ -48,7 +49,7 @@ from app.services.batch_generation_quota import (
 from app.services import batch_generation_commands
 from app.services import batch_generation_application
 from app.services import batch_generation_service
-from app.services import vector_retrieval, vector_storage
+from app.services import vector_rebuild_coordinator, vector_retrieval, vector_storage
 from app.services.vector_types import VectorChunk
 from scripts.check_alembic import (
     SchemaContractError,
@@ -842,7 +843,7 @@ def _assert_postgres_project_initialization_atomicity(session_factory: sessionma
     success_ids = iter([success_id, *[f"api8-success-{index}" for index in range(30)]])
     side_effect_observed: list[bool] = []
 
-    def _observe_committed(**_kwargs: object) -> list[object]:
+    def _observe_committed(**_kwargs: object) -> dict[str, object]:
         with session_factory() as observer:
             assert observer.get(Project, success_id) is not None
             assert observer.query(ProjectMembership).filter_by(project_id=success_id).count() == 1
@@ -852,11 +853,16 @@ def _assert_postgres_project_initialization_atomicity(session_factory: sessionma
             assert len(active) == 6
             assert observer.query(KnowledgeBase).filter_by(project_id=success_id, kb_id="default").count() == 1
         side_effect_observed.append(True)
-        return []
+        return {
+            "enabled": True,
+            "skipped": False,
+            "rebuilt": 0,
+            "kbs": {"selected": ["default"], "per_kb": {"default": {"rebuilt": 0}}},
+        }
 
     with (
         patch("app.services.import_export_service.new_id", side_effect=lambda: next(success_ids)),
-        patch("app.services.vector_rag_service.build_project_chunks", side_effect=_observe_committed),
+        patch("app.services.import_export_service.rebuild_kb_vectors", side_effect=_observe_committed),
         session_factory() as db,
     ):
         result = import_project_bundle(
@@ -1022,6 +1028,114 @@ def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: 
         assert [
             row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"
         ] == beta_before_rebuild
+
+        vector_storage._pgvector_delete_project(project_id=project_id)
+
+    with session_factory() as db:
+        db.add_all(
+            [
+                KnowledgeBase(id="vector-kb-default-row", project_id=project_id, kb_id="default", name="Default"),
+                KnowledgeBase(id="vector-kb-alpha-row", project_id=project_id, kb_id="alpha", name="Alpha"),
+                KnowledgeBase(id="vector-kb-beta-row", project_id=project_id, kb_id="beta", name="Beta"),
+                ProjectSourceDocument(
+                    id="vector-doc-alpha",
+                    project_id=project_id,
+                    actor_user_id=user_id,
+                    filename="alpha.txt",
+                    content_type="txt",
+                    content_text="alpha authoritative content",
+                    status="done",
+                    kb_id="alpha",
+                ),
+                ProjectSourceDocument(
+                    id="vector-doc-beta",
+                    project_id=project_id,
+                    actor_user_id=user_id,
+                    filename="beta.txt",
+                    content_type="txt",
+                    content_text="beta authoritative content",
+                    status="done",
+                    kb_id="beta",
+                ),
+                ProjectSourceDocumentChunk(
+                    id="vector-doc-alpha-chunk",
+                    document_id="vector-doc-alpha",
+                    chunk_index=0,
+                    content_text="shared paid embedding text",
+                    vector_chunk_id="vector-doc-alpha-vector",
+                ),
+                ProjectSourceDocumentChunk(
+                    id="vector-doc-beta-chunk",
+                    document_id="vector-doc-beta",
+                    chunk_index=0,
+                    content_text="shared paid embedding text",
+                    vector_chunk_id="vector-doc-beta-vector",
+                ),
+            ]
+        )
+        db.commit()
+
+    coordinator_embedding_calls: list[list[str]] = []
+
+    def _coordinator_embedding(texts: list[str], *, embedding: object) -> dict[str, object]:
+        coordinator_embedding_calls.append(list(texts))
+        return {"enabled": True, "vectors": [_embedding(0.5) for _ in texts]}
+
+    with (
+        patch.object(vector_storage, "SessionLocal", session_factory),
+        patch.object(vector_storage, "_prefer_pgvector", return_value=True),
+        patch.object(vector_rebuild_coordinator, "_vector_enabled_reason", return_value=(True, None)),
+        patch.object(
+            vector_rebuild_coordinator,
+            "embed_texts_with_providers",
+            side_effect=_coordinator_embedding,
+        ),
+        session_factory() as db,
+    ):
+        coordinated = vector_rebuild_coordinator.rebuild_kb_vectors(
+            db=db,
+            project_id=project_id,
+            kb_ids=["alpha", "beta"],
+            embedding={"provider": "test"},
+        )
+    assert coordinator_embedding_calls == [["shared paid embedding text"]]
+    assert coordinated["embedding"] == {"calls": 1, "unique_texts": 1}
+    with session_factory() as observer:
+        rows = observer.execute(
+            sa.text("SELECT kb_id, id, source_id FROM vector_chunks WHERE project_id = :project_id ORDER BY kb_id, id"),
+            {"project_id": project_id},
+        ).all()
+    assert rows == [
+        ("alpha", "vector-doc-alpha-vector", "vector-doc-alpha"),
+        ("beta", "vector-doc-beta-vector", "vector-doc-beta"),
+    ]
+
+    beta_before_single_kb = [row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"]
+    with session_factory() as db:
+        alpha_chunk = db.get(ProjectSourceDocumentChunk, "vector-doc-alpha-chunk")
+        assert alpha_chunk is not None
+        alpha_chunk.content_text = "alpha replacement only"
+        db.commit()
+    with (
+        patch.object(vector_storage, "SessionLocal", session_factory),
+        patch.object(vector_storage, "_prefer_pgvector", return_value=True),
+        patch.object(vector_rebuild_coordinator, "_vector_enabled_reason", return_value=(True, None)),
+        patch.object(
+            vector_rebuild_coordinator,
+            "embed_texts_with_providers",
+            return_value={"enabled": True, "vectors": [_embedding(0.6)]},
+        ),
+        session_factory() as db,
+    ):
+        vector_rebuild_coordinator.rebuild_kb_vectors(
+            db=db,
+            project_id=project_id,
+            kb_ids=["alpha"],
+            embedding={"provider": "test"},
+        )
+    assert [
+        row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"
+    ] == beta_before_single_kb
 
     with engine.begin() as connection:
         connection.exec_driver_sql("SET LOCAL enable_seqscan = off")

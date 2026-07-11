@@ -25,7 +25,7 @@ from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
 from app.models.story_memory import StoryMemory
 from app.services.vector_embedding_overrides import vector_embedding_overrides
-from app.services.vector_rag_service import VectorChunk, ingest_chunks, purge_project_vectors
+from app.services.vector_rag_service import purge_document_vectors, rebuild_kb_vectors
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]{2,}")
@@ -132,7 +132,6 @@ def run_import_task(task_id: str) -> None:
         db.flush()
 
         rows: list[ProjectSourceDocumentChunk] = []
-        vector_chunks: list[VectorChunk] = []
         for idx, chunk in enumerate(chunks):
             vector_chunk_id = f"source_doc:{doc_id}:{idx}"
             rows.append(
@@ -142,20 +141,6 @@ def run_import_task(task_id: str) -> None:
                     chunk_index=int(idx),
                     content_text=chunk,
                     vector_chunk_id=vector_chunk_id,
-                )
-            )
-            vector_chunks.append(
-                VectorChunk(
-                    id=vector_chunk_id,
-                    text=chunk,
-                    metadata={
-                        "project_id": project_id,
-                        # NOTE: reuse existing VectorSource label to avoid protocol breakage.
-                        "source": "chapter",
-                        "source_id": doc_id,
-                        "title": filename,
-                        "chunk_index": int(idx),
-                    },
                 )
             )
 
@@ -187,20 +172,33 @@ def run_import_task(task_id: str) -> None:
     finally:
         db.close()
 
-    # external calls (embedding/vector) must happen without holding DB transactions.
-    ingest_result: dict[str, Any] = {}
-    try:
-        ingest_result = ingest_chunks(project_id=project_id, kb_id=kb_id, chunks=vector_chunks, embedding=embedding)
-    except Exception as exc:
-        ingest_result = {
-            "enabled": False,
-            "skipped": True,
-            "disabled_reason": "error",
-            "error_type": type(exc).__name__,
-        }
-
     db2 = SessionLocal()
     try:
+        doc2 = db2.get(ProjectSourceDocument, doc_id)
+        if doc2 is None:
+            return
+        # The ownership-aware plan intentionally indexes only completed
+        # documents. Publish the derived rows before the external rebuild, then
+        # rebuild the whole owning KB so retries cannot leave stale chunk IDs or
+        # remove sibling documents.
+        doc2.status = "done"
+        doc2.progress = 70
+        doc2.progress_message = "重建知识库索引..."
+        db2.commit()
+        try:
+            ingest_result = rebuild_kb_vectors(
+                db=db2,
+                project_id=project_id,
+                kb_ids=[kb_id or "default"],
+                embedding=embedding,
+            )
+        except Exception as exc:
+            ingest_result = {
+                "enabled": False,
+                "skipped": True,
+                "disabled_reason": "error",
+                "error_type": type(exc).__name__,
+            }
         doc2 = db2.get(ProjectSourceDocument, doc_id)
         if doc2 is None:
             return
@@ -217,7 +215,7 @@ def retry_import_task(*, project_id: str, document_id: str) -> dict[str, Any]:
     """
     Best-effort cleanup for retries:
     - delete previous chunks
-    - purge vectors for the document kb_id (if any)
+    - purge only this document's vectors from the owning KB
     """
 
     doc_id = str(document_id or "").strip()
@@ -242,12 +240,14 @@ def retry_import_task(*, project_id: str, document_id: str) -> dict[str, Any]:
     finally:
         db.close()
 
-    purge_out: dict[str, Any] = {}
-    if kb_id:
-        try:
-            purge_out = purge_project_vectors(project_id=str(project_id), kb_id=kb_id)
-        except Exception as exc:
-            purge_out = {"enabled": True, "skipped": True, "deleted": False, "error_type": type(exc).__name__}
+    try:
+        purge_out = purge_document_vectors(
+            project_id=str(project_id),
+            kb_id=kb_id or "default",
+            document_id=doc_id,
+        )
+    except Exception as exc:
+        purge_out = {"enabled": True, "skipped": True, "deleted": False, "error_type": type(exc).__name__}
 
     return {"ok": True, "purge": purge_out, "kb_id": kb_id}
 
@@ -911,16 +911,19 @@ def _import_project_bundle_impl(
 
     vector_rebuild_result: dict[str, Any] | None = None
     if rebuild_vectors:
-        from app.services.vector_rag_service import build_project_chunks, rebuild_project
+        from app.services.vector_kb_service import list_kbs as list_vector_kbs
 
         db2 = SessionLocal()
         try:
             try:
-                chunks = build_project_chunks(db=db2, project_id=new_project_id, sources=["outline", "chapter"])
                 embedding = vector_embedding_overrides(db2.get(ProjectSettings, new_project_id))
-                selected_kbs = [str(k.get("kb_id") or "").strip() for k in kbs_list if isinstance(k, dict)] or [
-                    "default"
-                ]
+                selected_kbs = [str(row.kb_id) for row in list_vector_kbs(db2, project_id=new_project_id)]
+                vector_rebuild_result = rebuild_kb_vectors(
+                    db=db2,
+                    project_id=new_project_id,
+                    kb_ids=selected_kbs,
+                    embedding=embedding,
+                )
             except Exception as exc:
                 vector_rebuild_result = {
                     "enabled": False,
@@ -930,23 +933,5 @@ def _import_project_bundle_impl(
                 }
         finally:
             db2.close()
-
-        if vector_rebuild_result is None:
-            per_kb: dict[str, dict[str, Any]] = {}
-            for kid in selected_kbs:
-                if not kid:
-                    continue
-                try:
-                    per_kb[kid] = rebuild_project(
-                        project_id=new_project_id, kb_id=kid, chunks=chunks, embedding=embedding
-                    )
-                except Exception as exc:  # pragma: no cover - env dependent
-                    per_kb[kid] = {
-                        "enabled": False,
-                        "skipped": True,
-                        "disabled_reason": "error",
-                        "error_type": type(exc).__name__,
-                    }
-            vector_rebuild_result = {"kbs": {"selected": selected_kbs, "per_kb": per_kb}}
 
     return {"ok": True, "project_id": new_project_id, "report": report, "vector_rebuild": vector_rebuild_result}

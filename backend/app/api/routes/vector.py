@@ -31,12 +31,12 @@ from app.services.vector_rag_service import (
     _resolve_rerank_external_config as resolve_rerank_external_config,
 )
 from app.services.vector_rag_service import (
+    _ALL_SOURCES,
     VectorSource,
-    build_project_chunks,
-    ingest_chunks,
+    ingest_kb_vectors,
     purge_project_vectors,
     query_project,
-    rebuild_project,
+    rebuild_kb_vectors,
     vector_rag_status,
 )
 
@@ -298,33 +298,18 @@ def ingest_vector_index(
         kb_ids_unique = [kb_id] if kb_id else ["default"]
 
     require_project_editor(db, project_id=project_id, user_id=user_id)
-    chunks = build_project_chunks(db=db, project_id=project_id, sources=body.sources)
     embedding = vector_embedding_overrides(db.get(ProjectSettings, project_id))
     ensure_default_vector_kb(db, project_id=project_id)
     for kid in kb_ids_unique:
         get_vector_kb(db, project_id=project_id, kb_id=kid)
 
-    per_kb: dict[str, dict] = {}
-    for kid in kb_ids_unique:
-        per_kb[kid] = ingest_chunks(project_id=project_id, kb_id=kid, chunks=chunks, embedding=embedding)
-
-    results = list(per_kb.values())
-    enabled = all(bool(r.get("enabled")) for r in results) if results else False
-    skipped = all(bool(r.get("skipped")) for r in results) if results else True
-    ingested = sum(int(r.get("ingested") or 0) for r in results)
-    disabled_reason = next((r.get("disabled_reason") for r in results if r.get("disabled_reason")), None)
-    backend = next((r.get("backend") for r in results if r.get("backend")), None)
-    error = next((r.get("error") for r in results if r.get("error")), None)
-
-    result = {
-        "enabled": bool(enabled),
-        "skipped": bool(skipped),
-        "disabled_reason": disabled_reason,
-        "ingested": int(ingested),
-        "backend": backend,
-        "error": error,
-        "kbs": {"selected": list(kb_ids_unique), "per_kb": per_kb},
-    }
+    result = ingest_kb_vectors(
+        db=db,
+        project_id=project_id,
+        kb_ids=kb_ids_unique,
+        embedding=embedding,
+        sources=body.sources,
+    )
     return ok_payload(request_id=request_id, data={"result": result})
 
 
@@ -350,35 +335,23 @@ def rebuild_vector_index(
     settings_row = _ensure_settings_row(db, project_id=project_id)
     db.commit()
     build_revision = int(settings_row.vector_dirty_revision)
-    chunks = build_project_chunks(db=db, project_id=project_id, sources=body.sources)
     embedding = vector_embedding_overrides(settings_row)
     ensure_default_vector_kb(db, project_id=project_id)
     for kid in kb_ids_unique:
         get_vector_kb(db, project_id=project_id, kb_id=kid)
 
-    per_kb: dict[str, dict] = {}
-    for kid in kb_ids_unique:
-        per_kb[kid] = rebuild_project(project_id=project_id, kb_id=kid, chunks=chunks, embedding=embedding)
+    result = rebuild_kb_vectors(
+        db=db,
+        project_id=project_id,
+        kb_ids=kb_ids_unique,
+        embedding=embedding,
+        sources=body.sources,
+    )
 
-    results = list(per_kb.values())
-    enabled = all(bool(r.get("enabled")) for r in results) if results else False
-    skipped = all(bool(r.get("skipped")) for r in results) if results else True
-    rebuilt = sum(int(r.get("rebuilt") or 0) for r in results)
-    disabled_reason = next((r.get("disabled_reason") for r in results if r.get("disabled_reason")), None)
-    backend = next((r.get("backend") for r in results if r.get("backend")), None)
-    error = next((r.get("error") for r in results if r.get("error")), None)
-
-    result = {
-        "enabled": bool(enabled),
-        "skipped": bool(skipped),
-        "disabled_reason": disabled_reason,
-        "rebuilt": int(rebuilt),
-        "backend": backend,
-        "error": error,
-        "kbs": {"selected": list(kb_ids_unique), "per_kb": per_kb},
-    }
-
-    if bool(enabled) and not bool(skipped):
+    default_result = (result.get("kbs") or {}).get("per_kb", {}).get("default", {})
+    requested_sources = list(body.sources or _ALL_SOURCES)
+    is_full_default_rebuild = "default" in kb_ids_unique and set(requested_sources) == set(_ALL_SOURCES)
+    if is_full_default_rebuild and bool(default_result.get("enabled")) and not bool(default_result.get("skipped")):
         cleared = db.execute(
             update(ProjectSettings)
             .where(

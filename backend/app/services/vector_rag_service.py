@@ -8,7 +8,8 @@ focused modules and are re-exported here without reflection or duplicate state.
 """
 
 from app.services.vector_build import schedule_vector_rebuild_task
-from app.services.vector_chunk_builder import _chunk_text, build_project_chunks
+from app.services.vector_chunk_builder import _chunk_text, build_kb_chunk_plan, build_project_chunks
+from app.services.vector_rebuild_coordinator import ingest_kb_vectors, rebuild_kb_vectors, run_kb_vector_operation
 from app.services.vector_rerank import (
     _rerank_candidates,
     _rerank_score,
@@ -61,8 +62,11 @@ from app.services.vector_storage import (
     _safe_json_loads,
     _vector_enabled_reason,
     ingest_chunks,
+    ingest_chunks_with_embeddings,
+    purge_document_vectors,
     purge_project_vectors,
     rebuild_project,
+    rebuild_project_with_embeddings,
 )
 from app.services.vector_types import VectorChunk, VectorSource, _ALL_SOURCES
 
@@ -74,10 +78,17 @@ __all__ = [
     "_PGVECTOR_READY_CACHE_TTL_SECONDS",
     "_VECTOR_DROPPED_REASON_EXPLAIN",
     "build_project_chunks",
+    "build_kb_chunk_plan",
     "ingest_chunks",
+    "ingest_chunks_with_embeddings",
+    "ingest_kb_vectors",
+    "purge_document_vectors",
     "purge_project_vectors",
     "query_project",
     "rebuild_project",
+    "rebuild_project_with_embeddings",
+    "rebuild_kb_vectors",
+    "run_kb_vector_operation",
     "schedule_vector_rebuild_task",
     "vector_rag_status",
     "_rerank_candidates",

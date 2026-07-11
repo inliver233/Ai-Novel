@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
@@ -63,6 +62,7 @@ def test_vector_worker_keeps_newer_mutation_dirty_and_runs_followup(tmp_path) ->
 
     def _rebuild_with_one_concurrent_mutation(**_kwargs):
         nonlocal rebuild_calls
+        assert _kwargs["kb_ids"] == ["default"]
         rebuild_calls += 1
         if rebuild_calls == 1:
             with factory() as writer:
@@ -77,10 +77,9 @@ def test_vector_worker_keeps_newer_mutation_dirty_and_runs_followup(tmp_path) ->
             patch.object(vector_build, "SessionLocal", factory),
             patch.object(project_task_service, "start_project_task_heartbeat", return_value=None),
             patch("app.services.task_queue.get_task_queue", return_value=queue),
-            patch("app.services.vector_kb_service.list_kbs", return_value=[]),
+            patch("app.services.vector_kb_service.ensure_default_kb"),
             patch.object(vector_rag_service, "vector_rag_status", return_value={"enabled": True}),
-            patch.object(vector_rag_service, "build_project_chunks", return_value=[SimpleNamespace(id="chunk")]),
-            patch.object(vector_rag_service, "rebuild_project", side_effect=_rebuild_with_one_concurrent_mutation),
+            patch.object(vector_rag_service, "rebuild_kb_vectors", side_effect=_rebuild_with_one_concurrent_mutation),
         ):
             with factory() as db:
                 first_task_id = vector_build.schedule_vector_rebuild_task(
@@ -158,6 +157,7 @@ def test_vector_worker_finalization_commit_failure_preserves_dirty_and_retries(t
 
     def _successful_external_rebuild(**_kwargs):
         nonlocal rebuild_calls
+        assert _kwargs["kb_ids"] == ["default"]
         rebuild_calls += 1
         return {"enabled": True, "skipped": False, "rebuilt": 1, "backend": "test"}
 
@@ -201,10 +201,9 @@ def test_vector_worker_finalization_commit_failure_preserves_dirty_and_retries(t
         with (
             patch.object(project_task_service, "SessionLocal", _sessions_with_finalization_failure),
             patch.object(project_task_service, "start_project_task_heartbeat", return_value=None),
-            patch("app.services.vector_kb_service.list_kbs", return_value=[]),
+            patch("app.services.vector_kb_service.ensure_default_kb"),
             patch.object(vector_rag_service, "vector_rag_status", return_value={"enabled": True}),
-            patch.object(vector_rag_service, "build_project_chunks", return_value=[SimpleNamespace(id="chunk")]),
-            patch.object(vector_rag_service, "rebuild_project", side_effect=_successful_external_rebuild),
+            patch.object(vector_rag_service, "rebuild_kb_vectors", side_effect=_successful_external_rebuild),
         ):
             project_task_service.run_project_task(task_id="vector-task-commit-fail")
 
@@ -241,10 +240,9 @@ def test_vector_worker_finalization_commit_failure_preserves_dirty_and_retries(t
         with (
             patch.object(project_task_service, "SessionLocal", factory),
             patch.object(project_task_service, "start_project_task_heartbeat", return_value=None),
-            patch("app.services.vector_kb_service.list_kbs", return_value=[]),
+            patch("app.services.vector_kb_service.ensure_default_kb"),
             patch.object(vector_rag_service, "vector_rag_status", return_value={"enabled": True}),
-            patch.object(vector_rag_service, "build_project_chunks", return_value=[SimpleNamespace(id="chunk")]),
-            patch.object(vector_rag_service, "rebuild_project", side_effect=_successful_external_rebuild),
+            patch.object(vector_rag_service, "rebuild_kb_vectors", side_effect=_successful_external_rebuild),
         ):
             project_task_service.run_project_task(task_id="vector-task-commit-fail")
 

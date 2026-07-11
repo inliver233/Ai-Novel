@@ -80,7 +80,7 @@ def session_factory(tmp_path) -> Generator[sessionmaker[Session], None, None]:  
 
 
 def _successful_rebuild_result() -> dict[str, object]:
-    return {
+    default = {
         "enabled": True,
         "skipped": False,
         "disabled_reason": None,
@@ -88,22 +88,22 @@ def _successful_rebuild_result() -> dict[str, object]:
         "backend": "test",
         "error": None,
     }
+    return {**default, "kbs": {"selected": ["default"], "per_kb": {"default": default}}}
 
 
-def _post_rebuild(factory: sessionmaker[Session], *, rebuild_side_effect=None):  # type: ignore[no-untyped-def]
+def _post_rebuild(factory: sessionmaker[Session], *, rebuild_side_effect=None, body=None):  # type: ignore[no-untyped-def]
     app = _make_app(factory)
     with ExitStack() as stack:
-        stack.enter_context(patch.object(vector_routes, "build_project_chunks", return_value=[]))
         stack.enter_context(patch.object(vector_routes, "vector_embedding_overrides", return_value={}))
         stack.enter_context(patch.object(vector_routes, "ensure_default_vector_kb"))
         stack.enter_context(patch.object(vector_routes, "get_vector_kb"))
         if rebuild_side_effect is None:
             stack.enter_context(
-                patch.object(vector_routes, "rebuild_project", return_value=_successful_rebuild_result())
+                patch.object(vector_routes, "rebuild_kb_vectors", return_value=_successful_rebuild_result())
             )
         else:
-            stack.enter_context(patch.object(vector_routes, "rebuild_project", side_effect=rebuild_side_effect))
-        return TestClient(app).post(f"/api/projects/{PROJECT_ID}/vector/rebuild", json={})
+            stack.enter_context(patch.object(vector_routes, "rebuild_kb_vectors", side_effect=rebuild_side_effect))
+        return TestClient(app).post(f"/api/projects/{PROJECT_ID}/vector/rebuild", json=body or {})
 
 
 def test_http_vector_rebuild_clears_dirty_state_when_revision_is_unchanged(session_factory) -> None:  # type: ignore[no-untyped-def]
@@ -145,3 +145,21 @@ def test_http_vector_rebuild_does_not_clear_newer_dirty_revision(session_factory
         assert settings.vector_index_dirty is True
         assert settings.vector_dirty_revision == 8
         assert settings.last_vector_build_at == old_build_at
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"kb_ids": ["custom"]},
+        {"kb_ids": ["default"], "sources": ["outline", "chapter"]},
+    ],
+)
+def test_http_non_authoritative_rebuild_never_clears_global_dirty(session_factory, body) -> None:  # type: ignore[no-untyped-def]
+    response = _post_rebuild(session_factory, body=body)
+    assert response.status_code == 200
+    with session_factory() as db:
+        settings = db.get(ProjectSettings, PROJECT_ID)
+        assert settings is not None
+        assert settings.vector_index_dirty is True
+        assert settings.vector_dirty_revision == 7
+        assert settings.last_vector_build_at == datetime(2025, 1, 2, 3, 4, tzinfo=timezone.utc)

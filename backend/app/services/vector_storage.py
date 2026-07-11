@@ -566,46 +566,26 @@ def _pgvector_hybrid_query(
     }
 
 
-def ingest_chunks(
+def ingest_chunks_with_embeddings(
     *,
     project_id: str,
     kb_id: str | None = None,
     chunks: list[VectorChunk],
-    embedding: dict[str, str | None] | None = None,
+    embeddings: list[list[float]],
 ) -> dict[str, Any]:
-    enabled, disabled_reason = _vector_enabled_reason(embedding=embedding)
-    if not enabled:
-        return {"enabled": False, "skipped": True, "disabled_reason": disabled_reason, "ingested": 0}
-
-    start = time.perf_counter()
+    if len(chunks) != len(embeddings):
+        raise ValueError("chunks and embeddings must have identical lengths")
+    if not chunks:
+        return {
+            "enabled": True,
+            "skipped": False,
+            "ingested": 0,
+            "backend": "pgvector" if _prefer_pgvector() else "chroma",
+            "timings_ms": {"upsert": 0},
+        }
     texts = [c.text for c in chunks]
     ids = [c.id for c in chunks]
     metadatas = [c.metadata for c in chunks]
-
-    embeddings: list[list[float]] = []
-    if texts:
-        embed_out = embed_texts_with_providers(texts, embedding=embedding)
-        if not bool(embed_out.get("enabled")):
-            disabled = str(embed_out.get("disabled_reason") or "error")
-            log_event(
-                logger,
-                "warning",
-                event="VECTOR_RAG",
-                action="ingest",
-                project_id=project_id,
-                disabled_reason=disabled,
-                error_type="EmbeddingError",
-            )
-            return {
-                "enabled": False,
-                "skipped": True,
-                "disabled_reason": disabled,
-                "error": embed_out.get("error"),
-                "ingested": 0,
-            }
-        embeddings = embed_out.get("vectors") or []
-
-    embed_ms = int((time.perf_counter() - start) * 1000)
 
     if _prefer_pgvector():
         try:
@@ -619,10 +599,10 @@ def ingest_chunks(
                 action="ingest",
                 project_id=project_id,
                 chunks=len(chunks),
-                timings_ms={"embed": embed_ms, "upsert": write_ms},
+                timings_ms={"upsert": write_ms},
                 backend="pgvector",
             )
-            return {**out, "timings_ms": {"embed": embed_ms, "upsert": write_ms}, "backend": "pgvector"}
+            return {**out, "timings_ms": {"upsert": write_ms}, "backend": "pgvector"}
         except Exception as exc:  # pragma: no cover - env dependent
             log_event(
                 logger,
@@ -657,19 +637,19 @@ def ingest_chunks(
         action="ingest",
         project_id=project_id,
         chunks=len(chunks),
-        timings_ms={"embed": embed_ms, "upsert": write_ms},
+        timings_ms={"upsert": write_ms},
         backend="chroma",
     )
     return {
         "enabled": True,
         "skipped": False,
         "ingested": len(chunks),
-        "timings_ms": {"embed": embed_ms, "upsert": write_ms},
+        "timings_ms": {"upsert": write_ms},
         "backend": "chroma",
     }
 
 
-def rebuild_project(
+def ingest_chunks(
     *,
     project_id: str,
     kb_id: str | None = None,
@@ -678,23 +658,44 @@ def rebuild_project(
 ) -> dict[str, Any]:
     enabled, disabled_reason = _vector_enabled_reason(embedding=embedding)
     if not enabled:
-        return {"enabled": False, "skipped": True, "disabled_reason": disabled_reason, "rebuilt": 0}
+        return {"enabled": False, "skipped": True, "disabled_reason": disabled_reason, "ingested": 0}
+
+    start = time.perf_counter()
+    texts = [chunk.text for chunk in chunks]
+    embed_out = embed_texts_with_providers(texts, embedding=embedding) if texts else {"enabled": True, "vectors": []}
+    if not bool(embed_out.get("enabled")):
+        disabled = str(embed_out.get("disabled_reason") or "error")
+        return {
+            "enabled": False,
+            "skipped": True,
+            "disabled_reason": disabled,
+            "error": embed_out.get("error"),
+            "ingested": 0,
+        }
+    embed_ms = int((time.perf_counter() - start) * 1000)
+    out = ingest_chunks_with_embeddings(
+        project_id=project_id,
+        kb_id=kb_id,
+        chunks=chunks,
+        embeddings=embed_out.get("vectors") or [],
+    )
+    timings = dict(out.get("timings_ms") or {})
+    timings["embed"] = embed_ms
+    return {**out, "timings_ms": timings}
+
+
+def rebuild_project_with_embeddings(
+    *,
+    project_id: str,
+    kb_id: str | None = None,
+    chunks: list[VectorChunk],
+    embeddings: list[list[float]],
+) -> dict[str, Any]:
+    if len(chunks) != len(embeddings):
+        raise ValueError("chunks and embeddings must have identical lengths")
 
     if _prefer_pgvector():
         try:
-            texts = [c.text for c in chunks]
-            embed_out = (
-                embed_texts_with_providers(texts, embedding=embedding) if texts else {"enabled": True, "vectors": []}
-            )
-            if not bool(embed_out.get("enabled")):
-                return {
-                    "enabled": False,
-                    "skipped": True,
-                    "disabled_reason": str(embed_out.get("disabled_reason") or "error"),
-                    "error": embed_out.get("error"),
-                    "rebuilt": 0,
-                }
-            embeddings = embed_out.get("vectors") or []
             kb = _normalize_kb_id(kb_id)
             db = SessionLocal()
             try:
@@ -743,6 +744,7 @@ def rebuild_project(
                 "backend": "pgvector",
             }
 
+    snapshots: dict[str, dict[str, Any]] = {}
     try:
         chromadb = _import_chromadb()
         persist_dir = settings.vector_chroma_persist_dir or _default_chroma_persist_dir()
@@ -755,6 +757,25 @@ def rebuild_project(
             names = {hash_name}
         else:
             names = {legacy_name} if naming == "legacy" else {hash_name, legacy_name}
+
+        for name in names:
+            try:
+                old_collection = client.get_collection(name=name)
+                snapshot = old_collection.get(include=["documents", "metadatas", "embeddings"])
+                snapshots[name] = {
+                    "ids": list(snapshot.get("ids") or []),
+                    "documents": list(snapshot.get("documents") or []),
+                    "metadatas": list(snapshot.get("metadatas") or []),
+                    "embeddings": [
+                        [float(value) for value in vector]
+                        for vector in (snapshot.get("embeddings") if snapshot.get("embeddings") is not None else [])
+                    ],
+                    "metadata": dict(
+                        getattr(old_collection, "metadata", None) or getattr(old_collection, "_metadata", None) or {}
+                    ),
+                }
+            except Exception:
+                continue
         for name in names:
             try:
                 client.delete_collection(name=name)
@@ -769,13 +790,154 @@ def rebuild_project(
             "rebuilt": 0,
         }
 
-    out = ingest_chunks(project_id=project_id, kb_id=kb_id, chunks=chunks, embedding=embedding)
-    return {
-        "enabled": bool(out.get("enabled")),
-        "skipped": bool(out.get("skipped")),
-        "rebuilt": int(out.get("ingested") or 0),
-        **out,
-    }
+    try:
+        if chunks:
+            out = ingest_chunks_with_embeddings(
+                project_id=project_id,
+                kb_id=kb_id,
+                chunks=chunks,
+                embeddings=embeddings,
+            )
+            if not bool(out.get("enabled")) or bool(out.get("skipped")):
+                raise RuntimeError(str(out.get("error") or out.get("disabled_reason") or "chroma replace failed"))
+            return {
+                "enabled": bool(out.get("enabled")),
+                "skipped": bool(out.get("skipped")),
+                "rebuilt": int(out.get("ingested") or 0),
+                **out,
+            }
+        return {
+            "enabled": True,
+            "skipped": False,
+            "rebuilt": 0,
+            "ingested": 0,
+            "backend": "chroma",
+        }
+    except Exception as exc:  # pragma: no cover - concrete rollback paths are tested
+        restore_error: Exception | None = None
+        try:
+            for name in names:
+                try:
+                    client.delete_collection(name=name)
+                except Exception:
+                    pass
+            # Chroma has no multi-operation transaction. This snapshot restores
+            # runtime exceptions; an abrupt process/host crash between delete
+            # and restore remains outside the guarantees of PersistentClient.
+            for name, snapshot in snapshots.items():
+                collection = client.get_or_create_collection(
+                    name=name,
+                    metadata=snapshot["metadata"] or None,
+                )
+                if snapshot["ids"]:
+                    collection.upsert(
+                        ids=snapshot["ids"],
+                        documents=snapshot["documents"],
+                        metadatas=snapshot["metadatas"],
+                        embeddings=snapshot["embeddings"],
+                    )
+        except Exception as restore_exc:  # pragma: no cover - storage failure
+            restore_error = restore_exc
+        return {
+            "enabled": True,
+            "skipped": True,
+            "disabled_reason": "chroma_rebuild_failed",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "restored": restore_error is None,
+            "restore_error": str(restore_error) if restore_error is not None else None,
+            "rebuilt": 0,
+            "backend": "chroma",
+        }
+
+
+def rebuild_project(
+    *,
+    project_id: str,
+    kb_id: str | None = None,
+    chunks: list[VectorChunk],
+    embedding: dict[str, str | None] | None = None,
+) -> dict[str, Any]:
+    enabled, disabled_reason = _vector_enabled_reason(embedding=embedding)
+    if not enabled:
+        return {"enabled": False, "skipped": True, "disabled_reason": disabled_reason, "rebuilt": 0}
+
+    texts = [chunk.text for chunk in chunks]
+    embed_out = embed_texts_with_providers(texts, embedding=embedding) if texts else {"enabled": True, "vectors": []}
+    if not bool(embed_out.get("enabled")):
+        return {
+            "enabled": False,
+            "skipped": True,
+            "disabled_reason": str(embed_out.get("disabled_reason") or "error"),
+            "error": embed_out.get("error"),
+            "rebuilt": 0,
+        }
+    return rebuild_project_with_embeddings(
+        project_id=project_id,
+        kb_id=kb_id,
+        chunks=chunks,
+        embeddings=embed_out.get("vectors") or [],
+    )
+
+
+def purge_document_vectors(
+    *,
+    project_id: str,
+    kb_id: str | None,
+    document_id: str,
+) -> dict[str, Any]:
+    """Delete only one imported document's vectors from its owning KB."""
+
+    kb = _normalize_kb_id(kb_id)
+    doc_id = str(document_id or "").strip()
+    if not doc_id:
+        return {"enabled": True, "skipped": True, "deleted": 0, "reason": "document_id_missing"}
+
+    if _prefer_pgvector():
+        db = SessionLocal()
+        try:
+            result = db.execute(
+                text(
+                    "DELETE FROM vector_chunks "
+                    "WHERE project_id = :project_id AND kb_id = :kb_id AND source_id = :document_id"
+                ),
+                {"project_id": project_id, "kb_id": kb, "document_id": doc_id},
+            )
+            db.commit()
+            return {
+                "enabled": True,
+                "skipped": False,
+                "deleted": int(getattr(result, "rowcount", 0) or 0),
+                "backend": "pgvector",
+            }
+        except Exception as exc:  # pragma: no cover - environment dependent
+            db.rollback()
+            return {
+                "enabled": True,
+                "skipped": True,
+                "deleted": 0,
+                "backend": "pgvector",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        finally:
+            db.close()
+
+    try:
+        collection = _get_collection(project_id=project_id, kb_id=kb)
+        # ``source_id`` also matches vectors written before origin metadata was
+        # introduced, so retry cleanup remains backwards compatible.
+        collection.delete(where={"source_id": doc_id})
+        return {"enabled": True, "skipped": False, "deleted": True, "backend": "chroma"}
+    except Exception as exc:  # pragma: no cover - environment dependent
+        return {
+            "enabled": False,
+            "skipped": True,
+            "deleted": False,
+            "backend": "chroma",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+        }
 
 
 def purge_project_vectors(*, project_id: str, kb_id: str | None = None) -> dict[str, Any]:

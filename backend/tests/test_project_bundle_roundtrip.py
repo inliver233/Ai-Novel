@@ -17,12 +17,12 @@ from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_membership import ProjectMembership
 from app.models.project_settings import ProjectSettings
-from app.models.project_source_document import ProjectSourceDocument
+from app.models.project_source_document import ProjectSourceDocument, ProjectSourceDocumentChunk
 from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
 from app.models.story_memory import StoryMemory
 from app.models.user import User
-from app.services import import_export_service
+from app.services import import_export_service, vector_rebuild_coordinator
 from app.services.import_export_service import export_project_bundle, import_project_bundle
 from app.services.prompt_presets import ensure_default_chapter_preset, ensure_default_outline_preset
 from app.services.prompt_preset_resources import load_preset_resource
@@ -54,6 +54,7 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
                 StoryMemory.__table__,
                 KnowledgeBase.__table__,
                 ProjectSourceDocument.__table__,
+                ProjectSourceDocumentChunk.__table__,
             ],
         )
 
@@ -130,7 +131,7 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
         with (
             self.SessionLocal() as db,
             patch.object(import_export_service, "SessionLocal", self.SessionLocal),
-            patch("app.services.vector_rag_service.build_project_chunks", side_effect=RuntimeError("vector prepare")),
+            patch.object(import_export_service, "rebuild_kb_vectors", side_effect=RuntimeError("vector prepare")),
         ):
             result = import_project_bundle(db, owner_user_id="u1", bundle=bundle, rebuild_vectors=True)
         self.assertTrue(result["ok"])
@@ -146,14 +147,86 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
         with (
             self.SessionLocal() as db,
             patch.object(import_export_service, "SessionLocal", self.SessionLocal),
-            patch("app.services.vector_rag_service.build_project_chunks", return_value=[]),
-            patch("app.services.vector_rag_service.rebuild_project", side_effect=RuntimeError("rebuild failed")),
+            patch.object(
+                import_export_service,
+                "rebuild_kb_vectors",
+                return_value={
+                    "enabled": True,
+                    "skipped": True,
+                    "kbs": {
+                        "selected": ["default"],
+                        "per_kb": {
+                            "default": {
+                                "enabled": True,
+                                "skipped": True,
+                                "disabled_reason": "error",
+                                "error_type": "RuntimeError",
+                                "rebuilt": 0,
+                            }
+                        },
+                    },
+                },
+            ),
         ):
             result = import_project_bundle(db, owner_user_id="u1", bundle=bundle, rebuild_vectors=True)
         self.assertTrue(result["ok"])
         default_result = result["vector_rebuild"]["kbs"]["per_kb"]["default"]
         self.assertEqual(default_result["disabled_reason"], "error")
         self.assertEqual(default_result["error_type"], "RuntimeError")
+
+    def test_bundle_rebuild_restores_custom_document_to_owning_kb(self) -> None:
+        bundle = {
+            "schema_version": "project_bundle_v1",
+            "project": {"name": "Custom KB Bundle"},
+            "knowledge_bases": {
+                "kbs": [
+                    {"kb_id": "default", "name": "Default"},
+                    {"kb_id": "research", "name": "Research"},
+                ]
+            },
+            "source_documents": {
+                "docs": [
+                    {
+                        "filename": "research.txt",
+                        "content_type": "txt",
+                        "content_text": "custom bundle evidence",
+                        "kb_id": "research",
+                    }
+                ]
+            },
+        }
+        writes: dict[str, list] = {}
+
+        def _write(*, project_id, kb_id, chunks, embeddings):  # type: ignore[no-untyped-def]
+            writes[str(kb_id)] = list(chunks)
+            return {
+                "enabled": True,
+                "skipped": False,
+                "rebuilt": len(chunks),
+                "ingested": len(chunks),
+                "backend": "test",
+            }
+
+        with self.SessionLocal() as db:
+            db.add(User(id="u1", display_name="User 1", is_admin=False))
+            db.commit()
+        with (
+            self.SessionLocal() as db,
+            patch.object(import_export_service, "SessionLocal", self.SessionLocal),
+            patch.object(vector_rebuild_coordinator, "_vector_enabled_reason", return_value=(True, None)),
+            patch.object(
+                vector_rebuild_coordinator,
+                "embed_texts_with_providers",
+                return_value={"enabled": True, "vectors": [[1.0]]},
+            ),
+            patch.object(vector_rebuild_coordinator, "rebuild_project_with_embeddings", side_effect=_write),
+        ):
+            result = import_project_bundle(db, owner_user_id="u1", bundle=bundle, rebuild_vectors=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(writes["default"], [])
+        self.assertEqual([chunk.text for chunk in writes["research"]], ["custom bundle evidence"])
+        self.assertEqual(writes["research"][0].metadata["knowledge_base_id"], "research")
 
     def test_import_preserves_custom_active_and_modified_builtin(self) -> None:
         bundle = {
