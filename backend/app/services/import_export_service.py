@@ -77,7 +77,6 @@ def _extract_keywords(text: str, *, limit: int) -> list[str]:
     return out
 
 
-
 def _build_story_memory_proposal(*, filename: str, content_text: str) -> dict[str, Any]:
     title = _base_filename(filename)[:255]
     summary = (content_text or "").strip()
@@ -193,7 +192,12 @@ def run_import_task(task_id: str) -> None:
     try:
         ingest_result = ingest_chunks(project_id=project_id, kb_id=kb_id, chunks=vector_chunks, embedding=embedding)
     except Exception as exc:
-        ingest_result = {"enabled": False, "skipped": True, "disabled_reason": "error", "error_type": type(exc).__name__}
+        ingest_result = {
+            "enabled": False,
+            "skipped": True,
+            "disabled_reason": "error",
+            "error_type": type(exc).__name__,
+        }
 
     db2 = SessionLocal()
     try:
@@ -284,42 +288,70 @@ def export_project_bundle(db: Session, *, project_id: str) -> dict[str, Any]:
     settings_row = db.get(ProjectSettings, project_id_norm)
     llm_preset = db.get(LLMPreset, project_id_norm)
 
-    outlines = db.execute(select(Outline).where(Outline.project_id == project_id_norm).order_by(Outline.updated_at.desc())).scalars().all()
-    chapters = db.execute(select(Chapter).where(Chapter.project_id == project_id_norm).order_by(Chapter.updated_at.desc())).scalars().all()
+    outlines = (
+        db.execute(select(Outline).where(Outline.project_id == project_id_norm).order_by(Outline.updated_at.desc()))
+        .scalars()
+        .all()
+    )
+    chapters = (
+        db.execute(select(Chapter).where(Chapter.project_id == project_id_norm).order_by(Chapter.updated_at.desc()))
+        .scalars()
+        .all()
+    )
     characters = (
-        db.execute(select(Character).where(Character.project_id == project_id_norm).order_by(Character.updated_at.desc()))
+        db.execute(
+            select(Character).where(Character.project_id == project_id_norm).order_by(Character.updated_at.desc())
+        )
         .scalars()
         .all()
     )
 
     prompt_presets = (
-        db.execute(select(PromptPreset).where(PromptPreset.project_id == project_id_norm).order_by(PromptPreset.updated_at.desc()))
+        db.execute(
+            select(PromptPreset)
+            .where(PromptPreset.project_id == project_id_norm)
+            .order_by(PromptPreset.updated_at.desc())
+        )
         .scalars()
         .all()
     )
     blocks_by_preset: dict[str, list[PromptBlock]] = {}
     for preset in prompt_presets:
         blocks = (
-            db.execute(select(PromptBlock).where(PromptBlock.preset_id == preset.id).order_by(PromptBlock.injection_order.asc()))
+            db.execute(
+                select(PromptBlock)
+                .where(PromptBlock.preset_id == preset.id)
+                .order_by(PromptBlock.injection_order.asc())
+            )
             .scalars()
             .all()
         )
         blocks_by_preset[preset.id] = blocks
 
     story_memories = (
-        db.execute(select(StoryMemory).where(StoryMemory.project_id == project_id_norm).order_by(StoryMemory.updated_at.desc()))
+        db.execute(
+            select(StoryMemory).where(StoryMemory.project_id == project_id_norm).order_by(StoryMemory.updated_at.desc())
+        )
         .scalars()
         .all()
     )
 
     knowledge_bases = (
-        db.execute(select(KnowledgeBase).where(KnowledgeBase.project_id == project_id_norm).order_by(KnowledgeBase.order_index.asc()))
+        db.execute(
+            select(KnowledgeBase)
+            .where(KnowledgeBase.project_id == project_id_norm)
+            .order_by(KnowledgeBase.order_index.asc())
+        )
         .scalars()
         .all()
     )
 
     source_docs = (
-        db.execute(select(ProjectSourceDocument).where(ProjectSourceDocument.project_id == project_id_norm).order_by(ProjectSourceDocument.updated_at.desc()))
+        db.execute(
+            select(ProjectSourceDocument)
+            .where(ProjectSourceDocument.project_id == project_id_norm)
+            .order_by(ProjectSourceDocument.updated_at.desc())
+        )
         .scalars()
         .all()
     )
@@ -340,31 +372,63 @@ def export_project_bundle(db: Session, *, project_id: str) -> dict[str, Any]:
             "world_setting": (settings_row.world_setting if settings_row else "") or "",
             "style_guide": (settings_row.style_guide if settings_row else "") or "",
             "constraints": (settings_row.constraints if settings_row else "") or "",
-            "auto_update_worldbook_enabled": bool(getattr(settings_row, "auto_update_worldbook_enabled", True)) if settings_row else True,
-            "auto_update_characters_enabled": bool(getattr(settings_row, "auto_update_characters_enabled", True)) if settings_row else True,
-            "auto_update_story_memory_enabled": bool(getattr(settings_row, "auto_update_story_memory_enabled", True)) if settings_row else True,
-            "auto_update_graph_enabled": bool(getattr(settings_row, "auto_update_graph_enabled", True)) if settings_row else True,
-            "auto_update_vector_enabled": bool(getattr(settings_row, "auto_update_vector_enabled", True)) if settings_row else True,
-            "auto_update_search_enabled": bool(getattr(settings_row, "auto_update_search_enabled", True)) if settings_row else True,
-            "auto_update_fractal_enabled": bool(getattr(settings_row, "auto_update_fractal_enabled", True)) if settings_row else True,
-            "auto_update_tables_enabled": bool(getattr(settings_row, "auto_update_tables_enabled", True)) if settings_row else True,
+            "auto_update_worldbook_enabled": bool(getattr(settings_row, "auto_update_worldbook_enabled", True))
+            if settings_row
+            else True,
+            "auto_update_characters_enabled": bool(getattr(settings_row, "auto_update_characters_enabled", True))
+            if settings_row
+            else True,
+            "auto_update_story_memory_enabled": bool(getattr(settings_row, "auto_update_story_memory_enabled", True))
+            if settings_row
+            else True,
+            "auto_update_graph_enabled": bool(getattr(settings_row, "auto_update_graph_enabled", True))
+            if settings_row
+            else True,
+            "auto_update_vector_enabled": bool(getattr(settings_row, "auto_update_vector_enabled", True))
+            if settings_row
+            else True,
+            "auto_update_search_enabled": bool(getattr(settings_row, "auto_update_search_enabled", True))
+            if settings_row
+            else True,
+            "auto_update_fractal_enabled": bool(getattr(settings_row, "auto_update_fractal_enabled", True))
+            if settings_row
+            else True,
+            "auto_update_tables_enabled": bool(getattr(settings_row, "auto_update_tables_enabled", True))
+            if settings_row
+            else True,
             "vector_embedding": {
                 "provider": getattr(settings_row, "vector_embedding_provider", None) if settings_row else None,
                 "base_url": getattr(settings_row, "vector_embedding_base_url", None) if settings_row else None,
                 "model": getattr(settings_row, "vector_embedding_model", None) if settings_row else None,
-                "azure_deployment": getattr(settings_row, "vector_embedding_azure_deployment", None) if settings_row else None,
-                "azure_api_version": getattr(settings_row, "vector_embedding_azure_api_version", None) if settings_row else None,
-                "sentence_transformers_model": getattr(settings_row, "vector_embedding_sentence_transformers_model", None) if settings_row else None,
-                "has_api_key": bool(getattr(settings_row, "vector_embedding_api_key_ciphertext", None) or "") if settings_row else False,
-                "masked_api_key": getattr(settings_row, "vector_embedding_api_key_masked", None) if settings_row else "",
+                "azure_deployment": getattr(settings_row, "vector_embedding_azure_deployment", None)
+                if settings_row
+                else None,
+                "azure_api_version": getattr(settings_row, "vector_embedding_azure_api_version", None)
+                if settings_row
+                else None,
+                "sentence_transformers_model": getattr(
+                    settings_row, "vector_embedding_sentence_transformers_model", None
+                )
+                if settings_row
+                else None,
+                "has_api_key": bool(getattr(settings_row, "vector_embedding_api_key_ciphertext", None) or "")
+                if settings_row
+                else False,
+                "masked_api_key": getattr(settings_row, "vector_embedding_api_key_masked", None)
+                if settings_row
+                else "",
             },
             "vector_rerank": {
                 "enabled": getattr(settings_row, "vector_rerank_enabled", None) if settings_row else None,
                 "method": getattr(settings_row, "vector_rerank_method", None) if settings_row else None,
                 "top_k": getattr(settings_row, "vector_rerank_top_k", None) if settings_row else None,
             },
-            "query_preprocessing_json": getattr(settings_row, "query_preprocessing_json", None) if settings_row else None,
-            "context_optimizer_enabled": bool(getattr(settings_row, "context_optimizer_enabled", False)) if settings_row else False,
+            "query_preprocessing_json": getattr(settings_row, "query_preprocessing_json", None)
+            if settings_row
+            else None,
+            "context_optimizer_enabled": bool(getattr(settings_row, "context_optimizer_enabled", False))
+            if settings_row
+            else False,
         },
         "llm_preset": (
             {
@@ -408,7 +472,9 @@ def export_project_bundle(db: Session, *, project_id: str) -> dict[str, Any]:
             }
             for ch in chapters
         ],
-        "characters": [{"id": c.id, "name": c.name, "role": c.role, "profile": c.profile, "notes": c.notes} for c in characters],
+        "characters": [
+            {"id": c.id, "name": c.name, "role": c.role, "profile": c.profile, "notes": c.notes} for c in characters
+        ],
         "prompt_presets": {
             "schema_version": "prompt_presets_export_all_v1",
             "presets": [
@@ -503,6 +569,22 @@ def import_project_bundle(
     bundle: dict[str, Any],
     rebuild_vectors: bool = False,
 ) -> dict[str, Any]:
+    try:
+        return _import_project_bundle_impl(
+            db, owner_user_id=owner_user_id, bundle=bundle, rebuild_vectors=rebuild_vectors
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _import_project_bundle_impl(
+    db: Session,
+    *,
+    owner_user_id: str,
+    bundle: dict[str, Any],
+    rebuild_vectors: bool = False,
+) -> dict[str, Any]:
     schema = str(bundle.get("schema_version") or "").strip()
     if schema != "project_bundle_v1":
         return {"ok": False, "reason": "unsupported_schema_version", "schema_version": schema}
@@ -535,7 +617,9 @@ def import_project_bundle(
     settings_row.vector_embedding_model = str(embedding_obj.get("model") or "") or None
     settings_row.vector_embedding_azure_deployment = str(embedding_obj.get("azure_deployment") or "") or None
     settings_row.vector_embedding_azure_api_version = str(embedding_obj.get("azure_api_version") or "") or None
-    settings_row.vector_embedding_sentence_transformers_model = str(embedding_obj.get("sentence_transformers_model") or "") or None
+    settings_row.vector_embedding_sentence_transformers_model = (
+        str(embedding_obj.get("sentence_transformers_model") or "") or None
+    )
 
     has_key = bool(embedding_obj.get("has_api_key"))
     settings_row.vector_embedding_api_key_ciphertext = None
@@ -547,7 +631,9 @@ def import_project_bundle(
     rerank_obj = rerank_in if isinstance(rerank_in, dict) else {}
     settings_row.vector_rerank_enabled = rerank_obj.get("enabled")
     settings_row.vector_rerank_method = str(rerank_obj.get("method") or "") or None
-    settings_row.vector_rerank_top_k = int(rerank_obj.get("top_k")) if isinstance(rerank_obj.get("top_k"), int) else None
+    settings_row.vector_rerank_top_k = (
+        int(rerank_obj.get("top_k")) if isinstance(rerank_obj.get("top_k"), int) else None
+    )
 
     settings_row.query_preprocessing_json = str(settings_obj.get("query_preprocessing_json") or "") or None
     settings_row.context_optimizer_enabled = bool(settings_obj.get("context_optimizer_enabled", False))
@@ -711,8 +797,12 @@ def import_project_bundle(
                     injection_order=int(b.get("injection_order") or 0),
                     triggers_json=json.dumps(b.get("triggers") or [], ensure_ascii=False),
                     forbid_overrides=bool(b.get("forbid_overrides", False)),
-                    budget_json=json.dumps(b.get("budget") or {}, ensure_ascii=False) if b.get("budget") is not None else None,
-                    cache_json=json.dumps(b.get("cache") or {}, ensure_ascii=False) if b.get("cache") is not None else None,
+                    budget_json=json.dumps(b.get("budget") or {}, ensure_ascii=False)
+                    if b.get("budget") is not None
+                    else None,
+                    cache_json=json.dumps(b.get("cache") or {}, ensure_ascii=False)
+                    if b.get("cache") is not None
+                    else None,
                 )
             )
     report["created"]["prompt_presets"] = created_presets
@@ -804,15 +894,20 @@ def import_project_bundle(
         )
     report["created"]["source_documents"] = created_docs
 
-    db.commit()
+    # Make imported rows visible to baseline existence checks even when the
+    # caller's session has autoflush disabled.
+    db.flush()
 
-    from app.services.prompt_presets import ensure_default_chapter_preset, ensure_default_outline_preset
+    from app.services.prompt_preset_defaults import stage_missing_builtin_prompt_defaults
     from app.services.vector_kb_service import ensure_default_kb as ensure_default_vector_kb
 
-    ensure_default_outline_preset(db, project_id=new_project_id, activate=True)
-    ensure_default_chapter_preset(db, project_id=new_project_id, activate=True)
-    ensure_default_vector_kb(db, project_id=new_project_id)
-    db.commit()
+    try:
+        stage_missing_builtin_prompt_defaults(db, project_id=new_project_id)
+        ensure_default_vector_kb(db, project_id=new_project_id, commit=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     vector_rebuild_result: dict[str, Any] | None = None
     if rebuild_vectors:
@@ -820,20 +915,38 @@ def import_project_bundle(
 
         db2 = SessionLocal()
         try:
-            chunks = build_project_chunks(db=db2, project_id=new_project_id, sources=["outline", "chapter"])
-            embedding = vector_embedding_overrides(db2.get(ProjectSettings, new_project_id))
-            selected_kbs = [str(k.get("kb_id") or "").strip() for k in kbs_list if isinstance(k, dict)] or ["default"]
+            try:
+                chunks = build_project_chunks(db=db2, project_id=new_project_id, sources=["outline", "chapter"])
+                embedding = vector_embedding_overrides(db2.get(ProjectSettings, new_project_id))
+                selected_kbs = [str(k.get("kb_id") or "").strip() for k in kbs_list if isinstance(k, dict)] or [
+                    "default"
+                ]
+            except Exception as exc:
+                vector_rebuild_result = {
+                    "enabled": False,
+                    "skipped": True,
+                    "disabled_reason": "preparation_error",
+                    "error_type": type(exc).__name__,
+                }
         finally:
             db2.close()
 
-        per_kb: dict[str, dict[str, Any]] = {}
-        for kid in selected_kbs:
-            if not kid:
-                continue
-            try:
-                per_kb[kid] = rebuild_project(project_id=new_project_id, kb_id=kid, chunks=chunks, embedding=embedding)
-            except Exception as exc:  # pragma: no cover - env dependent
-                per_kb[kid] = {"enabled": False, "skipped": True, "disabled_reason": "error", "error_type": type(exc).__name__}
-        vector_rebuild_result = {"kbs": {"selected": selected_kbs, "per_kb": per_kb}}
+        if vector_rebuild_result is None:
+            per_kb: dict[str, dict[str, Any]] = {}
+            for kid in selected_kbs:
+                if not kid:
+                    continue
+                try:
+                    per_kb[kid] = rebuild_project(
+                        project_id=new_project_id, kb_id=kid, chunks=chunks, embedding=embedding
+                    )
+                except Exception as exc:  # pragma: no cover - env dependent
+                    per_kb[kid] = {
+                        "enabled": False,
+                        "skipped": True,
+                        "disabled_reason": "error",
+                        "error_type": type(exc).__name__,
+                    }
+            vector_rebuild_result = {"kbs": {"selected": selected_kbs, "per_kb": per_kb}}
 
     return {"ok": True, "project_id": new_project_id, "report": report, "vector_rebuild": vector_rebuild_result}

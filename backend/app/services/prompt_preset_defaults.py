@@ -34,11 +34,7 @@ def _is_builtin_resource_unique_conflict(exc: IntegrityError) -> bool:
     if getattr(diagnostic, "constraint_name", None) == _BUILTIN_RESOURCE_UNIQUE_CONSTRAINT:
         return True
     message = str(original).lower()
-    return (
-        "prompt_presets.project_id" in message
-        and "prompt_presets.resource_key" in message
-        and "unique" in message
-    )
+    return "prompt_presets.project_id" in message and "prompt_presets.resource_key" in message and "unique" in message
 
 
 def prompt_template_hash(template: str | None) -> str:
@@ -233,13 +229,17 @@ def _ensure_default_preset_from_resource(
     resource = load_preset_resource(resource_key)
 
     preset = (
-        db.execute(select(PromptPreset).where(PromptPreset.project_id == project_id, PromptPreset.resource_key == resource_key))
+        db.execute(
+            select(PromptPreset).where(PromptPreset.project_id == project_id, PromptPreset.resource_key == resource_key)
+        )
         .scalars()
         .first()
     )
     if preset is None:
         preset = (
-            db.execute(select(PromptPreset).where(PromptPreset.project_id == project_id, PromptPreset.name == resource.name))
+            db.execute(
+                select(PromptPreset).where(PromptPreset.project_id == project_id, PromptPreset.name == resource.name)
+            )
             .scalars()
             .first()
         )
@@ -365,6 +365,48 @@ def ensure_default_detailed_outline_preset(db: Session, *, project_id: str, acti
     )
 
 
+def stage_missing_builtin_prompt_defaults(db: Session, *, project_id: str) -> list[PromptPreset]:
+    """Stage a complete builtin baseline without mutating imported presets.
+
+    Existing builtins are deliberately left untouched (including their version
+    and blocks).  A newly-created builtin is activated only for tasks that are
+    not already claimed by any preset, so imported/custom active choices win.
+    The caller owns the transaction.
+    """
+    from app.services.prompt_presets import parse_json_list
+
+    existing = db.execute(select(PromptPreset).where(PromptPreset.project_id == project_id)).scalars().all()
+    existing_keys = {str(row.resource_key) for row in existing if row.resource_key}
+    claimed_tasks = {task for row in existing for task in parse_json_list(row.active_for_json)}
+    staged: list[PromptPreset] = []
+    for resource_key, _activate in _BUILTIN_PROMPT_DEFAULTS:
+        if resource_key in existing_keys:
+            continue
+        resource = load_preset_resource(resource_key)
+        # Do not use the normal ensure path here: its legacy name fallback is
+        # intentionally useful for upgrades, but baseline staging must preserve
+        # same-name imports that have no resource_key.
+        row = PromptPreset(
+            id=new_id(),
+            project_id=project_id,
+            name=resource.name,
+            resource_key=resource_key,
+            category=resource.category,
+            scope=resource.scope,
+            version=resource.version,
+            active_for_json="[]",
+        )
+        db.add(row)
+        db.flush()
+        db.add_all([_prompt_block_from_resource(row.id, block) for block in resource.blocks])
+        activation_tasks = [task for task in resource.activation_tasks if task not in claimed_tasks]
+        row.active_for_json = json.dumps(activation_tasks, ensure_ascii=False)
+        claimed_tasks.update(activation_tasks)
+        staged.append(row)
+    db.flush()
+    return staged
+
+
 def sync_builtin_prompt_defaults(db: Session, *, project_id: str) -> list[PromptPreset]:
     """Create or reconcile builtin prompt resources in one successful transaction.
 
@@ -377,9 +419,7 @@ def sync_builtin_prompt_defaults(db: Session, *, project_id: str) -> list[Prompt
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
-            project = db.execute(
-                select(Project).where(Project.id == project_id).with_for_update()
-            ).scalar_one_or_none()
+            project = db.execute(select(Project).where(Project.id == project_id).with_for_update()).scalar_one_or_none()
             if project is None:
                 raise AppError.not_found()
             rows = [
@@ -434,7 +474,9 @@ def resolve_resource_key_for_preset(db: Session, *, preset: PromptPreset) -> str
 def reset_prompt_preset_to_default_resource(db: Session, *, preset: PromptPreset) -> PromptPreset:
     resource_key = resolve_resource_key_for_preset(db, preset=preset)
     if not resource_key:
-        raise AppError.validation(message="PromptPreset is not bound to a default resource; reset_to_default is unavailable")
+        raise AppError.validation(
+            message="PromptPreset is not bound to a default resource; reset_to_default is unavailable"
+        )
 
     resource = load_preset_resource(resource_key)
 
@@ -460,7 +502,9 @@ def reset_prompt_preset_to_default_resource(db: Session, *, preset: PromptPreset
 def reset_prompt_block_to_default_resource(db: Session, *, preset: PromptPreset, block: PromptBlock) -> PromptBlock:
     resource_key = resolve_resource_key_for_preset(db, preset=preset)
     if not resource_key:
-        raise AppError.validation(message="PromptPreset is not bound to a default resource; block reset_to_default is unavailable")
+        raise AppError.validation(
+            message="PromptPreset is not bound to a default resource; block reset_to_default is unavailable"
+        )
 
     resource = load_preset_resource(resource_key)
     res_block = next((b for b in resource.blocks if b.identifier == block.identifier), None)
@@ -492,11 +536,15 @@ def reset_prompt_block_to_default_resource(db: Session, *, preset: PromptPreset,
     return block
 
 
-def get_active_preset_for_task(db: Session, *, project_id: str, task: str, allow_autocreate: bool = False) -> PromptPreset:
+def get_active_preset_for_task(
+    db: Session, *, project_id: str, task: str, allow_autocreate: bool = False
+) -> PromptPreset:
     from app.services.prompt_presets import LEGACY_IMPORTED_SCOPE, parse_json_list
 
     presets = (
-        db.execute(select(PromptPreset).where(PromptPreset.project_id == project_id).order_by(PromptPreset.updated_at.desc()))
+        db.execute(
+            select(PromptPreset).where(PromptPreset.project_id == project_id).order_by(PromptPreset.updated_at.desc())
+        )
         .scalars()
         .all()
     )

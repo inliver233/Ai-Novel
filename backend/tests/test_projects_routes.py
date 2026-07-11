@@ -21,6 +21,11 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+from sqlalchemy import select
+
 from app.api.routes import projects as projects_routes
 from app.models.chapter import Chapter
 from app.models.character import Character
@@ -184,6 +189,40 @@ def test_create_project_returns_project_and_persists() -> None:
         assert row is not None
         assert row.name == "Created Novel"
         assert row.genre == "scifi"
+        memberships = (
+            db.execute(select(ProjectMembership).where(ProjectMembership.project_id == project["id"])).scalars().all()
+        )
+        assert [(row.user_id, row.role) for row in memberships] == [("u1", "owner")]
+        presets = db.execute(select(PromptPreset).where(PromptPreset.project_id == project["id"])).scalars().all()
+        assert len({row.resource_key for row in presets}) == 6
+        assert all(db.execute(select(PromptBlock.id).where(PromptBlock.preset_id == row.id)).first() for row in presets)
+        active_tasks = {task for row in presets for task in json.loads(row.active_for_json or "[]")}
+        assert active_tasks == {
+            "plan_chapter",
+            "post_edit",
+            "content_optimize",
+            "outline_generate",
+            "chapter_generate",
+            "detailed_outline_generate",
+        }
+        assert db.execute(
+            select(KnowledgeBase).where(KnowledgeBase.project_id == project["id"], KnowledgeBase.kb_id == "default")
+        ).scalar_one()
+
+
+@pytest.mark.parametrize("failure", ["prompt", "kb"])
+def test_create_project_initialization_failure_rolls_back_everything(monkeypatch, failure: str) -> None:
+    client, factory = _new_client_and_factory()
+    target = "stage_missing_builtin_prompt_defaults" if failure == "prompt" else "ensure_default_kb"
+    monkeypatch.setattr(projects_routes, target, lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(failure)))
+    with pytest.raises(RuntimeError, match=failure):
+        client.post("/api/projects", json={"name": "Atomic"})
+    with factory() as observer:
+        assert observer.execute(select(Project).where(Project.name == "Atomic")).first() is None
+        assert observer.execute(select(ProjectMembership)).first() is None
+        assert observer.execute(select(PromptPreset)).first() is None
+        assert observer.execute(select(PromptBlock)).first() is None
+        assert observer.execute(select(KnowledgeBase)).first() is None
 
 
 # ---------- GET /api/projects/{project_id} ----------

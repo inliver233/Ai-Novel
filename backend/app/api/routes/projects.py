@@ -6,7 +6,14 @@ from fastapi import APIRouter, Request
 from pydantic import Field
 from sqlalchemy import case, func, select
 
-from app.api.deps import DbDep, UserIdDep, require_outline_viewer, require_owned_llm_profile, require_project_owner, require_project_viewer
+from app.api.deps import (
+    DbDep,
+    UserIdDep,
+    require_outline_viewer,
+    require_owned_llm_profile,
+    require_project_owner,
+    require_project_viewer,
+)
 from app.core.errors import AppError, ok_payload
 from app.core.logging import exception_log_fields, log_event
 from app.db.utils import new_id
@@ -25,7 +32,8 @@ from app.schemas.projects import ProjectCreate, ProjectOut, ProjectUpdate
 from app.schemas.base import RequestModel
 from app.services.import_export_service import import_project_bundle
 from app.services.llm_profile_template import apply_profile_template_to_llm_row, normalize_base_url_for_provider
-from app.services.prompt_presets import ensure_default_chapter_preset, ensure_default_outline_preset
+from app.services.prompt_preset_defaults import stage_missing_builtin_prompt_defaults
+from app.services.vector_kb_service import ensure_default_kb
 from app.services.vector_rag_service import purge_project_vectors
 
 router = APIRouter()
@@ -58,7 +66,11 @@ def _normalize_membership_role(raw: str) -> str:
 def _membership_public(*, membership: ProjectMembership, user: User | None) -> dict:
     return {
         "project_id": membership.project_id,
-        "user": {"id": membership.user_id, "display_name": getattr(user, "display_name", None), "is_admin": bool(getattr(user, "is_admin", False))},
+        "user": {
+            "id": membership.user_id,
+            "display_name": getattr(user, "display_name", None),
+            "is_admin": bool(getattr(user, "is_admin", False)),
+        },
         "role": membership.role,
         "created_at": membership.created_at,
         "updated_at": membership.updated_at,
@@ -74,8 +86,14 @@ def list_projects(request: Request, db: DbDep, user_id: UserIdDep) -> dict:
     project_ids = db.execute(owned.union(member)).scalars().all()
     projects: list[Project] = []
     if project_ids:
-        projects = db.execute(select(Project).where(Project.id.in_(project_ids)).order_by(Project.created_at.desc())).scalars().all()
-    return ok_payload(request_id=request_id, data={"projects": [ProjectOut.model_validate(p).model_dump() for p in projects]})
+        projects = (
+            db.execute(select(Project).where(Project.id.in_(project_ids)).order_by(Project.created_at.desc()))
+            .scalars()
+            .all()
+        )
+    return ok_payload(
+        request_id=request_id, data={"projects": [ProjectOut.model_validate(p).model_dump() for p in projects]}
+    )
 
 
 @router.get("/projects/summary")
@@ -86,27 +104,26 @@ def list_projects_summary(request: Request, db: DbDep, user_id: UserIdDep) -> di
     project_ids = db.execute(owned.union(member)).scalars().all()
     projects: list[Project] = []
     if project_ids:
-        projects = db.execute(select(Project).where(Project.id.in_(project_ids)).order_by(Project.created_at.desc())).scalars().all()
+        projects = (
+            db.execute(select(Project).where(Project.id.in_(project_ids)).order_by(Project.created_at.desc()))
+            .scalars()
+            .all()
+        )
     if not projects:
         return ok_payload(request_id=request_id, data={"items": []})
 
     project_ids = [p.id for p in projects]
 
     settings_rows = (
-        db.execute(select(ProjectSettings).where(ProjectSettings.project_id.in_(project_ids)))
-        .scalars()
-        .all()
+        db.execute(select(ProjectSettings).where(ProjectSettings.project_id.in_(project_ids))).scalars().all()
     )
     settings_by_project_id = {r.project_id: r for r in settings_rows}
 
-    character_count_rows = (
-        db.execute(
-            select(Character.project_id, func.count(Character.id))
-            .where(Character.project_id.in_(project_ids))
-            .group_by(Character.project_id)
-        )
-        .all()
-    )
+    character_count_rows = db.execute(
+        select(Character.project_id, func.count(Character.id))
+        .where(Character.project_id.in_(project_ids))
+        .group_by(Character.project_id)
+    ).all()
     character_count_by_project_id = {str(project_id): int(count or 0) for project_id, count in character_count_rows}
 
     active_outline_ids = [p.active_outline_id for p in projects if p.active_outline_id]
@@ -115,18 +132,15 @@ def list_projects_summary(request: Request, db: DbDep, user_id: UserIdDep) -> di
         outlines = db.execute(select(Outline).where(Outline.id.in_(active_outline_ids))).scalars().all()
         outline_by_id = {o.id: o for o in outlines}
 
-    chapter_stats_rows = (
-        db.execute(
-            select(
-                Chapter.project_id,
-                func.count(Chapter.id),
-                func.sum(case((Chapter.status == "done", 1), else_=0)),
-            )
-            .where(Chapter.project_id.in_(project_ids))
-            .group_by(Chapter.project_id)
+    chapter_stats_rows = db.execute(
+        select(
+            Chapter.project_id,
+            func.count(Chapter.id),
+            func.sum(case((Chapter.status == "done", 1), else_=0)),
         )
-        .all()
-    )
+        .where(Chapter.project_id.in_(project_ids))
+        .group_by(Chapter.project_id)
+    ).all()
     chapter_stats_by_project_id: dict[str, tuple[int, int]] = {
         str(project_id): (int(total or 0), int(done or 0)) for project_id, total, done in chapter_stats_rows
     }
@@ -137,14 +151,11 @@ def list_projects_summary(request: Request, db: DbDep, user_id: UserIdDep) -> di
     profile_ids = sorted({p.llm_profile_id for p in projects if p.llm_profile_id})
     profile_has_key_by_id: dict[str, bool] = {}
     if profile_ids:
-        profile_rows = (
-            db.execute(
-                select(LLMProfile.id, LLMProfile.api_key_ciphertext)
-                .where(LLMProfile.owner_user_id == user_id, LLMProfile.id.in_(profile_ids))
-                .order_by(LLMProfile.updated_at.desc())
-            )
-            .all()
-        )
+        profile_rows = db.execute(
+            select(LLMProfile.id, LLMProfile.api_key_ciphertext)
+            .where(LLMProfile.owner_user_id == user_id, LLMProfile.id.in_(profile_ids))
+            .order_by(LLMProfile.updated_at.desc())
+        ).all()
         profile_has_key_by_id = {str(pid): bool(ciphertext) for pid, ciphertext in profile_rows}
 
     items: list[dict] = []
@@ -160,7 +171,9 @@ def list_projects_summary(request: Request, db: DbDep, user_id: UserIdDep) -> di
             full_outline = (outline.content_md or "") if outline is not None else ""
             outline_content_len = len(full_outline)
             outline_content_truncated = outline_content_len > PROJECTS_SUMMARY_OUTLINE_MAX_CHARS
-            outline_content_md = full_outline[:PROJECTS_SUMMARY_OUTLINE_MAX_CHARS] if outline_content_truncated else full_outline
+            outline_content_md = (
+                full_outline[:PROJECTS_SUMMARY_OUTLINE_MAX_CHARS] if outline_content_truncated else full_outline
+            )
 
         chapters_total, chapters_done = chapter_stats_by_project_id.get(project.id, (0, 0))
 
@@ -210,50 +223,30 @@ def create_project(request: Request, db: DbDep, user_id: UserIdDep, body: Projec
         genre=body.genre,
         logline=body.logline,
     )
-    db.add(project)
-    db.commit()
-    db.refresh(project)
-
-    db.add(ProjectMembership(project_id=project.id, user_id=user_id, role="owner"))
-    db.commit()
-
-    # New projects should default to the recommended Prompt Engine presets.
-    ensure_default_outline_preset(db, project_id=project.id, activate=True)
-    ensure_default_chapter_preset(db, project_id=project.id, activate=True)
-
-    default_kb_exists = (
-        db.execute(
-            select(KnowledgeBase.id).where(
-                KnowledgeBase.project_id == project.id,
-                KnowledgeBase.kb_id == "default",
-            )
-        )
-        .scalars()
-        .first()
-        is not None
-    )
-    if not default_kb_exists:
-        db.add(
-            KnowledgeBase(
-                id=new_id(),
-                project_id=project.id,
-                kb_id="default",
-                name="Default",
-                enabled=True,
-                weight=1.0,
-                order_index=0,
-            )
-        )
+    try:
+        db.add(project)
+        db.flush()
+        db.add(ProjectMembership(project_id=project.id, user_id=user_id, role="owner"))
+        stage_missing_builtin_prompt_defaults(db, project_id=project.id)
+        ensure_default_kb(db, project_id=project.id, commit=False)
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(project)
 
     return ok_payload(request_id=request_id, data={"project": ProjectOut.model_validate(project).model_dump()})
 
 
 @router.post("/projects/import_bundle")
-def import_project_bundle_endpoint(request: Request, db: DbDep, user_id: UserIdDep, body: ProjectBundleImportRequest) -> dict:
+def import_project_bundle_endpoint(
+    request: Request, db: DbDep, user_id: UserIdDep, body: ProjectBundleImportRequest
+) -> dict:
     request_id = request.state.request_id
 
-    result = import_project_bundle(db, owner_user_id=user_id, bundle=body.bundle, rebuild_vectors=bool(body.rebuild_vectors))
+    result = import_project_bundle(
+        db, owner_user_id=user_id, bundle=body.bundle, rebuild_vectors=bool(body.rebuild_vectors)
+    )
     if not bool(result.get("ok")):
         raise AppError.validation(details={"reason": "import_bundle_failed", **result})
     return ok_payload(request_id=request_id, data={"result": result})
@@ -271,14 +264,11 @@ def list_project_memberships(request: Request, db: DbDep, user_id: UserIdDep, pr
     request_id = request.state.request_id
     require_project_owner(db, project_id=project_id, user_id=user_id)
 
-    rows = (
-        db.execute(
-            select(ProjectMembership, User)
-            .join(User, User.id == ProjectMembership.user_id)
-            .where(ProjectMembership.project_id == project_id)
-        )
-        .all()
-    )
+    rows = db.execute(
+        select(ProjectMembership, User)
+        .join(User, User.id == ProjectMembership.user_id)
+        .where(ProjectMembership.project_id == project_id)
+    ).all()
     memberships = [_membership_public(membership=m, user=u) for m, u in rows]
     memberships.sort(key=lambda x: str(x.get("user", {}).get("id") or ""))
     return ok_payload(request_id=request_id, data={"memberships": memberships})
@@ -311,7 +301,9 @@ def add_project_membership(
     db.commit()
     db.refresh(membership)
 
-    return ok_payload(request_id=request_id, data={"membership": _membership_public(membership=membership, user=target_user)})
+    return ok_payload(
+        request_id=request_id, data={"membership": _membership_public(membership=membership, user=target_user)}
+    )
 
 
 @router.put("/projects/{project_id}/memberships/{target_user_id}")
@@ -337,7 +329,9 @@ def update_project_membership_role(
     db.commit()
 
     target_user = db.get(User, target_user_id)
-    return ok_payload(request_id=request_id, data={"membership": _membership_public(membership=membership, user=target_user)})
+    return ok_payload(
+        request_id=request_id, data={"membership": _membership_public(membership=membership, user=target_user)}
+    )
 
 
 @router.delete("/projects/{project_id}/memberships/{target_user_id}")
@@ -427,7 +421,14 @@ def delete_project(request: Request, db: DbDep, user_id: UserIdDep, project_id: 
         purge_out = purge_project_vectors(project_id=project_id)
         log_event(logger, "info", event="PROJECT", action="delete_purge", project_id=project_id, vector=purge_out)
     except Exception as exc:  # pragma: no cover - best-effort purge
-        log_event(logger, "warning", event="PROJECT", action="delete_purge", project_id=project_id, **exception_log_fields(exc))
+        log_event(
+            logger,
+            "warning",
+            event="PROJECT",
+            action="delete_purge",
+            project_id=project_id,
+            **exception_log_fields(exc),
+        )
 
     db.delete(project)
     db.commit()

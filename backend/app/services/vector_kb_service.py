@@ -17,7 +17,7 @@ _KB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _KB_PRIORITY_GROUPS = {"normal", "high"}
 
 
-def ensure_default_kb(db: Session, *, project_id: str) -> KnowledgeBase:
+def ensure_default_kb(db: Session, *, project_id: str, commit: bool = True) -> KnowledgeBase:
     row = (
         db.execute(
             select(KnowledgeBase).where(
@@ -42,8 +42,11 @@ def ensure_default_kb(db: Session, *, project_id: str) -> KnowledgeBase:
         priority_group="normal",
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()
     return row
 
 
@@ -121,7 +124,9 @@ def create_kb(
             new_kb_id = f"kb_{uuid4().hex}"
             new_kb_id = new_kb_id[:64]
 
-    max_order = db.execute(select(func.max(KnowledgeBase.order_index)).where(KnowledgeBase.project_id == project_id)).scalar()
+    max_order = db.execute(
+        select(func.max(KnowledgeBase.order_index)).where(KnowledgeBase.project_id == project_id)
+    ).scalar()
     next_order = int(max_order or 0) + 1
     priority = str(priority_group or "").strip().lower() or "normal"
     if priority not in _KB_PRIORITY_GROUPS:

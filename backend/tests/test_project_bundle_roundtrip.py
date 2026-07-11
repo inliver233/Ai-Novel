@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -22,6 +24,7 @@ from app.models.story_memory import StoryMemory
 from app.models.user import User
 from app.services.import_export_service import export_project_bundle, import_project_bundle
 from app.services.prompt_presets import ensure_default_chapter_preset, ensure_default_outline_preset
+from app.services.prompt_preset_resources import load_preset_resource
 from app.services.vector_kb_service import ensure_default_kb
 
 
@@ -83,13 +86,146 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
             self.assertEqual(_count(db, select(Outline).where(Outline.project_id == new_project_id)), 1)
             self.assertEqual(_count(db, select(Chapter).where(Chapter.project_id == new_project_id)), 1)
             self.assertEqual(_count(db, select(Character).where(Character.project_id == new_project_id)), 1)
-            self.assertEqual(_count(db, select(ProjectSourceDocument).where(ProjectSourceDocument.project_id == new_project_id)), 1)
+            self.assertEqual(
+                _count(db, select(ProjectSourceDocument).where(ProjectSourceDocument.project_id == new_project_id)), 1
+            )
             self.assertEqual(_count(db, select(StoryMemory).where(StoryMemory.project_id == new_project_id)), 1)
-            self.assertGreaterEqual(_count(db, select(KnowledgeBase).where(KnowledgeBase.project_id == new_project_id)), 1)
+            self.assertGreaterEqual(
+                _count(db, select(KnowledgeBase).where(KnowledgeBase.project_id == new_project_id)), 1
+            )
 
             new_settings = db.get(ProjectSettings, new_project_id)
             self.assertIsNotNone(new_settings)
             self.assertIsNone(new_settings.vector_embedding_api_key_ciphertext)
+
+    def test_import_baseline_failure_rolls_back_all_rows(self) -> None:
+        bundle = {"schema_version": "project_bundle_v1", "project": {"name": "Atomic Import"}}
+        with self.SessionLocal() as db:
+            db.add(User(id="u1", display_name="User 1", is_admin=False))
+            db.commit()
+            with (
+                patch(
+                    "app.services.prompt_preset_defaults.load_preset_resource",
+                    side_effect=RuntimeError("baseline failed"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "baseline failed"),
+            ):
+                import_project_bundle(db, owner_user_id="u1", bundle=bundle)
+            self.assertIsNone(db.execute(select(Project).where(Project.name == "Atomic Import")).scalar_one_or_none())
+        with self.SessionLocal() as observer:
+            self.assertIsNone(
+                observer.execute(select(Project).where(Project.name == "Atomic Import")).scalar_one_or_none()
+            )
+            self.assertEqual(_count(observer, select(ProjectMembership)), 0)
+            self.assertEqual(_count(observer, select(PromptPreset)), 0)
+            self.assertEqual(_count(observer, select(PromptBlock)), 0)
+            self.assertEqual(_count(observer, select(KnowledgeBase)), 0)
+
+    def test_import_vector_preparation_failure_is_degraded_after_commit(self) -> None:
+        bundle = {"schema_version": "project_bundle_v1", "project": {"name": "Vector Safe"}}
+        with self.SessionLocal() as db:
+            db.add(User(id="u1", display_name="User 1", is_admin=False))
+            db.commit()
+        with (
+            self.SessionLocal() as db,
+            patch("app.services.vector_rag_service.build_project_chunks", side_effect=RuntimeError("vector prepare")),
+        ):
+            result = import_project_bundle(db, owner_user_id="u1", bundle=bundle, rebuild_vectors=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["vector_rebuild"]["disabled_reason"], "preparation_error")
+        with self.SessionLocal() as observer:
+            self.assertIsNotNone(observer.get(Project, result["project_id"]))
+
+    def test_import_vector_rebuild_failure_is_structured_per_kb(self) -> None:
+        bundle = {"schema_version": "project_bundle_v1", "project": {"name": "Vector Rebuild Safe"}}
+        with self.SessionLocal() as db:
+            db.add(User(id="u1", display_name="User 1", is_admin=False))
+            db.commit()
+        with (
+            self.SessionLocal() as db,
+            patch("app.services.vector_rag_service.build_project_chunks", return_value=[]),
+            patch("app.services.vector_rag_service.rebuild_project", side_effect=RuntimeError("rebuild failed")),
+        ):
+            result = import_project_bundle(db, owner_user_id="u1", bundle=bundle, rebuild_vectors=True)
+        self.assertTrue(result["ok"])
+        default_result = result["vector_rebuild"]["kbs"]["per_kb"]["default"]
+        self.assertEqual(default_result["disabled_reason"], "error")
+        self.assertEqual(default_result["error_type"], "RuntimeError")
+
+    def test_import_preserves_custom_active_and_modified_builtin(self) -> None:
+        bundle = {
+            "schema_version": "project_bundle_v1",
+            "project": {"name": "Prompt Import"},
+            "prompt_presets": {
+                "presets": [
+                    {
+                        "preset": {
+                            "name": "Modified Chapter",
+                            "resource_key": "chapter_generate_v4",
+                            "version": 1,
+                            "active_for": ["chapter_generate"],
+                        },
+                        "blocks": [{"identifier": "custom_chapter", "name": "Custom", "template": "KEEP ME"}],
+                    },
+                    {
+                        "preset": {"name": "Custom Plan", "version": 7, "active_for": ["plan_chapter"]},
+                        "blocks": [{"identifier": "custom_plan", "name": "Plan", "template": "CUSTOM PLAN"}],
+                    },
+                ]
+            },
+        }
+        with self.SessionLocal() as db:
+            db.add(User(id="u1", display_name="User 1", is_admin=False))
+            db.commit()
+            result = import_project_bundle(db, owner_user_id="u1", bundle=bundle)
+        with self.SessionLocal() as observer:
+            rows = (
+                observer.execute(select(PromptPreset).where(PromptPreset.project_id == result["project_id"]))
+                .scalars()
+                .all()
+            )
+            self.assertEqual(len(rows), 7)
+            chapter = next(row for row in rows if row.resource_key == "chapter_generate_v4")
+            self.assertEqual(chapter.version, 1)
+            block = observer.execute(select(PromptBlock).where(PromptBlock.preset_id == chapter.id)).scalar_one()
+            self.assertEqual(block.template, "KEEP ME")
+            custom = next(row for row in rows if row.name == "Custom Plan")
+            self.assertEqual(json.loads(custom.active_for_json), ["plan_chapter"])
+            plan_builtin = next(row for row in rows if row.resource_key == "plan_chapter_v1")
+            self.assertNotIn("plan_chapter", json.loads(plan_builtin.active_for_json or "[]"))
+
+    def test_import_preserves_same_name_legacy_and_adds_resource_builtin(self) -> None:
+        resource = load_preset_resource("plan_chapter_v1")
+        bundle = {
+            "schema_version": "project_bundle_v1",
+            "project": {"name": "Legacy Prompt Import"},
+            "prompt_presets": {
+                "presets": [
+                    {
+                        "preset": {"name": resource.name, "version": 77, "active_for": []},
+                        "blocks": [{"identifier": "legacy", "name": "Legacy", "template": "DO NOT CHANGE"}],
+                    }
+                ]
+            },
+        }
+        with self.SessionLocal() as db:
+            db.add(User(id="u1", display_name="User 1", is_admin=False))
+            db.commit()
+            result = import_project_bundle(db, owner_user_id="u1", bundle=bundle)
+        with self.SessionLocal() as observer:
+            rows = (
+                observer.execute(select(PromptPreset).where(PromptPreset.project_id == result["project_id"]))
+                .scalars()
+                .all()
+            )
+            legacy = next(row for row in rows if row.resource_key is None)
+            self.assertEqual((legacy.name, legacy.version, json.loads(legacy.active_for_json)), (resource.name, 77, []))
+            legacy_block = observer.execute(select(PromptBlock).where(PromptBlock.preset_id == legacy.id)).scalar_one()
+            self.assertEqual((legacy_block.identifier, legacy_block.template), ("legacy", "DO NOT CHANGE"))
+            builtins = [row for row in rows if row.resource_key]
+            self.assertEqual(len({row.resource_key for row in builtins}), 6)
+            plan_builtin = next(row for row in builtins if row.resource_key == "plan_chapter_v1")
+            self.assertIn("plan_chapter", json.loads(plan_builtin.active_for_json or "[]"))
 
 
 def _count(db: Session, stmt) -> int:  # type: ignore[no-untyped-def]
@@ -125,7 +261,19 @@ def _seed_project(db: Session) -> None:
 
     outline = Outline(id="o1", project_id="p1", title="Outline 1", content_md="outline", structure_json=None)
     db.add(outline)
-    db.add(Chapter(id="c1", project_id="p1", outline_id="o1", number=1, title="Chapter 1", plan="p", content_md="c", summary="s", status="done"))
+    db.add(
+        Chapter(
+            id="c1",
+            project_id="p1",
+            outline_id="o1",
+            number=1,
+            title="Chapter 1",
+            plan="p",
+            content_md="c",
+            summary="s",
+            status="done",
+        )
+    )
     project.active_outline_id = "o1"
 
     db.add(Character(id="char1", project_id="p1", name="Alice", role="hero", profile="p", notes=None))

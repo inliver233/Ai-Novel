@@ -22,11 +22,15 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.api.routes import batch_generation as batch_generation_routes
 from app.api.routes import chapters as chapters_routes
+from app.api.routes import projects as projects_routes
 from app.models.batch_generation_task import BatchGenerationQuotaGuard, BatchGenerationTask, BatchGenerationTaskItem
 from app.models.chapter import Chapter
 from app.models.llm_preset import LLMPreset
 from app.models.outline import Outline
 from app.models.project import Project
+from app.models.project_membership import ProjectMembership
+from app.models.knowledge_base import KnowledgeBase
+from app.models.prompt_block import PromptBlock
 from app.models.project_settings import ProjectSettings
 from app.models.project_task import ProjectTask
 from app.models.project_task_event import ProjectTaskEvent
@@ -34,6 +38,8 @@ from app.models.prompt_preset import PromptPreset
 from app.models.user import User
 from app.schemas.batch_generation import BatchGenerationCreateRequest
 from app.schemas.chapters import BulkCreateRequest
+from app.schemas.projects import ProjectCreate
+from app.services.import_export_service import import_project_bundle
 from app.services.prompt_preset_defaults import sync_builtin_prompt_defaults
 from app.services.batch_generation_quota import (
     enter_batch_generation_quota_admission,
@@ -782,6 +788,87 @@ def _assert_postgres_chapter_replace_transaction(session_factory: sessionmaker) 
     assert committed_side_effects == ["chapters_bulk_create", "chapters_bulk_create"]
 
 
+def _assert_postgres_project_initialization_atomicity(session_factory: sessionmaker) -> None:
+    user_id = "api8-atomic-user"
+    with session_factory() as db:
+        db.add(User(id=user_id, display_name="API8 Atomic User"))
+        db.commit()
+
+    def _assert_absent(project_id: str) -> None:
+        with session_factory() as observer:
+            assert observer.get(Project, project_id) is None
+            assert observer.query(ProjectMembership).filter_by(project_id=project_id).count() == 0
+            preset_ids = [row.id for row in observer.query(PromptPreset).filter_by(project_id=project_id).all()]
+            assert (
+                observer.query(PromptBlock).filter(PromptBlock.preset_id.in_(preset_ids)).count() == 0
+                if preset_ids
+                else True
+            )
+            assert observer.query(KnowledgeBase).filter_by(project_id=project_id).count() == 0
+
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    request.state.request_id = "api8-create-failure"
+    create_id = "api8-create-failure-project"
+    with (
+        patch.object(projects_routes, "new_id", return_value=create_id),
+        patch.object(projects_routes, "ensure_default_kb", side_effect=RuntimeError("late kb failure")),
+        session_factory() as db,
+        pytest.raises(RuntimeError, match="late kb failure"),
+    ):
+        projects_routes.create_project(
+            request=request, db=db, user_id=user_id, body=ProjectCreate(name="Atomic Create")
+        )
+    _assert_absent(create_id)
+
+    import_id = "api8-import-failure-project"
+    import_ids = iter([import_id, *[f"api8-fail-{index}" for index in range(30)]])
+    with (
+        patch("app.services.import_export_service.new_id", side_effect=lambda: next(import_ids)),
+        patch(
+            "app.services.prompt_preset_defaults.stage_missing_builtin_prompt_defaults",
+            side_effect=RuntimeError("late preset failure"),
+        ),
+        session_factory() as db,
+        pytest.raises(RuntimeError, match="late preset failure"),
+    ):
+        import_project_bundle(
+            db,
+            owner_user_id=user_id,
+            bundle={"schema_version": "project_bundle_v1", "project": {"name": "Atomic Import"}},
+        )
+    _assert_absent(import_id)
+
+    success_id = "api8-import-success-project"
+    success_ids = iter([success_id, *[f"api8-success-{index}" for index in range(30)]])
+    side_effect_observed: list[bool] = []
+
+    def _observe_committed(**_kwargs: object) -> list[object]:
+        with session_factory() as observer:
+            assert observer.get(Project, success_id) is not None
+            assert observer.query(ProjectMembership).filter_by(project_id=success_id).count() == 1
+            presets = observer.query(PromptPreset).filter_by(project_id=success_id).all()
+            assert len(presets) == 6
+            active = {task for row in presets for task in json.loads(row.active_for_json or "[]")}
+            assert len(active) == 6
+            assert observer.query(KnowledgeBase).filter_by(project_id=success_id, kb_id="default").count() == 1
+        side_effect_observed.append(True)
+        return []
+
+    with (
+        patch("app.services.import_export_service.new_id", side_effect=lambda: next(success_ids)),
+        patch("app.services.vector_rag_service.build_project_chunks", side_effect=_observe_committed),
+        session_factory() as db,
+    ):
+        result = import_project_bundle(
+            db,
+            owner_user_id=user_id,
+            bundle={"schema_version": "project_bundle_v1", "project": {"name": "Committed Import"}},
+            rebuild_vectors=True,
+        )
+    assert result["ok"] is True
+    assert side_effect_observed == [True]
+
+
 def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: sa.Engine) -> None:
     user_id = "vector-kb-user"
     project_id = "vector-kb-project"
@@ -1486,6 +1573,7 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
         _assert_postgres_worker_control_races(session_factory)
         _assert_postgres_batch_worker_claim_races(session_factory)
         _assert_postgres_chapter_replace_transaction(session_factory)
+        _assert_postgres_project_initialization_atomicity(session_factory)
         _assert_postgres_vector_kb_isolation(session_factory, engine)
         _assert_postgres_migrator_digest_contract(engine)
         _assert_postgres_migrator_main_contract(engine)
