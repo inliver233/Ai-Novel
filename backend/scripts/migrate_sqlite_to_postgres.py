@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import base64
+from datetime import date, datetime, timezone
+from decimal import Decimal
 import hashlib
 import json
 import os
+import re
 import sys
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+import tempfile
 from typing import Any
+from uuid import UUID
 
 import sqlalchemy as sa
 from alembic import command
@@ -59,6 +65,9 @@ _RETIRED_SOURCE_TABLES = frozenset(
     }
 )
 
+_ACTIVE_REPORT: dict[str, Any] | None = None
+_ACTIVE_REPORT_PATH: str | None = None
+
 
 def _backend_alembic_config(*, database_url: str) -> Config:
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
@@ -72,10 +81,14 @@ def _mask_db_url(database_url: str) -> str:
     try:
         url = make_url(raw)
     except Exception:
-        return raw
+        return "<invalid-url>"
     if url.password:
         url = url.set(password="***")
     return str(url)
+
+
+def _sanitize_failure_message(message: str) -> str:
+    return re.sub(r"(\b[a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@]+(@)", r"\1***\2", str(message or ""), flags=re.I)
 
 
 def _normalize_sqlite_url(value: str) -> str:
@@ -227,7 +240,7 @@ def _ensure_target_migrations(target_url: str) -> None:
 
 def _create_head_schema_reference_engine() -> Engine:
     database_url = "sqlite://"
-    engine = sa.create_engine(database_url)
+    engine = sa.create_engine(database_url, hide_parameters=True)
     cfg = _backend_alembic_config(database_url=database_url)
     try:
         with engine.begin() as conn:
@@ -244,49 +257,126 @@ def _pg_required_extensions(engine: Engine) -> dict[str, bool] | None:
         return None
     with engine.connect() as conn:
         rows = conn.execute(
-            sa.text("SELECT extname FROM pg_extension WHERE extname IN ('uuid-ossp', 'pg_trgm') ORDER BY extname")
+            sa.text(
+                "SELECT extname FROM pg_extension WHERE extname IN ('uuid-ossp', 'pg_trgm', 'vector') ORDER BY extname"
+            )
         ).fetchall()
     existing = {str(r[0]) for r in rows}
-    return {"uuid-ossp": "uuid-ossp" in existing, "pg_trgm": "pg_trgm" in existing}
+    return {
+        "uuid-ossp": "uuid-ossp" in existing,
+        "pg_trgm": "pg_trgm" in existing,
+        "vector": "vector" in existing,
+    }
+
+
+def _missing_required_extensions(extensions: dict[str, bool] | None) -> list[str]:
+    if extensions is None:
+        return []
+    return sorted(name for name, available in extensions.items() if not available)
 
 
 def _count_rows(conn: sa.Connection, table: Table) -> int:
     return int(conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one())
 
 
-def _select_samples(conn: sa.Connection, table: Table, *, limit: int) -> list[dict[str, Any]]:
+def _ordered_select(table: Table):  # type: ignore[no-untyped-def]
     pk_cols = list(table.primary_key.columns)
-    order_by = pk_cols if pk_cols else [table.c[c.name] for c in table.columns]
-    rows = conn.execute(sa.select(table).order_by(*order_by).limit(max(0, int(limit)))).mappings().all()
-    return [dict(r) for r in rows]
+    order_by = pk_cols if pk_cols else [table.c[column.name] for column in table.columns]
+    return sa.select(table).order_by(*order_by)
 
 
-def _sample_hash(rows: list[dict[str, Any]]) -> str:
-    def _default(v: object) -> str:
-        return str(v)
+def _normalize_digest_value(value: object, column_type: sa.types.TypeEngine[Any]) -> object:
+    if value is None:
+        return None
+    if isinstance(column_type, sa.Boolean):
+        return bool(value)
+    if isinstance(column_type, sa.DateTime):
+        parsed = value
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            except ValueError:
+                return value
+        if isinstance(parsed, datetime):
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.astimezone(timezone.utc)
+            return parsed.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    if isinstance(column_type, sa.Date):
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value.strip()).isoformat()
+            except ValueError:
+                return value
+        if isinstance(value, date):
+            return value.isoformat()
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, float):
+        return format(value, ".17g")
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {"base64": base64.b64encode(bytes(value)).decode("ascii")}
+    if isinstance(value, UUID):
+        return str(value)
+    return value
 
-    txt = json.dumps(rows, ensure_ascii=False, sort_keys=True, default=_default)
-    return hashlib.sha256(txt.encode("utf-8")).hexdigest()
+
+def _table_digest(
+    conn: sa.Connection,
+    table: Table,
+    *,
+    canonical_table: Table | None = None,
+    chunk_size: int = 2000,
+) -> str:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+    canonical_columns = (canonical_table if canonical_table is not None else table).c
+    row_count = 0
+    row_hash_sum = 0
+    row_hash_xor = 0
+    modulus = 1 << 256
+    result = conn.execute(_ordered_select(table))
+    while True:
+        batch = result.mappings().fetchmany(chunk_size)
+        if not batch:
+            break
+        for row in batch:
+            normalized = {
+                column.name: _normalize_digest_value(row[column.name], canonical_columns[column.name].type)
+                for column in table.columns
+            }
+            encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            row_hash = int.from_bytes(hashlib.sha256(encoded).digest(), "big")
+            row_count += 1
+            row_hash_sum = (row_hash_sum + row_hash) % modulus
+            row_hash_xor ^= row_hash
+    manifest = f"v1:{row_count}:{row_hash_sum:064x}:{row_hash_xor:064x}"
+    return hashlib.sha256(manifest.encode("ascii")).hexdigest()
 
 
 def _missing_fk_count(conn: sa.Connection, table: Table, fk: dict[str, Any], md: sa.MetaData) -> int:
     constrained = fk.get("constrained_columns") or []
     referred_cols = fk.get("referred_columns") or []
     referred_table_name = fk.get("referred_table")
-    if len(constrained) != 1 or len(referred_cols) != 1 or not referred_table_name:
-        return 0
-
-    fk_col = constrained[0]
-    ref_col = referred_cols[0]
-    ref_table = md.tables.get(referred_table_name)
+    referred_schema = fk.get("referred_schema")
+    if not constrained or len(constrained) != len(referred_cols) or not referred_table_name:
+        raise RuntimeError(f"Unsupported foreign key metadata on table {table.name}: {fk}")
+    metadata_key = f"{referred_schema}.{referred_table_name}" if referred_schema else referred_table_name
+    ref_table = md.tables.get(metadata_key)
     if ref_table is None:
-        ref_table = Table(referred_table_name, md, autoload_with=conn)
+        ref_table = Table(referred_table_name, md, schema=referred_schema, autoload_with=conn)
+    ref_relation = ref_table.alias(f"fk_ref_{table.name}_{referred_table_name}")
 
+    join_condition = sa.and_(
+        *(table.c[fk_col] == ref_relation.c[ref_col] for fk_col, ref_col in zip(constrained, referred_cols))
+    )
+    non_null_condition = sa.and_(*(table.c[column].is_not(None) for column in constrained))
+    missing_condition = sa.and_(*(ref_relation.c[column].is_(None) for column in referred_cols))
     stmt = (
         sa.select(sa.func.count())
-        .select_from(table.outerjoin(ref_table, table.c[fk_col] == ref_table.c[ref_col]))
-        .where(table.c[fk_col].is_not(None))
-        .where(ref_table.c[ref_col].is_(None))
+        .select_from(table.outerjoin(ref_relation, join_condition))
+        .where(non_null_condition)
+        .where(missing_condition)
     )
     return int(conn.execute(stmt).scalar_one())
 
@@ -318,6 +408,29 @@ def _reset_postgres_sequence(conn: sa.Connection, table: Table) -> None:
     )
 
 
+def _write_report(path: str | Path, report: dict[str, Any]) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(payload)
+        temp_path = Path(handle.name)
+    temp_path.replace(destination)
+
+
+def _report_has_inserted_rows(report: dict[str, Any]) -> bool:
+    return any(
+        int(table.get("inserted") or 0) > 0 for table in report.get("tables", {}).values() if isinstance(table, dict)
+    )
+
+
 def _copy_table(
     *,
     src_conn: sa.Connection,
@@ -327,7 +440,8 @@ def _copy_table(
     chunk_size: int,
     resume: bool,
     post_insert_hook: Callable[[sa.Connection], None] | None = None,
-) -> int:
+) -> dict[str, int]:
+    attempted = 0
     inserted = 0
 
     if resume and dst_engine.dialect.name == "postgresql":
@@ -341,6 +455,8 @@ def _copy_table(
         insert_stmt = dst_table.insert()
 
     with dst_engine.begin() as dst_conn:
+        if dst_conn.dialect.name == "postgresql":
+            dst_conn.exec_driver_sql("SET LOCAL TIME ZONE 'UTC'")
         result = src_conn.execute(sa.select(src_table))
         while True:
             batch = result.mappings().fetchmany(chunk_size)
@@ -348,15 +464,17 @@ def _copy_table(
                 break
             rows = [dict(r) for r in batch]
             if rows:
-                dst_conn.execute(insert_stmt, rows)
-                inserted += len(rows)
+                attempted += len(rows)
+                execution = dst_conn.execute(insert_stmt, rows)
+                inserted += max(0, int(getattr(execution, "rowcount", len(rows)) or 0))
         if post_insert_hook is not None:
             post_insert_hook(dst_conn)
         _reset_postgres_sequence(dst_conn, dst_table)
-    return inserted
+    return {"attempted": attempted, "inserted": inserted, "skipped": attempted - inserted}
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run_main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_REPORT, _ACTIVE_REPORT_PATH
     parser = argparse.ArgumentParser(description="Migrate ainovel SQLite data to Postgres (preserve IDs).")
     parser.add_argument("--source", required=True, help="SQLite DB path or sqlite:/// URL")
     parser.add_argument(
@@ -376,27 +494,35 @@ def main(argv: list[str] | None = None) -> int:
     if not target_url:
         raise SystemExit("--target is required")
 
+    report: dict[str, Any] = {
+        "status": "running",
+        "partial": False,
+        "source": {"url": _mask_db_url(src_url)},
+        "target": {"url": _mask_db_url(target_url)},
+        "tables": {},
+        "warnings": [],
+        "verification": {"status": "pending", "failures": []},
+    }
+    _ACTIVE_REPORT = report
+    _ACTIVE_REPORT_PATH = str(args.report)
+    _write_report(args.report, report)
+    if int(args.chunk_size) <= 0:
+        raise SystemExit("--chunk-size must be greater than zero")
+
     _require_existing_sqlite_source(src_url)
     print(f"[source] {_mask_db_url(src_url)}")
     print(f"[target] {_mask_db_url(target_url)}")
 
-    src_engine = sa.create_engine(src_url, connect_args={"check_same_thread": False})
+    src_engine = sa.create_engine(src_url, connect_args={"check_same_thread": False}, hide_parameters=True)
     try:
         _validate_source_schema(src_engine)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
 
-    dst_engine = sa.create_engine(target_url, pool_pre_ping=True)
+    dst_engine = sa.create_engine(target_url, pool_pre_ping=True, hide_parameters=True)
 
     if dst_engine.dialect.name != "postgresql":
         raise SystemExit(f"--target must be Postgres, got dialect={dst_engine.dialect.name!r}")
-
-    report: dict[str, Any] = {
-        "source": {"url": _mask_db_url(src_url)},
-        "target": {"url": _mask_db_url(target_url)},
-        "tables": {},
-        "warnings": [],
-    }
 
     plan_target_engine = dst_engine
     reference_engine: Engine | None = None
@@ -412,9 +538,14 @@ def main(argv: list[str] | None = None) -> int:
     exts = _pg_required_extensions(dst_engine)
     if exts is not None:
         report["postgres_extensions"] = exts
-        if not all(exts.values()):
-            report["warnings"].append({"code": "PG_EXT_MISSING", "details": exts})
-            print(f"[warn] postgres extensions missing: {exts}")
+        missing_extensions = _missing_required_extensions(exts)
+        if missing_extensions:
+            report["verification"] = {
+                "status": "failed",
+                "failures": [{"check": "postgres_extensions", "missing": missing_extensions, "details": exts}],
+            }
+            _write_report(args.report, report)
+            raise RuntimeError(f"Required PostgreSQL extensions are missing: {missing_extensions}")
 
     with _locked_sqlite_source(src_engine) as src_conn:
         try:
@@ -467,6 +598,9 @@ def main(argv: list[str] | None = None) -> int:
             print("[plan] table copy order:")
             for t in table_order:
                 print(f"  - {t}")
+            report["status"] = "dry_run"
+            report["verification"] = {"status": "skipped", "failures": []}
+            _write_report(args.report, report)
             return 0
 
         for name in table_order:
@@ -477,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:
 
             if name == "projects":
                 # Copy projects with active_outline_id cleared, then restore after outlines are copied.
+                attempted = 0
                 inserted = 0
                 if args.resume and dst_engine.dialect.name == "postgresql":
                     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -487,6 +622,8 @@ def main(argv: list[str] | None = None) -> int:
                     insert_stmt = dst_table.insert()
 
                 with dst_engine.begin() as dst_conn:
+                    if dst_conn.dialect.name == "postgresql":
+                        dst_conn.exec_driver_sql("SET LOCAL TIME ZONE 'UTC'")
                     result = src_conn.execute(sa.select(src_table))
                     while True:
                         batch = result.mappings().fetchmany(int(args.chunk_size))
@@ -501,16 +638,22 @@ def main(argv: list[str] | None = None) -> int:
                             row["active_outline_id"] = None
                             rows.append(row)
                         if rows:
-                            dst_conn.execute(insert_stmt, rows)
-                            inserted += len(rows)
-                report["tables"][name] = {"inserted": inserted}
+                            attempted += len(rows)
+                            execution = dst_conn.execute(insert_stmt, rows)
+                            inserted += max(0, int(getattr(execution, "rowcount", len(rows)) or 0))
+                report["tables"][name] = {
+                    "attempted": attempted,
+                    "inserted": inserted,
+                    "skipped": attempted - inserted,
+                }
+                _write_report(args.report, report)
                 continue
 
             post_insert_hook = None
             if name == "outlines":
                 post_insert_hook = _projects_post_insert_hook
 
-            inserted = _copy_table(
+            copy_stats = _copy_table(
                 src_conn=src_conn,
                 dst_engine=dst_engine,
                 src_table=src_table,
@@ -519,41 +662,103 @@ def main(argv: list[str] | None = None) -> int:
                 resume=bool(args.resume),
                 post_insert_hook=post_insert_hook,
             )
-            report["tables"][name] = {"inserted": inserted}
+            report["tables"][name] = copy_stats
+            _write_report(args.report, report)
 
         # Verification uses the same locked source connection as preflight and
         # copy, so counts and hashes cannot observe a later writer's snapshot.
-        sample_limit = 20
-        with dst_engine.connect() as dconn:
-            for name in table_order:
-                st = src_tables[name]
-                dt = dst_tables[name]
+        verification_failures: list[dict[str, Any]] = []
+        with dst_engine.connect().execution_options(isolation_level="REPEATABLE READ") as dconn:
+            with dconn.begin():
+                if dconn.dialect.name == "postgresql":
+                    dconn.exec_driver_sql("SET LOCAL TIME ZONE 'UTC'")
+                for name in table_order:
+                    st = src_tables[name]
+                    dt = dst_tables[name]
 
-                src_count = _count_rows(src_conn, st)
-                dst_count = _count_rows(dconn, dt)
+                    src_count = _count_rows(src_conn, st)
+                    dst_count = _count_rows(dconn, dt)
 
-                src_samples = _select_samples(src_conn, st, limit=sample_limit)
-                dst_samples = _select_samples(dconn, dt, limit=sample_limit)
+                    src_digest = _table_digest(src_conn, st, canonical_table=dt, chunk_size=int(args.chunk_size))
+                    dst_digest = _table_digest(dconn, dt, canonical_table=dt, chunk_size=int(args.chunk_size))
 
-                table_report = report["tables"].setdefault(name, {})
-                table_report.update(
-                    {
-                        "source_count": src_count,
-                        "target_count": dst_count,
-                        "sample_hash_source": _sample_hash(src_samples),
-                        "sample_hash_target": _sample_hash(dst_samples),
-                    }
-                )
+                    table_report = report["tables"].setdefault(name, {})
+                    table_report.update(
+                        {
+                            "source_count": src_count,
+                            "target_count": dst_count,
+                            "digest_source": src_digest,
+                            "digest_target": dst_digest,
+                        }
+                    )
 
-                fk_missing_total = 0
-                inspector = sa.inspect(dconn)
-                for fk in inspector.get_foreign_keys(name):
-                    fk_missing_total += _missing_fk_count(dconn, dt, fk, dt.metadata)
-                table_report["missing_fk_total"] = fk_missing_total
+                    fk_missing_total = 0
+                    inspector = sa.inspect(dconn)
+                    for fk in inspector.get_foreign_keys(name):
+                        fk_missing_total += _missing_fk_count(dconn, dt, fk, dt.metadata)
+                    table_report["missing_fk_total"] = fk_missing_total
 
-    Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+                    if src_count != dst_count:
+                        verification_failures.append(
+                            {"table": name, "check": "count", "source": src_count, "target": dst_count}
+                        )
+                    if src_digest != dst_digest:
+                        verification_failures.append(
+                            {"table": name, "check": "digest", "source": src_digest, "target": dst_digest}
+                        )
+                    if fk_missing_total:
+                        verification_failures.append(
+                            {"table": name, "check": "foreign_keys", "missing": fk_missing_total}
+                        )
+
+        report["verification"] = {
+            "status": "failed" if verification_failures else "passed",
+            "failures": verification_failures,
+        }
+        if verification_failures:
+            report["status"] = "failed"
+            report["partial"] = _report_has_inserted_rows(report)
+            _write_report(args.report, report)
+            raise RuntimeError(f"Verification failed with {len(verification_failures)} hard mismatch(es)")
+
+    report["status"] = "succeeded"
+    report["partial"] = False
+    _write_report(args.report, report)
     print(f"[ok] wrote report: {args.report}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_REPORT, _ACTIVE_REPORT_PATH
+    _ACTIVE_REPORT = None
+    _ACTIVE_REPORT_PATH = None
+    try:
+        return _run_main(argv)
+    except SystemExit:
+        if _ACTIVE_REPORT is None:
+            raise
+        exc = sys.exc_info()[1]
+        message = str(exc)
+    except sa.exc.SQLAlchemyError as exc:
+        message = f"Database operation failed ({type(exc).__name__})"
+    except Exception as exc:
+        message = str(exc) or type(exc).__name__
+
+    message = _sanitize_failure_message(message)
+    print(f"[fail] {message}", file=sys.stderr)
+    if _ACTIVE_REPORT is not None and _ACTIVE_REPORT_PATH is not None:
+        _ACTIVE_REPORT["status"] = "failed"
+        _ACTIVE_REPORT["partial"] = _report_has_inserted_rows(_ACTIVE_REPORT)
+        verification = _ACTIVE_REPORT.setdefault("verification", {"status": "failed", "failures": []})
+        verification["status"] = "failed"
+        failures = verification.setdefault("failures", [])
+        if not failures:
+            failures.append({"check": "migration", "message": message})
+        try:
+            _write_report(_ACTIVE_REPORT_PATH, _ACTIVE_REPORT)
+        except Exception:
+            print("[fail] Unable to persist failure report", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

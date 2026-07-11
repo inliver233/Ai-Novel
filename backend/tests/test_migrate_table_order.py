@@ -312,7 +312,7 @@ def test_copy_table_preserves_rows_in_chunks_and_rolls_back_hook_failure() -> No
             )
         with target_engine.connect() as conn:
             rows = conn.execute(sa.select(target_table).order_by(target_table.c.id)).all()
-        assert inserted == 5
+        assert inserted == {"attempted": 5, "inserted": 5, "skipped": 0}
         assert rows == [(1, "v1"), (2, "v2"), (3, "v3"), (4, "v4"), (5, "v5")]
 
         with target_engine.begin() as conn:

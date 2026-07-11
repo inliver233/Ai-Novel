@@ -8,6 +8,7 @@
 - 账号具备执行扩展的权限（或 DBA 预先安装）：
   - `uuid-ossp`
   - `pg_trgm`
+  - `vector`
 - 后端 Python 依赖已安装（需要 Postgres driver，例如 `psycopg2-binary`）
 
 ## 迁移步骤（推荐）
@@ -48,6 +49,9 @@ $env:DATABASE_URL = "postgresql://user:pass@host:5432/ainovel"
 - PostgreSQL 专属 `vector_chunks` 不从 SQLite 复制，向量数据需按现有索引流程重建；
 - 若源库存在目标 schema 无法承接的业务表，会在写入任何业务数据前中止并列出表名；
 - 保留自增主键后会重置 PostgreSQL sequence，避免迁移后的新写入与旧 id 冲突。
+- 每个 PostgreSQL 目标写事务与最终 `REPEATABLE READ` 验证事务都会执行
+  `SET LOCAL TIME ZONE 'UTC'`，因此 SQLite 中无时区的时间值按 UTC 写入 `TIMESTAMPTZ`，
+  不受目标账号或数据库默认时区影响。
 
 ```powershell
 cd backend
@@ -62,9 +66,10 @@ cd backend
 - `--dry-run`：只输出计划；默认在本地临时 SQLite 中模拟当前 Alembic head，不写入目标库 schema 或业务数据
 - `--resume`：幂等断点续跑（Postgres：`ON CONFLICT DO NOTHING`；要求表有主键）
 - `--no-migrate-schema`：跳过目标库的 `alembic upgrade head`（已手工跑过迁移时使用）
-- `--chunk-size`：单表批量写入大小（默认通常够用；大库可调）
+- `--chunk-size`：单表批量写入大小，必须大于 `0`（默认通常够用；大库可调）
 
-> 注意：脚本会在控制台输出 `[target]`，但会对 URL 中的密码做掩码；report 以计数/抽样 hash 为主，不包含明文 API Key（建议不要提交 report 文件）。
+> 注意：脚本会在控制台输出 `[target]`，但会对 URL 中的密码做掩码；无法安全解析的 URL
+> 只显示 `<invalid-url>`。report 不包含明文连接密码或 API Key（建议不要提交 report 文件）。
 
 如果中途失败/中断，直接重跑并开启幂等模式（断点续跑）：
 
@@ -82,10 +87,17 @@ cd backend
 
 - 实际 `table_order`、`skipped_metadata_tables`，以及单独列出的
   `skipped_empty_retired_tables`（后者必须仅包含已检查为空的旧退役表）；
+- 顶层：`status`、`partial`、`verification.status` 与结构化 `verification.failures`
+- 每表复制事实：`attempted` / `inserted` / `skipped`
 - 每表：`source_count` / `target_count`
-- 抽样：`sample_hash_source` / `sample_hash_target`
-- 外键抽检：`missing_fk_total`（应为 `0`）
+- 全表确定性摘要：`digest_source` / `digest_target`（按主键或全列稳定排序并逐行规范化，覆盖全部数据，非抽样）
+- 完整外键校验：`missing_fk_total`（包含复合外键，应为 `0`；无法支持的外键元数据会令迁移失败）
 - Postgres 扩展检测：`postgres_extensions.uuid-ossp/pg_trgm`（应为 `true`）
+
+count、digest 或外键任一硬校验不一致时，脚本会向 stderr 输出 `[fail]`、返回非零退出码，
+且不会输出 `[ok]`。执行中报告通过同目录临时文件原子替换；中途异常也会尽量留下
+`status=failed`、`partial=true` 的失败报告。`--resume` 只跳过已存在主键，最终仍会对源/目标
+全表重新计算 count 与 digest，因此目标中已存在行的内容漂移不会被静默接受。
 
 ## 启动服务验证（目标库）
 

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import os
+import json
+import tempfile
 import threading
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -46,6 +50,7 @@ from scripts.check_alembic import (
     check_empty_database,
     migration_head,
 )
+from scripts import migrate_sqlite_to_postgres as sqlite_pg_migrator
 
 
 PRE_CLEANUP_REVISION = "9f3a7c2d1e4b"
@@ -943,6 +948,244 @@ def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: 
         assert "ix_vector_chunks_project_kb_source" in str(plan)
 
 
+def _assert_postgres_migrator_digest_contract(engine: sa.Engine) -> None:
+    source_engine = sa.create_engine("sqlite://")
+    source_metadata = sa.MetaData()
+    target_metadata = sa.MetaData()
+    source_table = sa.Table(
+        "migrator_digest_contract",
+        source_metadata,
+        sa.Column("tenant_id", sa.String(16), primary_key=True),
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("enabled", sa.Boolean, nullable=False),
+        sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("payload", sa.LargeBinary),
+    )
+    target_table = sa.Table(
+        "migrator_digest_contract",
+        target_metadata,
+        sa.Column("tenant_id", sa.String(16), primary_key=True),
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("enabled", sa.Boolean, nullable=False),
+        sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("payload", sa.LargeBinary),
+    )
+    rows = [
+        {
+            "tenant_id": "tenant",
+            "id": index,
+            "enabled": index % 2 == 0,
+            "recorded_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "payload": f"row-{index}".encode(),
+        }
+        for index in range(1, 22)
+    ]
+    source_metadata.create_all(source_engine)
+    try:
+        with engine.begin() as connection:
+            target_table.drop(connection, checkfirst=True)
+            target_table.create(connection)
+        with source_engine.begin() as connection:
+            connection.execute(source_table.insert(), rows)
+        with source_engine.connect() as source_connection:
+            stats = sqlite_pg_migrator._copy_table(
+                src_conn=source_connection,
+                dst_engine=engine,
+                src_table=source_table,
+                dst_table=target_table,
+                chunk_size=4,
+                resume=False,
+            )
+            with engine.connect() as target_connection:
+                assert stats == {"attempted": 21, "inserted": 21, "skipped": 0}
+                assert sqlite_pg_migrator._count_rows(source_connection, source_table) == 21
+                assert sqlite_pg_migrator._count_rows(target_connection, target_table) == 21
+                assert sqlite_pg_migrator._table_digest(
+                    source_connection, source_table, canonical_table=target_table, chunk_size=3
+                ) == sqlite_pg_migrator._table_digest(
+                    target_connection, target_table, canonical_table=target_table, chunk_size=5
+                )
+            resumed = sqlite_pg_migrator._copy_table(
+                src_conn=source_connection,
+                dst_engine=engine,
+                src_table=source_table,
+                dst_table=target_table,
+                chunk_size=6,
+                resume=True,
+            )
+            assert resumed == {"attempted": 21, "inserted": 0, "skipped": 21}
+            with engine.begin() as target_connection:
+                target_connection.execute(
+                    sa.update(target_table)
+                    .where(target_table.c.tenant_id == "tenant", target_table.c.id == 21)
+                    .values(payload=b"resume-drift")
+                )
+            with engine.connect() as target_connection:
+                assert sqlite_pg_migrator._table_digest(
+                    source_connection, source_table, canonical_table=target_table, chunk_size=3
+                ) != sqlite_pg_migrator._table_digest(
+                    target_connection, target_table, canonical_table=target_table, chunk_size=5
+                )
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE migrator_fk_parent (tenant_id TEXT NOT NULL, id INTEGER NOT NULL, "
+                "PRIMARY KEY (tenant_id, id))"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE migrator_fk_child (id INTEGER PRIMARY KEY, tenant_id TEXT, parent_id INTEGER)"
+            )
+            connection.exec_driver_sql("INSERT INTO migrator_fk_parent VALUES ('tenant', 1)")
+            connection.exec_driver_sql("INSERT INTO migrator_fk_child VALUES (1, 'tenant', 1), (2, 'tenant', 2)")
+            connection.exec_driver_sql(
+                "ALTER TABLE migrator_fk_child ADD CONSTRAINT fk_migrator_composite "
+                "FOREIGN KEY (tenant_id, parent_id) REFERENCES migrator_fk_parent(tenant_id, id) NOT VALID"
+            )
+        fk_metadata = sa.MetaData()
+        with engine.connect() as connection:
+            fk_metadata.reflect(connection, only=["migrator_fk_parent", "migrator_fk_child"])
+            child_table = fk_metadata.tables["migrator_fk_child"]
+            fk = sa.inspect(connection).get_foreign_keys("migrator_fk_child")[0]
+            assert sqlite_pg_migrator._missing_fk_count(connection, child_table, fk, fk_metadata) == 1
+    finally:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE IF EXISTS migrator_fk_child CASCADE")
+            connection.exec_driver_sql("DROP TABLE IF EXISTS migrator_fk_parent CASCADE")
+            target_table.drop(connection, checkfirst=True)
+        source_engine.dispose()
+
+
+def _assert_postgres_migrator_main_contract(engine: sa.Engine) -> None:
+    schema_name = "migrator_main_contract"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        source_path = Path(temp_dir) / "source.db"
+        report_path = Path(temp_dir) / "report.json"
+        source_engine = sa.create_engine(f"sqlite:///{source_path.as_posix()}")
+        metadata = sa.MetaData()
+        users = sa.Table(
+            "users",
+            metadata,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("name", sa.String, nullable=False),
+        )
+        projects = sa.Table(
+            "projects",
+            metadata,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("name", sa.String, nullable=False),
+            sa.Column("active_outline_id", sa.String, nullable=True),
+        )
+        parents = sa.Table(
+            "parents",
+            metadata,
+            sa.Column("tenant_id", sa.String, primary_key=True),
+            sa.Column("id", sa.Integer, primary_key=True),
+        )
+        children = sa.Table(
+            "children",
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("tenant_id", sa.String),
+            sa.Column("parent_id", sa.Integer),
+        )
+        moments = sa.Table(
+            "moments",
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+        )
+        metadata.create_all(source_engine)
+        with source_engine.begin() as connection:
+            connection.execute(users.insert(), {"id": "user-1", "name": "Source User"})
+            connection.execute(projects.insert(), {"id": "project-1", "name": "Source Project"})
+            connection.execute(parents.insert(), {"tenant_id": "tenant", "id": 1})
+            connection.execute(
+                children.insert(),
+                [
+                    {"id": 1, "tenant_id": "tenant", "parent_id": 1},
+                    {"id": 2, "tenant_id": "tenant", "parent_id": 2},
+                ],
+            )
+            connection.execute(moments.insert(), {"id": 1, "occurred_at": datetime(2026, 1, 1, 12, 0, 0)})
+        source_engine.dispose()
+
+        with engine.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+            connection.exec_driver_sql(f'CREATE SCHEMA "{schema_name}"')
+            connection.exec_driver_sql(f'CREATE TABLE "{schema_name}".users (id TEXT PRIMARY KEY, name TEXT NOT NULL)')
+            connection.exec_driver_sql(
+                f'CREATE TABLE "{schema_name}".projects '
+                "(id TEXT PRIMARY KEY, name TEXT NOT NULL, active_outline_id TEXT)"
+            )
+            connection.exec_driver_sql(
+                f'CREATE TABLE "{schema_name}".parents '
+                "(tenant_id TEXT NOT NULL, id INTEGER NOT NULL, PRIMARY KEY (tenant_id, id))"
+            )
+            connection.exec_driver_sql(
+                f'CREATE TABLE "{schema_name}".children (id INTEGER PRIMARY KEY, tenant_id TEXT, parent_id INTEGER)'
+            )
+            connection.exec_driver_sql(
+                f'CREATE TABLE "{schema_name}".moments (id INTEGER PRIMARY KEY, occurred_at TIMESTAMPTZ NOT NULL)'
+            )
+        target_url = engine.url.update_query_dict(
+            {"options": f"-csearch_path={schema_name} -ctimezone=Asia/Hong_Kong"}
+        ).render_as_string(hide_password=False)
+        argv = [
+            "--source",
+            str(source_path),
+            "--target",
+            target_url,
+            "--no-migrate-schema",
+            "--report",
+            str(report_path),
+        ]
+        try:
+            assert sqlite_pg_migrator.main(argv) == 0
+            succeeded = json.loads(report_path.read_text(encoding="utf-8"))
+            assert succeeded["status"] == "succeeded"
+            assert succeeded["verification"]["failures"] == []
+            target_engine = sa.create_engine(target_url)
+            try:
+                with target_engine.connect() as connection:
+                    stored = connection.exec_driver_sql("SELECT occurred_at FROM moments WHERE id = 1").scalar_one()
+                    assert stored.astimezone(timezone.utc) == datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+            finally:
+                target_engine.dispose()
+
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    f"UPDATE \"{schema_name}\".users SET name = 'Target Drift' WHERE id = 'user-1'"
+                )
+            assert sqlite_pg_migrator.main([*argv, "--resume"]) == 1
+            failed = json.loads(report_path.read_text(encoding="utf-8"))
+            assert failed["status"] == "failed"
+            assert failed["verification"]["status"] == "failed"
+            assert {failure["check"] for failure in failed["verification"]["failures"]} == {"digest"}
+
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    f"UPDATE \"{schema_name}\".users SET name = 'Source User' WHERE id = 'user-1'"
+                )
+                connection.exec_driver_sql(
+                    f"INSERT INTO \"{schema_name}\".users (id, name) VALUES ('extra-user', 'Extra')"
+                )
+            assert sqlite_pg_migrator.main([*argv, "--resume"]) == 1
+            count_failed = json.loads(report_path.read_text(encoding="utf-8"))
+            assert "count" in {failure["check"] for failure in count_failed["verification"]["failures"]}
+
+            with engine.begin() as connection:
+                connection.exec_driver_sql(f"DELETE FROM \"{schema_name}\".users WHERE id = 'extra-user'")
+                connection.exec_driver_sql(
+                    f'ALTER TABLE "{schema_name}".children ADD CONSTRAINT fk_main_composite '
+                    f'FOREIGN KEY (tenant_id, parent_id) REFERENCES "{schema_name}".parents(tenant_id, id) NOT VALID'
+                )
+            assert sqlite_pg_migrator.main([*argv, "--resume"]) == 1
+            fk_failed = json.loads(report_path.read_text(encoding="utf-8"))
+            assert {failure["check"] for failure in fk_failed["verification"]["failures"]} == {"foreign_keys"}
+        finally:
+            with engine.begin() as connection:
+                connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+
+
 @pytest.mark.postgres_integration
 def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
     """Exercise the real PostgreSQL-only DDL and the two current migrations."""
@@ -1239,6 +1482,8 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
         _assert_postgres_batch_worker_claim_races(session_factory)
         _assert_postgres_chapter_replace_transaction(session_factory)
         _assert_postgres_vector_kb_isolation(session_factory, engine)
+        _assert_postgres_migrator_digest_contract(engine)
+        _assert_postgres_migrator_main_contract(engine)
         _assert_postgres_quota_race(
             session_factory,
             dimension="project",
