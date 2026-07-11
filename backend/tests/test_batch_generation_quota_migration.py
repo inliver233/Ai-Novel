@@ -69,8 +69,12 @@ def test_quota_migration_backfills_authoritative_provider_and_downgrades(tmp_pat
     try:
         with engine.begin() as connection:
             _seed_project(connection, project_id="p-task", user_id="u-task", status="queued", task_id="task-override")
-            _seed_project(connection, project_id="p-default", user_id="u-default", status="paused", task_id="task-default")
-            _seed_project(connection, project_id="p-terminal", user_id="u-terminal", status="succeeded", task_id="task-terminal")
+            _seed_project(
+                connection, project_id="p-default", user_id="u-default", status="paused", task_id="task-default"
+            )
+            _seed_project(
+                connection, project_id="p-terminal", user_id="u-terminal", status="succeeded", task_id="task-terminal"
+            )
             connection.exec_driver_sql(
                 "INSERT INTO llm_presets (project_id, provider, model) VALUES ('p-task', 'openai', 'gpt-4o-mini')"
             )
@@ -90,9 +94,7 @@ def test_quota_migration_backfills_authoritative_provider_and_downgrades(tmp_pat
 
         with engine.connect() as connection:
             providers = dict(
-                connection.exec_driver_sql(
-                    "SELECT id, runtime_provider FROM batch_generation_tasks ORDER BY id"
-                ).all()
+                connection.exec_driver_sql("SELECT id, runtime_provider FROM batch_generation_tasks ORDER BY id").all()
             )
             assert providers == {
                 "task-default": "gemini",
@@ -107,9 +109,13 @@ def test_quota_migration_backfills_authoritative_provider_and_downgrades(tmp_pat
                 "ix_batch_generation_tasks_actor_status",
                 "ix_batch_generation_tasks_provider_status",
             }.issubset(index_names)
-            assert str(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()) == QUOTA_REVISION
+            assert (
+                str(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one())
+                == QUOTA_REVISION
+            )
 
         config = migrations._alembic_config(database_url=database_url)
+        _run_alembic(database_url, "head")
         command.check(config)
 
         _run_alembic(database_url, PREVIOUS_REVISION, downgrade=True)
@@ -119,7 +125,10 @@ def test_quota_migration_backfills_authoritative_provider_and_downgrades(tmp_pat
             assert "runtime_provider" not in {
                 str(column["name"]) for column in inspector.get_columns("batch_generation_tasks")
             }
-            assert str(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()) == PREVIOUS_REVISION
+            assert (
+                str(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one())
+                == PREVIOUS_REVISION
+            )
     finally:
         engine.dispose()
 
@@ -148,7 +157,10 @@ def test_quota_migration_fails_before_ddl_when_active_provider_cannot_be_resolve
             assert "runtime_provider" not in {
                 str(column["name"]) for column in inspector.get_columns("batch_generation_tasks")
             }
-            assert str(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()) == PREVIOUS_REVISION
+            assert (
+                str(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one())
+                == PREVIOUS_REVISION
+            )
     finally:
         engine.dispose()
 

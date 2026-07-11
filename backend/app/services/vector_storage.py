@@ -57,7 +57,9 @@ def _pgvector_ready() -> bool:
             if not ext_installed:
                 ready = False
             else:
-                table_exists = bool(conn.execute(text("SELECT to_regclass('public.vector_chunks') IS NOT NULL")).scalar())
+                table_exists = bool(
+                    conn.execute(text("SELECT to_regclass('public.vector_chunks') IS NOT NULL")).scalar()
+                )
                 ready = bool(table_exists)
     except Exception:
         ready = False
@@ -257,12 +259,16 @@ def _get_collection(*, project_id: str, kb_id: str | None = None):
         return legacy_collection
 
 
-def _pgvector_upsert_chunks(*, project_id: str, chunks: list[VectorChunk], embeddings: list[list[float]]) -> dict[str, Any]:
+def _pgvector_upsert_chunks_in_session(
+    *, db: Any, project_id: str, kb_id: str | None, chunks: list[VectorChunk], embeddings: list[list[float]]
+) -> int:
+    kb = _normalize_kb_id(kb_id)
     sql = text(
         """
         INSERT INTO vector_chunks (
             id,
             project_id,
+            kb_id,
             source,
             source_id,
             chunk_index,
@@ -275,6 +281,7 @@ def _pgvector_upsert_chunks(*, project_id: str, chunks: list[VectorChunk], embed
         ) VALUES (
             :id,
             :project_id,
+            :kb_id,
             :source,
             :source_id,
             :chunk_index,
@@ -285,8 +292,7 @@ def _pgvector_upsert_chunks(*, project_id: str, chunks: list[VectorChunk], embed
             (:embedding)::vector,
             NOW()
         )
-        ON CONFLICT (id) DO UPDATE SET
-            project_id = EXCLUDED.project_id,
+        ON CONFLICT (project_id, kb_id, id) DO UPDATE SET
             source = EXCLUDED.source,
             source_id = EXCLUDED.source_id,
             chunk_index = EXCLUDED.chunk_index,
@@ -319,6 +325,7 @@ def _pgvector_upsert_chunks(*, project_id: str, chunks: list[VectorChunk], embed
             {
                 "id": c.id,
                 "project_id": project_id,
+                "kb_id": kb,
                 "source": source,
                 "source_id": source_id,
                 "chunk_index": chunk_index,
@@ -331,21 +338,42 @@ def _pgvector_upsert_chunks(*, project_id: str, chunks: list[VectorChunk], embed
         )
 
     if not params:
-        return {"enabled": True, "skipped": False, "ingested": 0}
+        return 0
 
+    db.execute(sql, params)
+    return len(params)
+
+
+def _pgvector_upsert_chunks(
+    *, project_id: str, kb_id: str | None = None, chunks: list[VectorChunk], embeddings: list[list[float]]
+) -> dict[str, Any]:
     db = SessionLocal()
     try:
-        db.execute(sql, params)
+        ingested = _pgvector_upsert_chunks_in_session(
+            db=db,
+            project_id=project_id,
+            kb_id=kb_id,
+            chunks=chunks,
+            embeddings=embeddings,
+        )
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
-    return {"enabled": True, "skipped": False, "ingested": len(params)}
+    return {"enabled": True, "skipped": False, "ingested": ingested}
 
 
-def _pgvector_delete_project(*, project_id: str) -> None:
+def _pgvector_delete_project(*, project_id: str, kb_id: str | None = None) -> None:
     db = SessionLocal()
     try:
-        db.execute(text("DELETE FROM vector_chunks WHERE project_id = :project_id"), {"project_id": project_id})
+        params: dict[str, Any] = {"project_id": project_id}
+        where_sql = "project_id = :project_id"
+        if kb_id is not None:
+            where_sql += " AND kb_id = :kb_id"
+            params["kb_id"] = _normalize_kb_id(kb_id)
+        db.execute(text(f"DELETE FROM vector_chunks WHERE {where_sql}"), params)
         db.commit()
     finally:
         db.close()
@@ -354,6 +382,7 @@ def _pgvector_delete_project(*, project_id: str) -> None:
 def _pgvector_hybrid_fetch(
     *,
     project_id: str,
+    kb_id: str | None = None,
     query_text: str,
     query_vec: list[float],
     sources: list[VectorSource],
@@ -364,8 +393,9 @@ def _pgvector_hybrid_fetch(
     qvec = _pgvector_literal(query_vec)
     qtext = (query_text or "").strip() or " "
 
-    where_sql = "project_id = :project_id"
-    base_params: dict[str, Any] = {"project_id": project_id, "qvec": qvec, "qtext": qtext}
+    kb = _normalize_kb_id(kb_id)
+    where_sql = "project_id = :project_id AND kb_id = :kb_id"
+    base_params: dict[str, Any] = {"project_id": project_id, "kb_id": kb, "qvec": qvec, "qtext": qtext}
     if len(sources) == 1:
         where_sql += " AND source = :source"
         base_params["source"] = sources[0]
@@ -419,7 +449,9 @@ def _pgvector_hybrid_fetch(
                 (embedding <=> (:qvec)::vector) AS distance,
                 ts_rank_cd(content_tsv, plainto_tsquery('simple', :qtext)) AS fts_score
             FROM {_PGVECTOR_TABLE}
-            WHERE id = ANY((:ids)::text[])
+            WHERE project_id = :project_id
+              AND kb_id = :kb_id
+              AND id = ANY((:ids)::text[])
             """.strip()
         )
         rows = db.execute(details_sql, {**base_params, "ids": ids}).all()
@@ -431,6 +463,7 @@ def _pgvector_hybrid_fetch(
         cid = str(r[0])
         text_md = str(r[1] or "")
         meta = _safe_json_loads(str(r[2] or ""))
+        meta["kb_id"] = kb
         try:
             distance = float(r[3])
         except Exception:
@@ -476,7 +509,9 @@ def _pgvector_hybrid_fetch(
     }
 
 
-def _pgvector_hybrid_query(*, project_id: str, query_text: str, query_vec: list[float], sources: list[VectorSource]) -> dict[str, Any]:
+def _pgvector_hybrid_query(
+    *, project_id: str, kb_id: str | None = None, query_text: str, query_vec: list[float], sources: list[VectorSource]
+) -> dict[str, Any]:
     if not _is_postgres():
         raise RuntimeError("not_postgres")
 
@@ -493,6 +528,7 @@ def _pgvector_hybrid_query(*, project_id: str, query_text: str, query_vec: list[
     for _attempt in range(3):
         out = _pgvector_hybrid_fetch(
             project_id=project_id,
+            kb_id=kb_id,
             query_text=query_text,
             query_vec=query_vec,
             sources=used_sources,
@@ -574,7 +610,7 @@ def ingest_chunks(
     if _prefer_pgvector():
         try:
             write_start = time.perf_counter()
-            out = _pgvector_upsert_chunks(project_id=project_id, chunks=chunks, embeddings=embeddings)
+            out = _pgvector_upsert_chunks(project_id=project_id, kb_id=kb_id, chunks=chunks, embeddings=embeddings)
             write_ms = int((time.perf_counter() - write_start) * 1000)
             log_event(
                 logger,
@@ -602,7 +638,13 @@ def ingest_chunks(
     try:
         collection = _get_collection(project_id=project_id, kb_id=kb_id)
     except Exception as exc:  # pragma: no cover - env dependent
-        return {"enabled": False, "skipped": True, "disabled_reason": "chroma_unavailable", "error": str(exc), "ingested": 0}
+        return {
+            "enabled": False,
+            "skipped": True,
+            "disabled_reason": "chroma_unavailable",
+            "error": str(exc),
+            "ingested": 0,
+        }
 
     write_start = time.perf_counter()
     collection.upsert(ids=ids, documents=texts, metadatas=metadatas, embeddings=embeddings)
@@ -640,7 +682,47 @@ def rebuild_project(
 
     if _prefer_pgvector():
         try:
-            _pgvector_delete_project(project_id=project_id)
+            texts = [c.text for c in chunks]
+            embed_out = (
+                embed_texts_with_providers(texts, embedding=embedding) if texts else {"enabled": True, "vectors": []}
+            )
+            if not bool(embed_out.get("enabled")):
+                return {
+                    "enabled": False,
+                    "skipped": True,
+                    "disabled_reason": str(embed_out.get("disabled_reason") or "error"),
+                    "error": embed_out.get("error"),
+                    "rebuilt": 0,
+                }
+            embeddings = embed_out.get("vectors") or []
+            kb = _normalize_kb_id(kb_id)
+            db = SessionLocal()
+            try:
+                db.execute(
+                    text("DELETE FROM vector_chunks WHERE project_id = :project_id AND kb_id = :kb_id"),
+                    {"project_id": project_id, "kb_id": kb},
+                )
+                if chunks:
+                    _pgvector_upsert_chunks_in_session(
+                        db=db,
+                        project_id=project_id,
+                        kb_id=kb,
+                        chunks=chunks,
+                        embeddings=embeddings,
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+            return {
+                "enabled": True,
+                "skipped": False,
+                "rebuilt": len(chunks),
+                "ingested": len(chunks),
+                "backend": "pgvector",
+            }
         except Exception as exc:  # pragma: no cover - env dependent
             log_event(
                 logger,
@@ -651,8 +733,15 @@ def rebuild_project(
                 backend="pgvector",
                 error_type=type(exc).__name__,
             )
-        out = ingest_chunks(project_id=project_id, kb_id=kb_id, chunks=chunks, embedding=embedding)
-        return {"enabled": bool(out.get("enabled")), "skipped": bool(out.get("skipped")), "rebuilt": int(out.get("ingested") or 0), **out}
+            return {
+                "enabled": True,
+                "skipped": True,
+                "disabled_reason": "pgvector_rebuild_failed",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "rebuilt": 0,
+                "backend": "pgvector",
+            }
 
     try:
         chromadb = _import_chromadb()
@@ -672,10 +761,21 @@ def rebuild_project(
             except Exception:
                 pass
     except Exception as exc:  # pragma: no cover - env dependent
-        return {"enabled": False, "skipped": True, "disabled_reason": "chroma_unavailable", "error": str(exc), "rebuilt": 0}
+        return {
+            "enabled": False,
+            "skipped": True,
+            "disabled_reason": "chroma_unavailable",
+            "error": str(exc),
+            "rebuilt": 0,
+        }
 
     out = ingest_chunks(project_id=project_id, kb_id=kb_id, chunks=chunks, embedding=embedding)
-    return {"enabled": bool(out.get("enabled")), "skipped": bool(out.get("skipped")), "rebuilt": int(out.get("ingested") or 0), **out}
+    return {
+        "enabled": bool(out.get("enabled")),
+        "skipped": bool(out.get("skipped")),
+        "rebuilt": int(out.get("ingested") or 0),
+        **out,
+    }
 
 
 def purge_project_vectors(*, project_id: str, kb_id: str | None = None) -> dict[str, Any]:
@@ -689,7 +789,7 @@ def purge_project_vectors(*, project_id: str, kb_id: str | None = None) -> dict[
 
     if _prefer_pgvector():
         try:
-            _pgvector_delete_project(project_id=project_id)
+            _pgvector_delete_project(project_id=project_id, kb_id=kb_id)
             out = {"enabled": True, "skipped": False, "deleted": True, "backend": "pgvector"}
             log_event(
                 logger,

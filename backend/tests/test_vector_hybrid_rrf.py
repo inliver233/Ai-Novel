@@ -37,6 +37,7 @@ class TestVectorHybridRrf(unittest.TestCase):
         def _fake_fetch(
             *,
             project_id: str,
+            kb_id: str | None = None,
             query_text: str,
             query_vec: list[float],
             sources: list[vector_rag_service.VectorSource],
@@ -44,7 +45,9 @@ class TestVectorHybridRrf(unittest.TestCase):
             fts_k: int,
             rrf_k: int,
         ) -> dict[str, object]:
-            calls.append({"sources": list(sources), "vector_k": int(vector_k), "fts_k": int(fts_k), "rrf_k": int(rrf_k)})
+            calls.append(
+                {"sources": list(sources), "vector_k": int(vector_k), "fts_k": int(fts_k), "rrf_k": int(rrf_k)}
+            )
             return {"candidates": [], "ranks": {}, "counts": {"union": 0}}
 
         try:
@@ -87,6 +90,7 @@ class TestVectorHybridRrf(unittest.TestCase):
         def _fake_fetch(
             *,
             project_id: str,
+            kb_id: str | None = None,
             query_text: str,
             query_vec: list[float],
             sources: list[vector_rag_service.VectorSource],
@@ -139,6 +143,7 @@ class TestVectorHybridRrf(unittest.TestCase):
         def _fake_fetch(
             *,
             project_id: str,
+            kb_id: str | None = None,
             query_text: str,
             query_vec: list[float],
             sources: list[vector_rag_service.VectorSource],
@@ -181,6 +186,7 @@ class TestVectorHybridRrf(unittest.TestCase):
         def _fake_fetch(
             *,
             project_id: str,
+            kb_id: str | None = None,
             query_text: str,
             query_vec: list[float],
             sources: list[vector_rag_service.VectorSource],

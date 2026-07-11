@@ -33,6 +33,7 @@ _VECTOR_DROPPED_REASON_EXPLAIN = {
     "budget": "达到最终注入 chunk 上限（vector_final_max_chunks）。",
 }
 
+
 def _vector_candidate_key(candidate: dict[str, Any]) -> tuple[str, str]:
     meta = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
     return (str(meta.get("source") or ""), str(meta.get("source_id") or ""))
@@ -459,6 +460,7 @@ def _vector_budget_observability(
         reason_explain=_VECTOR_DROPPED_REASON_EXPLAIN,
     )
 
+
 def vector_rag_status(
     *,
     project_id: str,
@@ -510,7 +512,9 @@ def vector_rag_status(
             "candidates": [],
             "final": {"chunks": [], "text_md": "", "truncated": False},
             "dropped": [],
-            "counts": _build_vector_query_counts(candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]),
+            "counts": _build_vector_query_counts(
+                candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]
+            ),
             "prompt_block": {"identifier": "sys.memory.vector_rag", "role": "system", "text_md": ""},
             "backend_preferred": "pgvector" if _prefer_pgvector() else "chroma",
             "hybrid_enabled": bool(getattr(settings, "vector_hybrid_enabled", True)),
@@ -531,6 +535,7 @@ def vector_rag_status(
         "hybrid_enabled": bool(getattr(settings, "vector_hybrid_enabled", True)),
         "rerank": rerank_obs,
     }
+
 
 def _format_final_text(chunks: list[dict[str, Any]], *, char_limit: int) -> tuple[str, bool]:
     parts: list[str] = []
@@ -591,23 +596,15 @@ def query_project(
 
     weights_by_kb_full = {kb: float((kb_weights or {}).get(kb, 1.0)) for kb in selected_kb_ids}
     orders_by_kb_full = {kb: int((kb_orders or {}).get(kb, 999)) for kb in selected_kb_ids}
-    priority_groups_by_kb_full = {kb: _normalize_kb_priority_group((kb_priority_groups or {}).get(kb)) for kb in selected_kb_ids}
-
-    if _prefer_pgvector() and len(selected_kb_ids) > 1:
-        selected_kb_ids = [
-            sorted(
-                selected_kb_ids,
-                key=lambda kb: (
-                    0 if priority_groups_by_kb_full.get(kb) == "high" else 1,
-                    int(orders_by_kb_full.get(kb, 999)),
-                    str(kb),
-                ),
-            )[0]
-        ]
+    priority_groups_by_kb_full = {
+        kb: _normalize_kb_priority_group((kb_priority_groups or {}).get(kb)) for kb in selected_kb_ids
+    }
 
     weights_by_kb = {kb: float(weights_by_kb_full.get(kb, 1.0)) for kb in selected_kb_ids}
     orders_by_kb = {kb: int(orders_by_kb_full.get(kb, 999)) for kb in selected_kb_ids}
-    priority_groups_by_kb = {kb: str(priority_groups_by_kb_full.get(kb, "normal") or "normal") for kb in selected_kb_ids}
+    priority_groups_by_kb = {
+        kb: str(priority_groups_by_kb_full.get(kb, "normal") or "normal") for kb in selected_kb_ids
+    }
 
     sources = sources or list(_ALL_SOURCES)
     enabled, disabled_reason = _vector_enabled_reason(embedding=embedding)
@@ -653,7 +650,9 @@ def query_project(
             "candidates": [],
             "final": {"chunks": [], "text_md": "", "truncated": False},
             "dropped": [],
-            "counts": _build_vector_query_counts(candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]),
+            "counts": _build_vector_query_counts(
+                candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]
+            ),
             "prompt_block": {"identifier": "sys.memory.vector_rag", "role": "system", "text_md": ""},
             "rerank": rerank_obs,
             "kbs": {
@@ -701,7 +700,9 @@ def query_project(
             "candidates": [],
             "final": {"chunks": [], "text_md": "", "truncated": False},
             "dropped": [],
-            "counts": _build_vector_query_counts(candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]),
+            "counts": _build_vector_query_counts(
+                candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]
+            ),
             "prompt_block": {"identifier": "sys.memory.vector_rag", "role": "system", "text_md": ""},
             "rerank": rerank_obs,
             "kbs": {
@@ -721,17 +722,38 @@ def query_project(
     if _prefer_pgvector() and bool(getattr(settings, "vector_hybrid_enabled", True)):
         query_start = time.perf_counter()
         try:
-            hybrid_out = _pgvector_hybrid_query(project_id=project_id, query_text=query_text, query_vec=qvec, sources=sources)
+            per_kb_hybrid: dict[str, dict[str, Any]] = {}
+            per_kb_candidates: dict[str, list[dict[str, Any]]] = {}
+            for kid in selected_kb_ids:
+                kb_out = _pgvector_hybrid_query(
+                    project_id=project_id,
+                    kb_id=kid,
+                    query_text=query_text,
+                    query_vec=qvec,
+                    sources=sources,
+                )
+                per_kb_hybrid[kid] = kb_out
+                raw_kb_candidates = kb_out.get("candidates")
+                per_kb_candidates[kid] = (
+                    [dict(candidate) for candidate in raw_kb_candidates if isinstance(candidate, dict)]
+                    if isinstance(raw_kb_candidates, list)
+                    else []
+                )
+
+            candidates, kb_merge_obs = _merge_kb_candidates(
+                kb_ids=selected_kb_ids,
+                per_kb_candidates=per_kb_candidates,
+                kb_weights=weights_by_kb,
+                kb_orders=orders_by_kb,
+                kb_priority_groups=priority_groups_by_kb,
+                top_k=top_k,
+                priority_enabled=bool(getattr(settings, "vector_priority_retrieval_enabled", False)),
+                rrf_k=int(settings.vector_hybrid_rrf_k or 60),
+            )
             query_ms = int((time.perf_counter() - query_start) * 1000)
 
-            raw_candidates = hybrid_out.get("candidates") if isinstance(hybrid_out.get("candidates"), list) else []
-            candidates: list[dict[str, Any]] = []
-            for c in raw_candidates:
-                if not isinstance(c, dict):
-                    continue
-                cc = dict(c)
-                cc.pop("_rrf_score", None)
-                candidates.append(cc)
+            for candidate in candidates:
+                candidate.pop("_rrf_score", None)
 
             trimmed_candidates = candidates[:top_k]
             if not rerank_enabled:
@@ -818,7 +840,12 @@ def query_project(
             text_md, truncated = _format_final_text(final_chunks, char_limit=final_char_limit)
             post_ms = int((time.perf_counter() - post_start) * 1000)
 
-            timings_ms = {"embed": embed_ms, "query": query_ms, "post": post_ms, "rerank": int(rerank_obs.get("timing_ms") or 0)}
+            timings_ms = {
+                "embed": embed_ms,
+                "query": query_ms,
+                "post": post_ms,
+                "rerank": int(rerank_obs.get("timing_ms") or 0),
+            }
             obs_counts = _build_vector_query_counts(
                 candidates_total=len(candidates),
                 returned_candidates=trimmed_candidates,
@@ -845,8 +872,8 @@ def query_project(
                 dropped=dropped[:5],
                 timings_ms=timings_ms,
                 filters={"sources": sources},
-                overfilter=hybrid_out.get("overfilter"),
-                counts=hybrid_out.get("counts"),
+                overfilter={kid: out.get("overfilter") for kid, out in per_kb_hybrid.items()},
+                counts={kid: out.get("counts") for kid, out in per_kb_hybrid.items()},
                 rerank=rerank_obs,
                 super_sort=super_sort_obs,
             )
@@ -866,11 +893,31 @@ def query_project(
                 "super_sort": super_sort_obs,
                 "prompt_block": {"identifier": "sys.memory.vector_rag", "role": "system", "text_md": text_md},
                 "backend": "pgvector",
+                "kbs": {
+                    "selected": selected_kb_ids,
+                    "weights": weights_by_kb,
+                    "orders": orders_by_kb,
+                    "priority_groups": priority_groups_by_kb,
+                    "merge": kb_merge_obs,
+                    "per_kb": {
+                        kid: {
+                            "candidate_count": len(per_kb_candidates.get(kid) or []),
+                            "counts": out.get("counts"),
+                            "overfilter": out.get("overfilter"),
+                        }
+                        for kid, out in per_kb_hybrid.items()
+                    },
+                },
                 "hybrid": {
                     "enabled": True,
-                    "ranks": hybrid_out.get("ranks"),
-                    "counts": hybrid_out.get("counts"),
-                    "overfilter": hybrid_out.get("overfilter"),
+                    "per_kb": {
+                        kid: {
+                            "ranks": out.get("ranks"),
+                            "counts": out.get("counts"),
+                            "overfilter": out.get("overfilter"),
+                        }
+                        for kid, out in per_kb_hybrid.items()
+                    },
                 },
             }
         except Exception as exc:  # pragma: no cover - env dependent
@@ -888,7 +935,9 @@ def query_project(
                 "enabled": False,
                 "disabled_reason": "chroma_unavailable",
                 "error": str(exc),
-                "counts": _build_vector_query_counts(candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]),
+                "counts": _build_vector_query_counts(
+                    candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]
+                ),
                 "overfilter": None,
                 "weight": float(weights_by_kb.get(kid, 1.0)),
                 "order": int(orders_by_kb.get(kid, 999)),
@@ -933,7 +982,9 @@ def query_project(
         per_kb[kid] = {
             "enabled": True,
             "disabled_reason": None,
-            "counts": _build_vector_query_counts(candidates_total=len(candidates), returned_candidates=candidates[:top_k], final_selected=0, dropped=[]),
+            "counts": _build_vector_query_counts(
+                candidates_total=len(candidates), returned_candidates=candidates[:top_k], final_selected=0, dropped=[]
+            ),
             "overfilter": None,
             "weight": float(weights_by_kb.get(kid, 1.0)),
             "order": int(orders_by_kb.get(kid, 999)),
@@ -951,7 +1002,9 @@ def query_project(
             "candidates": [],
             "final": {"chunks": [], "text_md": "", "truncated": False},
             "dropped": [],
-            "counts": _build_vector_query_counts(candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]),
+            "counts": _build_vector_query_counts(
+                candidates_total=0, returned_candidates=[], final_selected=0, dropped=[]
+            ),
             "prompt_block": {"identifier": "sys.memory.vector_rag", "role": "system", "text_md": ""},
             "rerank": {
                 "enabled": bool(rerank_enabled),
@@ -1083,7 +1136,12 @@ def query_project(
     text_md, truncated = _format_final_text(final_chunks, char_limit=final_char_limit)
     post_ms = int((time.perf_counter() - post_start) * 1000)
 
-    timings_ms = {"embed": embed_ms, "query": query_ms, "post": post_ms, "rerank": int(rerank_obs.get("timing_ms") or 0)}
+    timings_ms = {
+        "embed": embed_ms,
+        "query": query_ms,
+        "post": post_ms,
+        "rerank": int(rerank_obs.get("timing_ms") or 0),
+    }
     obs_counts = _build_vector_query_counts(
         candidates_total=len(candidates),
         returned_candidates=trimmed_candidates,

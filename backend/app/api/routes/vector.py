@@ -61,6 +61,7 @@ def _index_state(row: ProjectSettings | None) -> dict[str, object]:
         "last_build_at": last_build_at.isoformat() if last_build_at else None,
     }
 
+
 def _vector_rerank_config(row: ProjectSettings | None) -> dict[str, object]:
     return vector_rerank_overrides(row)
 
@@ -83,27 +84,21 @@ def _kb_public(row: KnowledgeBase) -> dict[str, object]:
 class VectorIngestRequest(BaseModel):
     kb_id: str | None = Field(default=None, max_length=64)
     kb_ids: list[str] = Field(default_factory=list, max_length=200)
-    sources: list[VectorSource] = Field(
-        default_factory=lambda: ["outline", "chapter", "story_memory"], max_length=10
-    )
+    sources: list[VectorSource] = Field(default_factory=lambda: ["outline", "chapter", "story_memory"], max_length=10)
 
 
 class VectorQueryRequest(BaseModel):
     query_text: str = Field(default="", max_length=8000)
     kb_id: str | None = Field(default=None, max_length=64)
     kb_ids: list[str] = Field(default_factory=list, max_length=200)
-    sources: list[VectorSource] = Field(
-        default_factory=lambda: ["outline", "chapter", "story_memory"], max_length=10
-    )
+    sources: list[VectorSource] = Field(default_factory=lambda: ["outline", "chapter", "story_memory"], max_length=10)
     rerank_hybrid_alpha: float | None = Field(default=None, ge=0.0, le=1.0)
     super_sort: dict[str, Any] | None = Field(default=None)
 
 
 class VectorStatusRequest(BaseModel):
     kb_id: str | None = Field(default=None, max_length=64)
-    sources: list[VectorSource] = Field(
-        default_factory=lambda: ["outline", "chapter", "story_memory"], max_length=10
-    )
+    sources: list[VectorSource] = Field(default_factory=lambda: ["outline", "chapter", "story_memory"], max_length=10)
 
 
 class VectorEmbeddingDryRunRequest(BaseModel):
@@ -138,7 +133,9 @@ class VectorKbReorderRequest(BaseModel):
 
 
 @router.post("/projects/{project_id}/vector/status")
-def get_vector_status(request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: VectorStatusRequest) -> dict:
+def get_vector_status(
+    request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: VectorStatusRequest
+) -> dict:
     request_id = request.state.request_id
 
     require_project_viewer(db, project_id=project_id, user_id=user_id)
@@ -283,7 +280,9 @@ def dry_run_vector_rerank(
 
 
 @router.post("/projects/{project_id}/vector/ingest")
-def ingest_vector_index(request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: VectorIngestRequest) -> dict:
+def ingest_vector_index(
+    request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: VectorIngestRequest
+) -> dict:
     request_id = request.state.request_id
 
     kb_id = str(body.kb_id or "").strip() or None
@@ -396,7 +395,9 @@ def purge_vector_index(request: Request, db: DbDep, user_id: UserIdDep, project_
 
 
 @router.post("/projects/{project_id}/vector/query")
-def query_vector_index(request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: VectorQueryRequest) -> dict:
+def query_vector_index(
+    request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: VectorQueryRequest
+) -> dict:
     request_id = request.state.request_id
 
     kb_id = str(body.kb_id or "").strip() or None
@@ -522,6 +523,20 @@ def delete_vector_knowledge_base(request: Request, db: DbDep, user_id: UserIdDep
         raise AppError.validation("kb_id 不能为空")
 
     require_project_owner(db, project_id=project_id, user_id=user_id)
+    kb_row = get_vector_kb(db, project_id=project_id, kb_id=kb)
+    if kb == "default":
+        raise AppError.validation("default KB 不可删除")
+    if bool(kb_row.enabled):
+        raise AppError.validation("请先禁用 KB 再删除")
     purge_out = purge_project_vectors(project_id=project_id, kb_id=kb)
+    if not bool(purge_out.get("deleted")):
+        raise AppError.conflict(
+            "KB 向量数据清理失败，未删除 KB",
+            details={
+                "kb_id": kb,
+                "backend": purge_out.get("backend"),
+                "error_type": purge_out.get("error_type"),
+            },
+        )
     delete_vector_kb(db, project_id=project_id, kb_id=kb)
     return ok_payload(request_id=request_id, data={"deleted": True, "vector_purge": purge_out})

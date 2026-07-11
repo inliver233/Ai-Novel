@@ -68,8 +68,9 @@ class TestVectorPgvectorIntegration(unittest.TestCase):
                     text(
                         """
                         CREATE TABLE IF NOT EXISTS vector_chunks (
-                            id TEXT PRIMARY KEY,
+                            id TEXT NOT NULL,
                             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                            kb_id VARCHAR(64) NOT NULL DEFAULT 'default',
                             source TEXT NOT NULL,
                             source_id TEXT NOT NULL,
                             chunk_index INTEGER NOT NULL,
@@ -80,7 +81,8 @@ class TestVectorPgvectorIntegration(unittest.TestCase):
                             embedding vector(1536) NOT NULL,
                             content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', coalesce(text_md, ''))) STORED,
                             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            PRIMARY KEY (project_id, kb_id, id)
                         )
                         """.strip()
                     )
@@ -154,13 +156,16 @@ class TestVectorPgvectorIntegration(unittest.TestCase):
             ),
         ]
         embeddings = [emb(0.0), emb(100.0), emb(10.0)]
-        out = vector_rag_service._pgvector_upsert_chunks(project_id=self.project_id, chunks=chunks, embeddings=embeddings)
+        out = vector_rag_service._pgvector_upsert_chunks(
+            project_id=self.project_id, kb_id="default", chunks=chunks, embeddings=embeddings
+        )
         self.assertTrue(out.get("enabled"))
         self.assertFalse(out.get("skipped"))
         self.assertEqual(int(out.get("ingested") or 0), 3)
 
         fetch = vector_rag_service._pgvector_hybrid_fetch(
             project_id=self.project_id,
+            kb_id="default",
             query_text="dragon",
             query_vec=emb(0.0),
             sources=["story_memory", "chapter"],

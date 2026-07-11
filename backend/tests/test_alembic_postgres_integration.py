@@ -36,6 +36,8 @@ from app.services.batch_generation_quota import (
 from app.services import batch_generation_commands
 from app.services import batch_generation_application
 from app.services import batch_generation_service
+from app.services import vector_retrieval, vector_storage
+from app.services.vector_types import VectorChunk
 from scripts.check_alembic import (
     SchemaContractError,
     assert_schema_matches_metadata,
@@ -45,7 +47,7 @@ from scripts.check_alembic import (
 
 
 PRE_CLEANUP_REVISION = "9f3a7c2d1e4b"
-HEAD_REVISION = "f3a1c7e9b2d4"
+HEAD_REVISION = "a4c9d2e7f1b3"
 EXPECTED_DATABASE = "ainovel_schema_ci"
 DESTRUCTIVE_SENTINEL = "I_UNDERSTAND_THIS_DROPS_PUBLIC_SCHEMA"
 RETIRED_TABLES = {
@@ -128,6 +130,19 @@ def _upgrade(database_url: str, revision: str) -> None:
     os.environ["DATABASE_URL"] = database_url
     try:
         command.upgrade(config, revision)
+    finally:
+        if previous_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous_url
+
+
+def _downgrade(database_url: str, revision: str) -> None:
+    config = _alembic_config(database_url=database_url)
+    previous_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = database_url
+    try:
+        command.downgrade(config, revision)
     finally:
         if previous_url is None:
             os.environ.pop("DATABASE_URL", None)
@@ -578,6 +593,172 @@ def _assert_postgres_chapter_replace_transaction(session_factory: sessionmaker) 
     assert committed_side_effects == ["chapters_bulk_create", "chapters_bulk_create"]
 
 
+def _assert_postgres_vector_kb_isolation(session_factory: sessionmaker, engine: sa.Engine) -> None:
+    user_id = "vector-kb-user"
+    project_id = "vector-kb-project"
+    other_project_id = "vector-kb-other-project"
+    with session_factory() as db:
+        db.add(User(id=user_id, display_name="Vector KB User"))
+        db.commit()
+        db.add_all(
+            [
+                Project(id=project_id, owner_user_id=user_id, name="Vector KB Project"),
+                Project(id=other_project_id, owner_user_id=user_id, name="Other Vector KB Project"),
+            ]
+        )
+        db.commit()
+
+    def _embedding(first: float) -> list[float]:
+        return [first, *([0.0] * 1535)]
+
+    def _chunk(chunk_id: str, text_md: str, source_id: str) -> VectorChunk:
+        return VectorChunk(
+            id=chunk_id,
+            text=text_md,
+            metadata={"source": "outline", "source_id": source_id, "chunk_index": 0},
+        )
+
+    def _vector_rows_snapshot() -> list[tuple[object, ...]]:
+        with session_factory() as observer:
+            return [
+                tuple(row)
+                for row in observer.execute(
+                    sa.text(
+                        """
+                        SELECT project_id, kb_id, id, source, source_id, chunk_index, title,
+                               chapter_number, text_md, metadata_json, embedding::text,
+                               created_at, updated_at,
+                               md5(metadata_json || text_md || embedding::text) AS checksum
+                        FROM vector_chunks
+                        ORDER BY project_id, kb_id, id
+                        """
+                    )
+                ).all()
+            ]
+
+    with patch.object(vector_storage, "SessionLocal", session_factory):
+        vector_storage._pgvector_upsert_chunks(
+            project_id=project_id,
+            kb_id="alpha",
+            chunks=[_chunk("shared", "alpha dragon", "alpha-shared"), _chunk("alpha-only", "alpha clue", "alpha-only")],
+            embeddings=[_embedding(0.0), _embedding(0.1)],
+        )
+        vector_storage._pgvector_upsert_chunks(
+            project_id=project_id,
+            kb_id="beta",
+            chunks=[_chunk("shared", "beta dragon", "beta-shared"), _chunk("beta-only", "beta clue", "beta-only")],
+            embeddings=[_embedding(0.2), _embedding(0.3)],
+        )
+        vector_storage._pgvector_upsert_chunks(
+            project_id=other_project_id,
+            kb_id="alpha",
+            chunks=[_chunk("shared", "other project secret", "other-shared")],
+            embeddings=[_embedding(0.0)],
+        )
+
+        alpha = vector_storage._pgvector_hybrid_fetch(
+            project_id=project_id,
+            kb_id="alpha",
+            query_text="alpha",
+            query_vec=_embedding(0.0),
+            sources=["outline"],
+            vector_k=10,
+            fts_k=10,
+            rrf_k=60,
+        )
+        assert {candidate["id"] for candidate in alpha["candidates"]} == {"shared", "alpha-only"}
+        assert {candidate["metadata"]["kb_id"] for candidate in alpha["candidates"]} == {"alpha"}
+        assert all("other project secret" not in candidate["text"] for candidate in alpha["candidates"])
+
+        with (
+            patch.object(vector_retrieval, "_prefer_pgvector", return_value=True),
+            patch.object(
+                vector_retrieval,
+                "embed_texts_with_providers",
+                return_value={"enabled": True, "vectors": [_embedding(0.0)]},
+            ),
+            patch.object(vector_storage, "_is_postgres", return_value=True),
+            patch.object(settings, "vector_priority_retrieval_enabled", False),
+        ):
+            queried = vector_retrieval.query_project(
+                project_id=project_id,
+                kb_ids=["alpha", "beta"],
+                query_text="dragon clue",
+                sources=["outline"],
+                embedding={
+                    "provider": "openai",
+                    "base_url": "https://embedding.invalid",
+                    "model": "test",
+                    "api_key": "test",
+                },
+            )
+        assert queried["backend"] == "pgvector"
+        assert queried["kbs"]["selected"] == ["alpha", "beta"]
+        assert set(queried["kbs"]["per_kb"]) == {"alpha", "beta"}
+        assert all(queried["kbs"]["per_kb"][kb_id]["candidate_count"] > 0 for kb_id in ("alpha", "beta"))
+        assert {candidate["metadata"]["kb_id"] for candidate in queried["candidates"]} == {"alpha", "beta"}
+
+        before_purge = _vector_rows_snapshot()
+        vector_storage._pgvector_delete_project(project_id=project_id, kb_id="alpha")
+        assert _vector_rows_snapshot() == [
+            row for row in before_purge if not (row[0] == project_id and row[1] == "alpha")
+        ]
+
+        beta_before_rebuild = [row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"]
+        with patch.object(
+            vector_storage,
+            "embed_texts_with_providers",
+            return_value={"enabled": True, "vectors": [_embedding(0.4)]},
+        ):
+            rebuilt = vector_storage.rebuild_project(
+                project_id=project_id,
+                kb_id="alpha",
+                chunks=[_chunk("alpha-rebuilt", "rebuilt alpha", "alpha-rebuilt")],
+                embedding={
+                    "provider": "openai",
+                    "base_url": "https://embedding.invalid",
+                    "model": "test",
+                    "api_key": "test",
+                },
+            )
+        assert rebuilt["rebuilt"] == 1
+        assert [
+            row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"
+        ] == beta_before_rebuild
+
+        with patch.object(
+            vector_storage,
+            "embed_texts_with_providers",
+            return_value={"enabled": True, "vectors": [[0.0]]},
+        ):
+            failed = vector_storage.rebuild_project(
+                project_id=project_id,
+                kb_id="beta",
+                chunks=[_chunk("replacement", "must roll back", "replacement")],
+                embedding={
+                    "provider": "openai",
+                    "base_url": "https://embedding.invalid",
+                    "model": "test",
+                    "api_key": "test",
+                },
+            )
+        assert failed["skipped"] is True
+        assert [
+            row for row in _vector_rows_snapshot() if row[0] == project_id and row[1] == "beta"
+        ] == beta_before_rebuild
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        plan = connection.execute(
+            sa.text(
+                "EXPLAIN (FORMAT JSON) SELECT id FROM vector_chunks "
+                "WHERE project_id = :pid AND kb_id = 'beta' AND source = 'outline'"
+            ),
+            {"pid": project_id},
+        ).scalar_one()
+        assert "ix_vector_chunks_project_kb_source" in str(plan)
+
+
 @pytest.mark.postgres_integration
 def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
     """Exercise the real PostgreSQL-only DDL and the two current migrations."""
@@ -610,7 +791,7 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             connection.exec_driver_sql("CREATE SCHEMA public")
 
         _upgrade(database_url, PRE_CLEANUP_REVISION)
-        with engine.connect() as connection:
+        with engine.begin() as connection:
             tables = set(sa.inspect(connection).get_table_names())
             assert RETIRED_TABLES.issubset(tables)
             actor_user_id = next(
@@ -620,6 +801,38 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             )
             assert isinstance(actor_user_id["type"], sa.String)
             assert actor_user_id["type"].length == 36
+            connection.execute(
+                sa.text("INSERT INTO users (id, display_name) VALUES ('legacy-vector-user', 'Legacy Vector User')")
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO projects (id, owner_user_id, name) "
+                    "VALUES ('legacy-vector-project', 'legacy-vector-user', 'Legacy Vector Project')"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO vector_chunks (
+                        id, project_id, source, source_id, chunk_index, title,
+                        chapter_number, text_md, metadata_json, embedding
+                    ) VALUES (
+                        'legacy-vector-chunk', 'legacy-vector-project', 'outline', 'legacy-outline', 3,
+                        'Legacy title', 7, 'Legacy vector text', '{"legacy": true}', (:embedding)::vector
+                    )
+                    """
+                ),
+                {"embedding": vector_storage._pgvector_literal([0.25, *([0.0] * 1535)])},
+            )
+            legacy_vector_snapshot = connection.execute(
+                sa.text(
+                    """
+                    SELECT id, project_id, source, source_id, chunk_index, title, chapter_number,
+                           text_md, metadata_json, embedding::text, created_at, updated_at
+                    FROM vector_chunks WHERE id = 'legacy-vector-chunk'
+                    """
+                )
+            ).one()
 
         _upgrade(database_url, "head")
         with engine.connect() as connection:
@@ -627,6 +840,29 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             tables = set(inspector.get_table_names())
             assert tables.isdisjoint(RETIRED_TABLES)
             assert "vector_chunks" in tables
+            vector_columns = {column["name"]: column for column in inspector.get_columns("vector_chunks")}
+            assert vector_columns["kb_id"]["nullable"] is False
+            assert vector_columns["kb_id"]["type"].length == 64
+            assert "default" in str(vector_columns["kb_id"]["default"])
+            assert inspector.get_pk_constraint("vector_chunks")["constrained_columns"] == ["project_id", "kb_id", "id"]
+            vector_indexes = {str(index["name"]) for index in inspector.get_indexes("vector_chunks")}
+            assert {
+                "ix_vector_chunks_project_kb",
+                "ix_vector_chunks_project_kb_source",
+                "ix_vector_chunks_content_tsv",
+                "ix_vector_chunks_embedding_ivfflat",
+            }.issubset(vector_indexes)
+            migrated_legacy = connection.execute(
+                sa.text(
+                    """
+                    SELECT id, project_id, source, source_id, chunk_index, title, chapter_number,
+                           text_md, metadata_json, embedding::text, created_at, updated_at, kb_id
+                    FROM vector_chunks WHERE id = 'legacy-vector-chunk'
+                    """
+                )
+            ).one()
+            assert tuple(migrated_legacy[:-1]) == tuple(legacy_vector_snapshot)
+            assert migrated_legacy[-1] == "default"
             actor_user_id = next(
                 column
                 for column in inspector.get_columns("batch_generation_tasks")
@@ -654,6 +890,73 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             # Programmatic equivalent of ``alembic check`` with the same
             # compare-type/default and dialect-specific unmanaged-table filter.
             assert_schema_matches_metadata(connection)
+
+        _downgrade(database_url, "f3a1c7e9b2d4")
+        with engine.connect() as connection:
+            assert "kb_id" not in {column["name"] for column in sa.inspect(connection).get_columns("vector_chunks")}
+            downgraded_legacy = connection.execute(
+                sa.text(
+                    """
+                    SELECT id, project_id, source, source_id, chunk_index, title, chapter_number,
+                           text_md, metadata_json, embedding::text, created_at, updated_at
+                    FROM vector_chunks WHERE id = 'legacy-vector-chunk'
+                    """
+                )
+            ).one()
+            assert tuple(downgraded_legacy) == tuple(legacy_vector_snapshot)
+        _upgrade(database_url, "head")
+
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO vector_chunks (
+                        id, project_id, kb_id, source, source_id, chunk_index, title,
+                        chapter_number, text_md, metadata_json, embedding
+                    ) VALUES (
+                        'nondefault-vector-chunk', 'legacy-vector-project', 'secondary', 'outline',
+                        'legacy-outline', 0, NULL, NULL, 'nondefault', '{}', (:embedding)::vector
+                    )
+                    """
+                ),
+                {"embedding": vector_storage._pgvector_literal([0.5, *([0.0] * 1535)])},
+            )
+        with pytest.raises(RuntimeError, match="non-default knowledge-base data"):
+            _downgrade(database_url, "f3a1c7e9b2d4")
+        with engine.begin() as connection:
+            assert MigrationContext.configure(connection).get_current_revision() == HEAD_REVISION
+            connection.execute(sa.text("DELETE FROM vector_chunks WHERE id = 'nondefault-vector-chunk'"))
+            connection.execute(
+                sa.text(
+                    "INSERT INTO users (id, display_name) VALUES ('duplicate-vector-user', 'Duplicate Vector User')"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO projects (id, owner_user_id, name) "
+                    "VALUES ('duplicate-vector-project', 'duplicate-vector-user', 'Duplicate Vector Project')"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO vector_chunks (
+                        id, project_id, kb_id, source, source_id, chunk_index, title,
+                        chapter_number, text_md, metadata_json, embedding
+                    ) VALUES (
+                        'legacy-vector-chunk', 'duplicate-vector-project', 'default', 'outline',
+                        'duplicate-outline', 0, NULL, NULL, 'duplicate', '{}', (:embedding)::vector
+                    )
+                    """
+                ),
+                {"embedding": vector_storage._pgvector_literal([0.75, *([0.0] * 1535)])},
+            )
+        with pytest.raises(RuntimeError, match="duplicated across projects"):
+            _downgrade(database_url, "f3a1c7e9b2d4")
+        with engine.begin() as connection:
+            assert MigrationContext.configure(connection).get_current_revision() == HEAD_REVISION
+            connection.execute(sa.text("DELETE FROM projects WHERE id = 'duplicate-vector-project'"))
+            connection.execute(sa.text("DELETE FROM users WHERE id = 'duplicate-vector-user'"))
         # Also execute Alembic's public command path so env.py itself is part
         # of the PostgreSQL contract, rather than only the shared primitives.
         _alembic_check(database_url)
@@ -745,6 +1048,7 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
         _assert_postgres_batch_command_races(session_factory)
         _assert_postgres_worker_control_races(session_factory)
         _assert_postgres_chapter_replace_transaction(session_factory)
+        _assert_postgres_vector_kb_isolation(session_factory, engine)
         _assert_postgres_quota_race(
             session_factory,
             dimension="project",
