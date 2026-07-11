@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from sqlalchemy import select, update
 
-from app.api.deps import DbDep, UserIdDep, require_project_editor
+from app.api.deps import DbDep, UserIdDep, require_project_editor, require_project_viewer
 from app.core.errors import AppError, ok_payload
 from app.db.utils import new_id
 from app.models.project_default_style import ProjectDefaultStyle
@@ -120,7 +120,7 @@ def delete_style(request: Request, db: DbDep, user_id: UserIdDep, style_id: str)
 @router.get("/projects/{project_id}/writing_style_default")
 def get_project_default_style(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
     request_id = request.state.request_id
-    require_project_editor(db, project_id=project_id, user_id=user_id)
+    require_project_viewer(db, project_id=project_id, user_id=user_id)
     row = db.get(ProjectDefaultStyle, project_id)
     style_id = row.style_id if row else None
     out = ProjectDefaultStyleOut(project_id=project_id, style_id=style_id, updated_at=row.updated_at if row else None)

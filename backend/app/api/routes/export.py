@@ -7,7 +7,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Query, Request, Response
 from sqlalchemy import select
 
-from app.api.deps import DbDep, UserIdDep, require_project_editor, require_project_viewer
+from app.api.deps import DbDep, UserIdDep, require_project_viewer
 from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.outline import Outline
@@ -142,7 +142,7 @@ def export_markdown(
 
 @router.get("/projects/{project_id}/export/bundle")
 def export_bundle(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> Response:
-    project = require_project_editor(db, project_id=project_id, user_id=user_id)
+    project = require_project_viewer(db, project_id=project_id, user_id=user_id)
     export_obj = export_project_bundle(db, project_id=project_id)
 
     payload = json.dumps(export_obj, ensure_ascii=False, indent=2) + "\n"

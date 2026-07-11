@@ -23,6 +23,7 @@ from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
 from app.models.user import User
 from app.models.writing_style import WritingStyle
+from app.services.prompt_presets import sync_builtin_prompt_defaults
 
 
 def _make_test_app(SessionLocal: sessionmaker) -> FastAPI:
@@ -91,6 +92,8 @@ class TestPromptStudioRoutes(unittest.TestCase):
 
     def test_categories_route_returns_all_studio_categories(self) -> None:
         client = TestClient(self.app)
+        with self.SessionLocal() as db:
+            sync_builtin_prompt_defaults(db, project_id="p1")
         response = client.get("/api/projects/p1/prompt-studio/categories", headers={"X-Test-User": "u_editor"})
         self.assertEqual(response.status_code, 200)
 
@@ -369,6 +372,8 @@ class TestPromptStudioRoutes(unittest.TestCase):
             db.commit()
 
         client = TestClient(self.app)
+        with self.SessionLocal() as db:
+            sync_builtin_prompt_defaults(db, project_id="p1")
         response = client.get("/api/projects/p1/prompt-studio/categories", headers={"X-Test-User": "u_editor"})
         self.assertEqual(response.status_code, 200)
 

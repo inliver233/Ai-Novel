@@ -120,11 +120,12 @@ export function usePromptStudio() {
         const currentPresetId = selectedPresetIdRef.current;
 
         const nextCategoryKey =
-          options?.preferredCategoryKey && nextCategories.some((category) => category.key === options.preferredCategoryKey)
+          options?.preferredCategoryKey &&
+          nextCategories.some((category) => category.key === options.preferredCategoryKey)
             ? options.preferredCategoryKey
             : currentCategoryKey && nextCategories.some((category) => category.key === currentCategoryKey)
               ? currentCategoryKey
-              : nextCategories[0]?.key ?? "";
+              : (nextCategories[0]?.key ?? "");
 
         const nextCategory = nextCategories.find((category) => category.key === nextCategoryKey) ?? null;
         const nextPresetId =
@@ -139,7 +140,12 @@ export function usePromptStudio() {
         setSelectedCategoryKey(nextCategoryKey);
         setSelectedPresetId(nextPresetId);
 
-        if (!nextCategory || !nextPresetId || nextCategoryKey !== currentCategoryKey || nextPresetId !== currentPresetId) {
+        if (
+          !nextCategory ||
+          !nextPresetId ||
+          nextCategoryKey !== currentCategoryKey ||
+          nextPresetId !== currentPresetId
+        ) {
           resetEditor();
         }
       } catch (error) {
@@ -321,16 +327,13 @@ export function usePromptStudio() {
 
     setBusy(true);
     try {
-      const res = await apiJson<PresetResponse>(
-        `/api/projects/${projectId}/prompt-studio/presets/${presetId}`,
-        {
-          method: "PUT",
-          body: JSON.stringify({
-            name: nextName,
-            content: draftContent,
-          }),
-        },
-      );
+      const res = await apiJson<PresetResponse>(`/api/projects/${projectId}/prompt-studio/presets/${presetId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: nextName,
+          content: draftContent,
+        }),
+      });
       const nextPreset = res.data.preset;
 
       setPresetDetail(nextPreset);
@@ -369,12 +372,9 @@ export function usePromptStudio() {
 
     setBusy(true);
     try {
-      const res = await apiJson<Record<string, never>>(
-        `/api/projects/${projectId}/prompt-studio/presets/${presetId}`,
-        {
-          method: "DELETE",
-        },
-      );
+      const res = await apiJson<Record<string, never>>(`/api/projects/${projectId}/prompt-studio/presets/${presetId}`, {
+        method: "DELETE",
+      });
 
       const nextCategories = updateCategoryPresets(categories, categoryKey, (presets) =>
         presets.filter((preset) => preset.id !== presetId),
@@ -437,6 +437,26 @@ export function usePromptStudio() {
     }
   }, [projectId, toast]);
 
+  const syncBuiltinDefaults = useCallback(async (): Promise<boolean> => {
+    if (!projectId) return false;
+    setBusy(true);
+    try {
+      const res = await apiJson<{ synced: number; resource_keys: string[] }>(
+        `/api/projects/${projectId}/prompt_presets/sync_builtin_defaults`,
+        { method: "POST" },
+      );
+      await loadCategories({ silent: true });
+      toast.toastSuccess(`已同步 ${res.data.synced} 组内置提示词`, res.request_id);
+      return true;
+    } catch (error) {
+      const nextError = toPromptStudioError(error);
+      toast.toastError(`${nextError.message} (${nextError.code})`, nextError.requestId);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }, [loadCategories, projectId, toast]);
+
   return {
     projectId,
     categories,
@@ -462,5 +482,6 @@ export function usePromptStudio() {
     updatePreset,
     deletePreset,
     activatePreset,
+    syncBuiltinDefaults,
   };
 }

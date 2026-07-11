@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from sqlalchemy import select
 
-from app.api.deps import DbDep, UserIdDep, require_owned_llm_profile, require_project_editor
+from app.api.deps import DbDep, UserIdDep, require_owned_llm_profile, require_project_editor, require_project_viewer
 from app.core.errors import AppError, ok_payload
 from app.models.llm_task_preset import LLMTaskPreset
 from app.schemas.llm_task_presets import LLMTaskPresetOut, LLMTaskPresetPutRequest
@@ -59,7 +59,7 @@ def _catalog_out() -> list[dict]:
 @router.get("/projects/{project_id}/llm_task_presets")
 def list_llm_task_presets(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
     request_id = request.state.request_id
-    require_project_editor(db, project_id=project_id, user_id=user_id)
+    require_project_viewer(db, project_id=project_id, user_id=user_id)
     rows = (
         db.execute(select(LLMTaskPreset).where(LLMTaskPreset.project_id == project_id).order_by(LLMTaskPreset.task_key.asc()))
         .scalars()

@@ -98,6 +98,7 @@ from app.services.prompt_preset_defaults import (  # noqa: E402
     _prompt_block_from_resource,
     ensure_default_chapter_preset,
     ensure_default_content_optimize_preset,
+    ensure_default_detailed_outline_preset,
     ensure_default_outline_preset,
     ensure_default_plan_preset,
     ensure_default_post_edit_preset,
@@ -108,6 +109,7 @@ from app.services.prompt_preset_defaults import (  # noqa: E402
     reset_prompt_block_to_default_resource,
     reset_prompt_preset_to_default_resource,
     resolve_resource_key_for_preset,
+    sync_builtin_prompt_defaults,
 )
 from app.services.prompt_preset_render import RenderedBlock, render_preset_for_task  # noqa: E402
 
@@ -134,6 +136,7 @@ __all__ = [
     "ensure_default_plan_preset",
     "ensure_default_post_edit_preset",
     "ensure_default_content_optimize_preset",
+    "ensure_default_detailed_outline_preset",
     "ensure_default_outline_preset",
     "ensure_default_chapter_preset",
     "resolve_resource_key_for_preset",
@@ -143,6 +146,7 @@ __all__ = [
     "mark_prompt_block_resource_outdated",
     "prompt_template_hash",
     "refresh_prompt_block_resource_status",
+    "sync_builtin_prompt_defaults",
     "RenderedBlock",
     "render_preset_for_task",
 ]

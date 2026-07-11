@@ -421,7 +421,7 @@ def test_new_default_blocks_record_resource_provenance() -> None:
 
 
 @pytest.mark.parametrize("scope", ["project", LEGACY_IMPORTED_SCOPE])
-def test_active_preset_upgrade_failure_is_sanitized_and_recovers_session(
+def test_active_preset_lookup_never_attempts_resource_upgrade(
     monkeypatch: pytest.MonkeyPatch,
     scope: str,
 ) -> None:
@@ -444,23 +444,14 @@ def test_active_preset_upgrade_failure_is_sanitized_and_recovers_session(
             )
             db.add(unrelated)
             db.commit()
-            original_version = preset.version
+            preset_id = preset.id
+            unrelated_id = unrelated.id
             unrelated.name = "Unrelated pending"
 
-            def _failing_upgrade(session, **_kwargs):
-                row = session.get(PromptPreset, preset.id)
-                assert row is not None
-                row.version = 999
-                session.flush()
-                raise RuntimeError("secret-token=do-not-log")
+            def _unexpected_upgrade(*_args, **_kwargs):
+                raise AssertionError("read lookup must not invoke a mutating resource ensurer")
 
-            warning_calls: list[tuple[str, tuple[object, ...]]] = []
-
-            def _record_warning(message: str, *args: object) -> None:
-                warning_calls.append((message, args))
-
-            monkeypatch.setattr(defaults, "_ensure_default_preset_from_resource", _failing_upgrade)
-            monkeypatch.setattr(defaults.logger, "warning", _record_warning)
+            monkeypatch.setattr(defaults, "_ensure_default_preset_from_resource", _unexpected_upgrade)
 
             selected = defaults.get_active_preset_for_task(
                 db,
@@ -470,27 +461,19 @@ def test_active_preset_upgrade_failure_is_sanitized_and_recovers_session(
             )
 
             assert selected.id == preset.id
-            assert selected.version == original_version
+            assert selected.version == 0
             assert unrelated.name == "Unrelated pending"
-            assert db.execute(select(PromptPreset).where(PromptPreset.id == preset.id)).scalar_one().version == original_version
-            assert len(warning_calls) == 1
-            message_format, message_args = warning_calls[0]
-            message = message_format % message_args
-            assert f"preset_id={preset.id}" in message
-            assert f"resource_key={RESOURCE_KEY}" in message
-            assert "error_type=RuntimeError" in message
-            assert "secret-token" not in message
-            assert "do-not-log" not in message
-            db.commit()
+            assert db.execute(select(PromptPreset).where(PromptPreset.id == preset.id)).scalar_one().version == 0
+            db.rollback()
 
         with factory() as db:
-            assert db.get(PromptPreset, unrelated.id).name == "Unrelated pending"
-            assert db.get(PromptPreset, preset.id).version == original_version
+            assert db.get(PromptPreset, unrelated_id).name == "Unrelated original"
+            assert db.get(PromptPreset, preset_id).version == 0
     finally:
         engine.dispose()
 
 
-def test_successful_auto_upgrade_does_not_commit_caller_owned_changes() -> None:
+def test_active_preset_lookup_leaves_version_blocks_and_caller_changes_untouched() -> None:
     engine = make_sqlite_engine()
     factory = make_session_factory(engine)
     create_tables(engine)
@@ -531,8 +514,8 @@ def test_successful_auto_upgrade_does_not_commit_caller_owned_changes() -> None:
                 allow_autocreate=False,
             )
 
-            assert selected.version == resource.version
-            assert block.resource_template_outdated is True
+            assert selected.version == 0
+            assert block.resource_template_outdated is None
             assert unrelated.name == "Unrelated pending"
             db.rollback()
 

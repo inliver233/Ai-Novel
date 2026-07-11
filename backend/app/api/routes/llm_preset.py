@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from app.api.deps import DbDep, UserIdDep, require_project_editor
+from app.api.deps import DbDep, UserIdDep, require_project_editor, require_project_viewer
 from app.core.errors import ok_payload
 from app.models.llm_preset import LLMPreset
 from app.schemas.llm_preset import LLMPresetOut, LLMPresetPutRequest
@@ -61,13 +61,10 @@ def _to_out(row: LLMPreset) -> dict:
 @router.get("/projects/{project_id}/llm_preset")
 def get_llm_preset(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
     request_id = request.state.request_id
-    require_project_editor(db, project_id=project_id, user_id=user_id)
+    require_project_viewer(db, project_id=project_id, user_id=user_id)
     row = db.get(LLMPreset, project_id)
     if row is None:
         row = _default_preset(project_id)
-        db.add(row)
-        db.commit()
-        db.refresh(row)
     return ok_payload(request_id=request_id, data={"llm_preset": _to_out(row)})
 
 

@@ -13,6 +13,7 @@ from app.db import migrations
 
 PREVIOUS_REVISION = "b2d4e6f8a0c1"
 RECONCILIATION_REVISION = "c7e2a4f6b8d0"
+HEAD_REVISION = "d8f3b5a7c9e1"
 _NOW = "2026-07-11 00:00:00+00:00"
 _USER_ID = "u" * 36
 
@@ -220,8 +221,6 @@ def test_reconciliation_round_trip_preserves_data_defaults_and_indexes(tmp_path:
             "ix_llm_task_presets_llm_profile_id",
         }.issubset(_index_names(engine, "llm_task_presets"))
         assert _data_snapshot(engine) == expected_data
-        _run_alembic_check(database_url)
-
         _run_alembic(database_url, PREVIOUS_REVISION, downgrade=True)
 
         assert _revision(engine) == PREVIOUS_REVISION
@@ -234,7 +233,7 @@ def test_reconciliation_round_trip_preserves_data_defaults_and_indexes(tmp_path:
         assert _data_snapshot(engine) == expected_data
 
         _run_alembic(database_url, "head")
-        assert _revision(engine) == RECONCILIATION_REVISION
+        assert _revision(engine) == HEAD_REVISION
         assert _data_snapshot(engine) == expected_data
         _run_alembic_check(database_url)
     finally:

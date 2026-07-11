@@ -39,7 +39,7 @@ def render_preset_for_task(
     macro_seed: str | None = None,
     provider: str | None = None,
     prompt_budget_tokens: int | None = None,
-    allow_autocreate: bool = True,
+    allow_autocreate: bool = False,
 ) -> tuple[str, str, list[ChatMessage], list[str], list[RenderedBlock], str, dict]:
     from app.services.prompt_presets import (
         _hash_json,
@@ -527,4 +527,3 @@ def render_preset_for_task(
     }
 
     return system, user, messages, sorted(all_missing), rendered_blocks, preset.id, render_log
-

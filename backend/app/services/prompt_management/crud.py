@@ -13,29 +13,11 @@ from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
 from app.services.prompt_preset_resources import list_available_preset_resources, load_preset_resource
 from app.services.prompt_presets import (
-    ensure_default_chapter_preset,
-    ensure_default_content_optimize_preset,
-    ensure_default_outline_preset,
-    ensure_default_plan_preset,
-    ensure_default_post_edit_preset,
     mark_prompt_block_resource_outdated,
     refresh_prompt_block_resource_status,
     reset_prompt_block_to_default_resource,
     reset_prompt_preset_to_default_resource,
 )
-
-_PROMPT_BASELINE_ENSURERS: tuple[tuple[Any, dict[str, object]], ...] = (
-    (ensure_default_plan_preset, {}),
-    (ensure_default_post_edit_preset, {}),
-    (ensure_default_content_optimize_preset, {}),
-    (ensure_default_outline_preset, {"activate": False}),
-    (ensure_default_chapter_preset, {"activate": False}),
-)
-
-
-def _ensure_prompt_preset_baseline(db: Session, *, project_id: str) -> None:
-    for ensurer, kwargs in _PROMPT_BASELINE_ENSURERS:
-        ensurer(db, project_id=project_id, **kwargs)
 
 
 def _list_prompt_preset_rows(db: Session, *, project_id: str) -> list[PromptPreset]:
@@ -125,7 +107,6 @@ def _build_prompt_block_row(
 
 
 def _build_prompt_preset_list_payload(db: Session, *, project_id: str) -> dict[str, object]:
-    _ensure_prompt_preset_baseline(db, project_id=project_id)
     presets = _list_prompt_preset_rows(db, project_id=project_id)
     return {"presets": [_preset_to_out(preset) for preset in presets]}
 

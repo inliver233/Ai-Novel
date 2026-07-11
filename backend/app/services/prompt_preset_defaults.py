@@ -2,20 +2,43 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
+import time
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.db.utils import new_id, utc_now
 from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
+from app.models.project import Project
 from app.services.prompt_preset_resources import list_available_preset_resources, load_preset_resource
 
 
-logger = logging.getLogger("ainovel")
+_BUILTIN_PROMPT_DEFAULTS: tuple[tuple[str, bool], ...] = (
+    ("plan_chapter_v1", True),
+    ("post_edit_v1", True),
+    ("content_optimize_v1", True),
+    ("outline_generate_v3", False),
+    ("chapter_generate_v4", False),
+    ("detailed_outline_generate_v1", False),
+)
+_BUILTIN_RESOURCE_UNIQUE_CONSTRAINT = "uq_prompt_presets_project_resource_key"
+
+
+def _is_builtin_resource_unique_conflict(exc: IntegrityError) -> bool:
+    original = exc.orig
+    diagnostic = getattr(original, "diag", None)
+    if getattr(diagnostic, "constraint_name", None) == _BUILTIN_RESOURCE_UNIQUE_CONSTRAINT:
+        return True
+    message = str(original).lower()
+    return (
+        "prompt_presets.project_id" in message
+        and "prompt_presets.resource_key" in message
+        and "unique" in message
+    )
 
 
 def prompt_template_hash(template: str | None) -> str:
@@ -342,6 +365,53 @@ def ensure_default_detailed_outline_preset(db: Session, *, project_id: str, acti
     )
 
 
+def sync_builtin_prompt_defaults(db: Session, *, project_id: str) -> list[PromptPreset]:
+    """Create or reconcile builtin prompt resources in one successful transaction.
+
+    A uniqueness constraint is the final concurrency guard.  If two editors
+    initialize the same project concurrently, the loser rolls back its whole
+    attempt and retries against the committed rows instead of leaving a
+    partially initialized baseline.
+    """
+
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            project = db.execute(
+                select(Project).where(Project.id == project_id).with_for_update()
+            ).scalar_one_or_none()
+            if project is None:
+                raise AppError.not_found()
+            rows = [
+                _ensure_default_preset_from_resource(
+                    db,
+                    project_id=project_id,
+                    resource_key=resource_key,
+                    activate=activate,
+                    commit=False,
+                )
+                for resource_key, activate in _BUILTIN_PROMPT_DEFAULTS
+            ]
+            db.commit()
+            for row in rows:
+                db.refresh(row)
+            return rows
+        except IntegrityError as exc:
+            db.rollback()
+            if not _is_builtin_resource_unique_conflict(exc) or attempt + 1 >= max_attempts:
+                raise
+        except OperationalError as exc:
+            db.rollback()
+            if "locked" not in str(exc).lower() or attempt + 1 >= max_attempts:
+                raise
+        except Exception:
+            db.rollback()
+            raise
+        time.sleep(0.02 * (attempt + 1))
+
+    raise RuntimeError("unreachable builtin prompt synchronization retry state")
+
+
 def resolve_resource_key_for_preset(db: Session, *, preset: PromptPreset) -> str | None:
     if preset.resource_key:
         return str(preset.resource_key)
@@ -422,47 +492,9 @@ def reset_prompt_block_to_default_resource(db: Session, *, preset: PromptPreset,
     return block
 
 
-def _auto_upgrade_bound_preset(
-    db: Session,
-    *,
-    project_id: str,
-    preset: PromptPreset,
-    commit_upgrade: bool,
-) -> PromptPreset:
-    preset_id = preset.id
-    resource_key = str(preset.resource_key or "").strip()
-    if not resource_key:
-        return preset
-
-    try:
-        with db.begin_nested():
-            upgraded = _ensure_default_preset_from_resource(
-                db,
-                project_id=project_id,
-                resource_key=resource_key,
-                activate=False,
-                commit=False,
-            )
-        if commit_upgrade:
-            db.commit()
-            db.refresh(upgraded)
-        return upgraded
-    except Exception as exc:
-        if commit_upgrade:
-            db.rollback()
-        logger.warning(
-            "prompt_preset_resource_upgrade_failed preset_id=%s resource_key=%s error_type=%s",
-            preset_id,
-            resource_key,
-            type(exc).__name__,
-        )
-        return db.get(PromptPreset, preset_id) or preset
-
-
-def get_active_preset_for_task(db: Session, *, project_id: str, task: str, allow_autocreate: bool = True) -> PromptPreset:
+def get_active_preset_for_task(db: Session, *, project_id: str, task: str, allow_autocreate: bool = False) -> PromptPreset:
     from app.services.prompt_presets import LEGACY_IMPORTED_SCOPE, parse_json_list
 
-    commit_upgrade = not db.in_transaction() and not (db.new or db.dirty or db.deleted)
     presets = (
         db.execute(select(PromptPreset).where(PromptPreset.project_id == project_id).order_by(PromptPreset.updated_at.desc()))
         .scalars()
@@ -473,56 +505,14 @@ def get_active_preset_for_task(db: Session, *, project_id: str, task: str, allow
         if (preset.scope or "") == LEGACY_IMPORTED_SCOPE:
             continue
         if task in parse_json_list(preset.active_for_json):
-            return _auto_upgrade_bound_preset(
-                db,
-                project_id=project_id,
-                preset=preset,
-                commit_upgrade=commit_upgrade,
-            )
+            return preset
 
     for preset in presets:
         if (preset.scope or "") != LEGACY_IMPORTED_SCOPE:
             continue
         if task in parse_json_list(preset.active_for_json):
-            return _auto_upgrade_bound_preset(
-                db,
-                project_id=project_id,
-                preset=preset,
-                commit_upgrade=commit_upgrade,
-            )
+            return preset
 
-    if allow_autocreate:
-        if task == "plan_chapter":
-            return ensure_default_plan_preset(db, project_id=project_id)
-        if task == "post_edit":
-            return ensure_default_post_edit_preset(db, project_id=project_id)
-        if task == "content_optimize":
-            return ensure_default_content_optimize_preset(db, project_id=project_id)
-        if task == "outline_generate":
-            return ensure_default_outline_preset(db, project_id=project_id, activate=True)
-        if task == "chapter_generate":
-            return ensure_default_chapter_preset(db, project_id=project_id, activate=True)
-        if task == "detailed_outline_generate":
-            return ensure_default_detailed_outline_preset(db, project_id=project_id, activate=True)
-
-    if not allow_autocreate:
-        raise AppError.validation(
-            message=f"No PromptPreset is configured for task={task}; initialize or activate one in Prompt Studio first"
-        )
-
-    if presets:
-        return presets[0]
-
-    # Last resort: create a minimal preset so generation won't crash.
-    preset = PromptPreset(
-        id=new_id(),
-        project_id=project_id,
-        name=f"Auto-created ({task})",
-        scope="project",
-        version=1,
-        active_for_json=json.dumps([task], ensure_ascii=False),
+    raise AppError.validation(
+        message=f"No PromptPreset is configured for task={task}; synchronize defaults or activate one in Prompt Studio first"
     )
-    db.add(preset)
-    db.commit()
-    db.refresh(preset)
-    return preset

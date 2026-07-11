@@ -262,7 +262,7 @@ def test_delete_llm_profile_returns_ok_and_removes_profile() -> None:
 # ---------- GET /api/projects/{project_id}/llm_preset ----------
 
 
-def test_get_llm_preset_creates_default_when_missing() -> None:
+def test_get_llm_preset_returns_transient_default_when_missing() -> None:
     client, factory = _new_client_and_factory()
     _seed_project(factory, project_id="p1")
     resp = client.get("/api/projects/p1/llm_preset")
@@ -275,9 +275,9 @@ def test_get_llm_preset_creates_default_when_missing() -> None:
     assert preset["provider"] == "openai"
     assert preset["model"] == "gpt-4o-mini"
     assert preset["known_model"] is True
-    # 回读验证已持久化（首次 GET 会 lazy-create）
+    # GET is read-only: the default is a transient response until PUT persists it.
     with factory() as db:
-        assert db.get(LLMPreset, "p1") is not None
+        assert db.get(LLMPreset, "p1") is None
 
 
 # ---------- PUT /api/projects/{project_id}/llm_preset ----------

@@ -187,3 +187,29 @@ Routes frequently call helpers from `app/api/deps.py` (e.g. `require_project_vie
 
 These helpers raise `AppError.not_found()` / `AppError.forbidden()` / `AppError.unauthorized()` and are intended to be propagated to the global exception handlers.
 
+### 4.5 Project configuration access matrix
+
+Project-scoped configuration follows the normal read/write split:
+
+| Resource | Read | Write |
+| --- | --- | --- |
+| Prompt presets, builtin resource metadata, preset export | viewer | editor |
+| Prompt Studio categories and preset detail | viewer | editor |
+| Project LLM preset and task overrides | viewer | editor |
+| Project default writing style | viewer | editor |
+| Project bundle export | viewer | n/a |
+| LLM model discovery | editor | n/a |
+
+LLM model discovery deliberately remains editor-only because it consumes the
+project/user credential configuration to contact an upstream provider.  It is
+not an ordinary stored-resource read.
+
+GET handlers must not initialize or upgrade stored configuration.  Builtin
+prompt resources are initialized/reconciled only by the explicit editor-only
+`POST /api/projects/{project_id}/prompt_presets/sync_builtin_defaults`
+operation.  A missing project LLM preset is represented by a transient default
+response and is persisted only by its PUT endpoint.
+
+Generation never auto-creates or upgrades prompt presets.  A missing active
+preset fails closed with a validation error until an editor runs the explicit
+sync operation (or the project-creation initialization has provided it).

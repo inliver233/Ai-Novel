@@ -22,11 +22,6 @@ from app.schemas.prompt_studio import (
 )
 from app.services.prompt_preset_resources import load_preset_resource
 from app.services.prompt_presets import (
-    ensure_default_chapter_preset,
-    ensure_default_content_optimize_preset,
-    ensure_default_outline_preset,
-    ensure_default_plan_preset,
-    ensure_default_post_edit_preset,
     parse_json_list,
     refresh_prompt_block_resource_status,
 )
@@ -103,14 +98,6 @@ if _UNKNOWN_PROMPT_TASKS or _MISSING_STUDIO_TASKS:
     raise RuntimeError(f"Prompt Studio task catalog mismatch (unknown: {unknown}; missing: {missing})")
 _PROMPT_STUDIO_WRITING_STYLE_KEY = "writing_style"
 _PROMPT_STUDIO_WRITING_STYLE_LABEL = "写作风格"
-
-
-def _ensure_prompt_studio_baseline(db: Session, *, project_id: str) -> None:
-    ensure_default_outline_preset(db, project_id=project_id, activate=False)
-    ensure_default_chapter_preset(db, project_id=project_id, activate=False)
-    ensure_default_plan_preset(db, project_id=project_id, activate=False)
-    ensure_default_post_edit_preset(db, project_id=project_id, activate=False)
-    ensure_default_content_optimize_preset(db, project_id=project_id, activate=False)
 
 
 def _require_category_config(category: str) -> PromptStudioPromptCategoryConfig:
@@ -447,8 +434,6 @@ def _list_style_rows(db: Session, *, user_id: str) -> list[WritingStyle]:
 
 
 def list_categories_payload(db: Session, *, project_id: str, user_id: str) -> dict[str, object]:
-    _ensure_prompt_studio_baseline(db, project_id=project_id)
-
     presets = _list_project_presets(db, project_id=project_id)
     blocks_by_preset_id = _list_blocks_for_presets(db, preset_ids=[preset.id for preset in presets])
 

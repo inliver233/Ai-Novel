@@ -66,6 +66,14 @@ export function PromptStudioPage() {
 
           <div className="flex flex-wrap items-center gap-2">
             <button
+              className="btn btn-primary"
+              disabled={studio.loading || studio.busy}
+              onClick={() => void studio.syncBuiltinDefaults()}
+              type="button"
+            >
+              同步内置提示词
+            </button>
+            <button
               className="btn btn-secondary"
               disabled={studio.loading || studio.busy}
               onClick={() => void studio.loadCategories()}

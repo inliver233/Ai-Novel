@@ -18,6 +18,7 @@ from app.services.prompt_management import app as prompt_app
 from app.services.prompt_management import crud as prompt_crud
 from app.services.prompt_management import import_export as prompt_import_export
 from app.services.prompt_management import preview as prompt_preview
+from app.services.prompt_presets import sync_builtin_prompt_defaults
 from app.core.errors import AppError
 from app.db.base import Base
 from app.models.llm_preset import LLMPreset
@@ -81,10 +82,14 @@ class TestPromptManagementService(unittest.TestCase):
             db.add(Project(id="p1", owner_user_id="u1", name="Project 1", genre=None, logline=None))
             db.commit()
 
-    def test_list_payload_ensures_baseline_and_resource_join(self) -> None:
+    def test_list_payload_is_read_only_and_resource_join_follows_explicit_sync(self) -> None:
         with self.SessionLocal() as db:
             payload = build_prompt_preset_list_payload(db, project_id="p1")
-            presets = payload["presets"]
+            self.assertEqual(payload["presets"], [])
+            self.assertEqual(db.query(PromptPreset).count(), 0)
+
+            sync_builtin_prompt_defaults(db, project_id="p1")
+            presets = build_prompt_preset_list_payload(db, project_id="p1")["presets"]
             self.assertTrue(any(str(item.get("resource_key") or "") == "plan_chapter_v1" for item in presets))
 
             resource_payload = build_prompt_preset_resources_payload(db, project_id="p1")

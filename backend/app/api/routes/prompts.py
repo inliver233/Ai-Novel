@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from app.api.deps import DbDep, UserIdDep, require_project_editor
+from app.api.deps import DbDep, UserIdDep, require_project_editor, require_project_viewer
 from app.services.prompt_management.app import (
     build_prompt_import_all_payload,
     build_prompt_preset_detail_payload,
@@ -35,6 +35,7 @@ from app.schemas.prompt_presets import (
     PromptPresetUpdate,
     PromptPreviewRequest,
 )
+from app.services.prompt_presets import sync_builtin_prompt_defaults
 
 router = APIRouter()
 
@@ -42,14 +43,14 @@ router = APIRouter()
 @router.get("/projects/{project_id}/prompt_presets")
 def list_prompt_presets(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
     request_id = request.state.request_id
-    require_project_editor(db, project_id=project_id, user_id=user_id)
+    require_project_viewer(db, project_id=project_id, user_id=user_id)
     return ok_payload(request_id=request_id, data=build_prompt_preset_list_payload(db, project_id=project_id))
 
 
 @router.get("/projects/{project_id}/prompt_preset_resources")
 def list_prompt_preset_resources(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
     request_id = request.state.request_id
-    require_project_editor(db, project_id=project_id, user_id=user_id)
+    require_project_viewer(db, project_id=project_id, user_id=user_id)
     return ok_payload(request_id=request_id, data=build_prompt_preset_resources_payload(db, project_id=project_id))
 
 
@@ -60,11 +61,30 @@ def create_prompt_preset(request: Request, db: DbDep, user_id: UserIdDep, projec
     return ok_payload(request_id=request_id, data=create_prompt_preset_payload(db, project_id=project_id, body=body))
 
 
+@router.post("/projects/{project_id}/prompt_presets/sync_builtin_defaults")
+def sync_project_builtin_prompt_defaults(
+    request: Request,
+    db: DbDep,
+    user_id: UserIdDep,
+    project_id: str,
+) -> dict:
+    request_id = request.state.request_id
+    require_project_editor(db, project_id=project_id, user_id=user_id)
+    rows = sync_builtin_prompt_defaults(db, project_id=project_id)
+    return ok_payload(
+        request_id=request_id,
+        data={
+            "synced": len(rows),
+            "resource_keys": [str(row.resource_key) for row in rows],
+        },
+    )
+
+
 @router.get("/prompt_presets/{preset_id}")
 def get_prompt_preset(request: Request, db: DbDep, user_id: UserIdDep, preset_id: str) -> dict:
     request_id = request.state.request_id
     preset = require_prompt_preset(db, preset_id=preset_id)
-    require_project_editor(db, project_id=preset.project_id, user_id=user_id)
+    require_project_viewer(db, project_id=preset.project_id, user_id=user_id)
     return ok_payload(request_id=request_id, data=build_prompt_preset_detail_payload(db, preset=preset))
 
 
@@ -145,7 +165,7 @@ def reorder_prompt_blocks(
 def export_prompt_preset(request: Request, db: DbDep, user_id: UserIdDep, preset_id: str) -> dict:
     request_id = request.state.request_id
     preset = require_prompt_preset(db, preset_id=preset_id)
-    require_project_editor(db, project_id=preset.project_id, user_id=user_id)
+    require_project_viewer(db, project_id=preset.project_id, user_id=user_id)
     return ok_payload(request_id=request_id, data=build_prompt_preset_export_payload(db, preset=preset))
 
 
@@ -159,7 +179,7 @@ def import_prompt_preset(request: Request, db: DbDep, user_id: UserIdDep, projec
 @router.get("/projects/{project_id}/prompt_presets/export_all")
 def export_all_prompt_presets(request: Request, db: DbDep, user_id: UserIdDep, project_id: str) -> dict:
     request_id = request.state.request_id
-    require_project_editor(db, project_id=project_id, user_id=user_id)
+    require_project_viewer(db, project_id=project_id, user_id=user_id)
     return ok_payload(request_id=request_id, data=build_prompt_presets_export_all_payload(db, project_id=project_id))
 
 

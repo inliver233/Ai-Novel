@@ -113,15 +113,16 @@ def _seed_project(factory, *, project_id: str = "p1", owner_user_id: str = "u1",
 
 
 def test_list_prompt_presets_returns_ok_with_preset_list() -> None:
-    """GET /api/projects/{project_id}/prompt_presets 触发 baseline 创建并返回列表。"""
+    """Explicit sync initializes defaults; the subsequent GET returns them."""
     client, factory = _new_client_and_factory()
     _seed_project(factory, project_id="p1")
+    sync_resp = client.post("/api/projects/p1/prompt_presets/sync_builtin_defaults")
+    assert sync_resp.status_code == 200
     resp = client.get("/api/projects/p1/prompt_presets")
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
     presets = body["data"]["presets"]
-    # baseline ensurer 会建多个默认 preset，列表非空
     assert isinstance(presets, list)
     assert len(presets) >= 1
     # 断言结构关键键
@@ -491,7 +492,8 @@ def test_reset_prompt_preset_to_default_returns_ok_with_preset_and_blocks() -> N
     """
     client, factory = _new_client_and_factory()
     _seed_project(factory, project_id="p1")
-    # 触发 baseline 创建
+    sync_resp = client.post("/api/projects/p1/prompt_presets/sync_builtin_defaults")
+    assert sync_resp.status_code == 200
     list_resp = client.get("/api/projects/p1/prompt_presets")
     presets = list_resp.json()["data"]["presets"]
     # 找一个有 resource_key 的 preset
@@ -513,6 +515,8 @@ def test_reset_prompt_block_to_default_returns_ok_with_block() -> None:
     """
     client, factory = _new_client_and_factory()
     _seed_project(factory, project_id="p1")
+    sync_resp = client.post("/api/projects/p1/prompt_presets/sync_builtin_defaults")
+    assert sync_resp.status_code == 200
     list_resp = client.get("/api/projects/p1/prompt_presets")
     presets = list_resp.json()["data"]["presets"]
     target = next((p for p in presets if p.get("resource_key")), None)
@@ -544,8 +548,8 @@ def test_preview_prompt_returns_ok_with_preview_payload() -> None:
     """
     client, factory = _new_client_and_factory()
     _seed_project(factory, project_id="p1")
-    # 触发 baseline 创建（content_optimize preset 默认激活）
-    client.get("/api/projects/p1/prompt_presets")
+    sync_resp = client.post("/api/projects/p1/prompt_presets/sync_builtin_defaults")
+    assert sync_resp.status_code == 200
     resp = client.post(
         "/api/projects/p1/prompt_preview",
         json={"task": "content_optimize", "values": {}},

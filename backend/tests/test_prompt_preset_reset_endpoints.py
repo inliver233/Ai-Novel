@@ -88,6 +88,11 @@ class TestPromptPresetResetEndpoints(unittest.TestCase):
     def test_prompt_preset_resources_expose_category(self) -> None:
         client = TestClient(self.app)
 
+        sync_resp = client.post(
+            "/api/projects/p1/prompt_presets/sync_builtin_defaults",
+            headers={"X-Test-User": "u_editor"},
+        )
+        self.assertEqual(sync_resp.status_code, 200)
         presets_resp = client.get("/api/projects/p1/prompt_presets", headers={"X-Test-User": "u_editor"})
         self.assertEqual(presets_resp.status_code, 200)
 
@@ -107,6 +112,11 @@ class TestPromptPresetResetEndpoints(unittest.TestCase):
     def test_reset_block_and_preset_to_default_resource(self) -> None:
         client = TestClient(self.app)
 
+        sync_resp = client.post(
+            "/api/projects/p1/prompt_presets/sync_builtin_defaults",
+            headers={"X-Test-User": "u_editor"},
+        )
+        self.assertEqual(sync_resp.status_code, 200)
         presets_resp = client.get("/api/projects/p1/prompt_presets", headers={"X-Test-User": "u_editor"})
         self.assertEqual(presets_resp.status_code, 200)
         presets = presets_resp.json()["data"]["presets"]

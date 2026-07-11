@@ -165,7 +165,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: PostgreSQL cleanup + reconciliation integration (hard gate)
+      - name: PostgreSQL cleanup + reconciliation + prompt sync concurrency (hard gate)
         run: python -m pytest tests/test_alembic_postgres_integration.py -q --junitxml="$RUNNER_TEMP/postgres-schema.xml"
 
       - name: Report PostgreSQL integration failure

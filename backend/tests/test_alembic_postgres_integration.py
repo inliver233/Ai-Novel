@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import os
+import threading
 
 import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.runtime.migration import MigrationContext
+from sqlalchemy.orm import sessionmaker
 
 from app.db.migrations import _alembic_config
+from app.models.project import Project
+from app.models.prompt_preset import PromptPreset
+from app.models.user import User
+from app.services.prompt_preset_defaults import sync_builtin_prompt_defaults
 from scripts.check_alembic import (
     SchemaContractError,
     assert_schema_matches_metadata,
@@ -17,7 +23,7 @@ from scripts.check_alembic import (
 
 
 PRE_CLEANUP_REVISION = "9f3a7c2d1e4b"
-HEAD_REVISION = "c7e2a4f6b8d0"
+HEAD_REVISION = "d8f3b5a7c9e1"
 EXPECTED_DATABASE = "ainovel_schema_ci"
 DESTRUCTIVE_SENTINEL = "I_UNDERSTAND_THIS_DROPS_PUBLIC_SCHEMA"
 RETIRED_TABLES = {
@@ -186,6 +192,48 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
         # Also execute Alembic's public command path so env.py itself is part
         # of the PostgreSQL contract, rather than only the shared primitives.
         _alembic_check(database_url)
+
+        session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+        with session_factory() as db:
+            db.add(User(id="prompt-sync-user", display_name="Prompt Sync"))
+            db.add(
+                Project(
+                    id="prompt-sync-project",
+                    owner_user_id="prompt-sync-user",
+                    name="Prompt Sync Project",
+                    genre=None,
+                    logline=None,
+                )
+            )
+            db.commit()
+
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def _sync_concurrently() -> None:
+            try:
+                with session_factory() as db:
+                    barrier.wait(timeout=10)
+                    sync_builtin_prompt_defaults(db, project_id="prompt-sync-project")
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_sync_concurrently), threading.Thread(target=_sync_concurrently)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert not errors
+        assert all(not thread.is_alive() for thread in threads)
+        with session_factory() as db:
+            rows = (
+                db.query(PromptPreset)
+                .filter(PromptPreset.project_id == "prompt-sync-project")
+                .all()
+            )
+            assert len(rows) == 6
+            assert len({row.resource_key for row in rows}) == 6
     finally:
         if destructive_target_verified:
             with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
