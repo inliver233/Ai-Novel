@@ -10,11 +10,16 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
+
 import pytest
 
 from app.api.routes import chapters as chapters_routes
 from app.models.outline import Outline
 from app.models.project import Project
+from app.models.project_settings import ProjectSettings
 from tests.support import (
     auth_cookies,
     create_tables,
@@ -53,7 +58,9 @@ def env():
     engine.dispose()
 
 
-def _create_chapter(client, *, number: int, title: str | None = None, plan: str | None = None, status: str = "planned") -> dict:
+def _create_chapter(
+    client, *, number: int, title: str | None = None, plan: str | None = None, status: str = "planned"
+) -> dict:
     payload: dict = {"number": number, "status": status}
     if title is not None:
         payload["title"] = title
@@ -64,6 +71,28 @@ def _create_chapter(client, *, number: int, title: str | None = None, plan: str 
     body = resp.json()
     assert body["ok"] is True
     return body["data"]["chapter"]
+
+
+def _replacement_snapshot(factory) -> tuple[list[tuple[object, ...]], tuple[object, ...] | None]:  # type: ignore[no-untyped-def]
+    with factory() as db:
+        chapters = [
+            (
+                row.id,
+                row.project_id,
+                row.outline_id,
+                row.number,
+                row.title,
+                row.plan,
+                row.content_md,
+                row.summary,
+                row.status,
+                row.updated_at,
+            )
+            for row in db.query(chapters_routes.Chapter).order_by(chapters_routes.Chapter.id).all()
+        ]
+        settings = db.get(ProjectSettings, PROJECT_ID)
+        settings_snapshot = None if settings is None else (settings.project_id, settings.vector_index_dirty)
+        return chapters, settings_snapshot
 
 
 def test_list_chapter_meta_empty(env):
@@ -185,11 +214,13 @@ def test_bulk_create_chapters(env):
     """POST /chapters/bulk_create：批量创建，返回按 number 升序、status=planned。"""
     resp = env["client"].post(
         f"/api/projects/{PROJECT_ID}/chapters/bulk_create",
-        json={"chapters": [
-            {"number": 2, "title": "二"},
-            {"number": 1, "title": "一"},
-            {"number": 3, "title": "三"},
-        ]},
+        json={
+            "chapters": [
+                {"number": 2, "title": "二"},
+                {"number": 1, "title": "一"},
+                {"number": 3, "title": "三"},
+            ]
+        },
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -205,10 +236,12 @@ def test_bulk_create_replace(env):
     _create_chapter(env["client"], number=1, title="旧一")
     resp = env["client"].post(
         f"/api/projects/{PROJECT_ID}/chapters/bulk_create?replace=true",
-        json={"chapters": [
-            {"number": 1, "title": "新一"},
-            {"number": 2, "title": "新二"},
-        ]},
+        json={
+            "chapters": [
+                {"number": 1, "title": "新一"},
+                {"number": 2, "title": "新二"},
+            ]
+        },
     )
     assert resp.status_code == 200
     chapters = resp.json()["data"]["chapters"]
@@ -220,6 +253,109 @@ def test_bulk_create_replace(env):
     # 列表只剩两章（旧 number=1 已被删除重建）
     listed = env["client"].get(f"/api/projects/{PROJECT_ID}/chapters").json()["data"]["chapters"]
     assert len(listed) == 2
+
+
+def test_bulk_create_replace_primary_key_conflict_restores_old_chapters(env, monkeypatch):
+    """真实 SQLite PK 冲突必须回滚 DELETE、dirty 标记和所有新章节。"""
+    collision_id = "collision-chapter"
+    with env["factory"]() as db:
+        db.add(Outline(id="o2", project_id=PROJECT_ID, title="其它大纲", content_md=""))
+        db.add_all(
+            [
+                chapters_routes.Chapter(
+                    id="old-target",
+                    project_id=PROJECT_ID,
+                    outline_id=OUTLINE_ID,
+                    number=7,
+                    title="旧标题",
+                    plan="旧计划",
+                    content_md="旧正文",
+                    summary="旧摘要",
+                    status="done",
+                ),
+                chapters_routes.Chapter(
+                    id=collision_id,
+                    project_id=PROJECT_ID,
+                    outline_id="o2",
+                    number=1,
+                    title="保留的其它大纲章节",
+                    status="planned",
+                ),
+            ]
+        )
+        db.add(ProjectSettings(project_id=PROJECT_ID, vector_index_dirty=False))
+        db.commit()
+
+    before = _replacement_snapshot(env["factory"])
+    monkeypatch.setattr(chapters_routes, "new_id", lambda: collision_id)
+    monkeypatch.setattr(
+        chapters_routes,
+        "schedule_vector_rebuild_task",
+        lambda **_kwargs: pytest.fail("vector side effect ran before a successful commit"),
+    )
+    monkeypatch.setattr(
+        chapters_routes,
+        "schedule_search_rebuild_task",
+        lambda **_kwargs: pytest.fail("search side effect ran before a successful commit"),
+    )
+
+    response = env["client"].post(
+        f"/api/projects/{PROJECT_ID}/chapters/bulk_create?replace=true",
+        json={"chapters": [{"number": 1, "title": "不应存在"}]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONFLICT"
+    assert _replacement_snapshot(env["factory"]) == before
+
+
+def test_bulk_create_replace_mid_batch_exception_restores_full_snapshot(env, monkeypatch):
+    """部分 INSERT 已 flush 后的普通异常也必须恢复旧章全部字段且不留新行。"""
+    with env["factory"]() as db:
+        db.add(
+            chapters_routes.Chapter(
+                id="old-complete",
+                project_id=PROJECT_ID,
+                outline_id=OUTLINE_ID,
+                number=9,
+                title="完整旧标题",
+                plan="完整旧计划",
+                content_md="完整旧正文",
+                summary="完整旧摘要",
+                status="done",
+            )
+        )
+        db.add(ProjectSettings(project_id=PROJECT_ID, vector_index_dirty=False))
+        db.commit()
+
+    before = _replacement_snapshot(env["factory"])
+    session_class = env["factory"].class_
+
+    def _flush_first_then_fail(session, instances):  # type: ignore[no-untyped-def]
+        session.add(instances[0])
+        session.flush()
+        raise RuntimeError("injected mid-batch failure")
+
+    monkeypatch.setattr(session_class, "add_all", _flush_first_then_fail)
+
+    with pytest.raises(RuntimeError, match="injected mid-batch failure"):
+        env["client"].post(
+            f"/api/projects/{PROJECT_ID}/chapters/bulk_create?replace=true",
+            json={"chapters": [{"number": 1, "title": "新一"}, {"number": 2, "title": "新二"}]},
+        )
+
+    assert _replacement_snapshot(env["factory"]) == before
+
+
+def test_bulk_create_handler_has_one_commit_boundary() -> None:
+    """防止覆盖流程再次退化为先提交 DELETE、再提交 INSERT。"""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(chapters_routes.bulk_create)))
+    commits = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "commit"
+    ]
+    assert len(commits) == 1
 
 
 def test_trigger_auto_updates_returns_tasks_and_token(env):

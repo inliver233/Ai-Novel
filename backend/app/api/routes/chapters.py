@@ -166,13 +166,13 @@ def list_chapters(
         return ok_payload(request_id=request_id, data={"chapters": []})
 
     rows = (
-        db.execute(
-            _chapter_query(project_id=project_id, outline_id=target_outline_id).order_by(Chapter.number.asc())
-        )
+        db.execute(_chapter_query(project_id=project_id, outline_id=target_outline_id).order_by(Chapter.number.asc()))
         .scalars()
         .all()
     )
-    return ok_payload(request_id=request_id, data={"chapters": [ChapterOut.model_validate(r).model_dump() for r in rows]})
+    return ok_payload(
+        request_id=request_id, data={"chapters": [ChapterOut.model_validate(r).model_dump() for r in rows]}
+    )
 
 
 @router.post("/projects/{project_id}/chapters")
@@ -266,7 +266,9 @@ def bulk_create(
         target_outline_id = ensure_active_outline(db, project=project).id
 
     has_any = (
-        db.execute(select(Chapter.id).where(Chapter.project_id == project_id, Chapter.outline_id == target_outline_id).limit(1)).first()
+        db.execute(
+            select(Chapter.id).where(Chapter.project_id == project_id, Chapter.outline_id == target_outline_id).limit(1)
+        ).first()
         is not None
     )
     if has_any and not replace:
@@ -276,34 +278,39 @@ def bulk_create(
     if len(numbers) != len(set(numbers)):
         raise AppError.validation("chapters.number 不能重复")
 
-    if replace:
-        db.execute(delete(Chapter).where(Chapter.project_id == project_id, Chapter.outline_id == target_outline_id))
-        _mark_vector_index_dirty(db, project_id=project_id)
-        db.commit()
-
-    created: list[Chapter] = [
-        Chapter(
-            id=new_id(),
-            project_id=project_id,
-            outline_id=target_outline_id,
-            number=c.number,
-            title=c.title,
-            plan=c.plan,
-            status="planned",
-        )
-        for c in body.chapters
-    ]
-    db.add_all(created)
     try:
+        if replace:
+            db.execute(delete(Chapter).where(Chapter.project_id == project_id, Chapter.outline_id == target_outline_id))
+
+        created: list[Chapter] = [
+            Chapter(
+                id=new_id(),
+                project_id=project_id,
+                outline_id=target_outline_id,
+                number=c.number,
+                title=c.title,
+                plan=c.plan,
+                status="planned",
+            )
+            for c in body.chapters
+        ]
+        db.add_all(created)
         _mark_vector_index_dirty(db, project_id=project_id)
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
-        raise AppError.conflict("章节创建冲突（请检查章节号）")
+        raise AppError.conflict("章节创建冲突（请检查章节号）") from exc
+    except Exception:
+        db.rollback()
+        raise
 
     created_sorted = sorted(created, key=lambda x: x.number)
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="chapters_bulk_create")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="chapters_bulk_create")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="chapters_bulk_create"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="chapters_bulk_create"
+    )
     return ok_payload(
         request_id=request_id,
         data={"chapters": [ChapterOut.model_validate(r).model_dump() for r in created_sorted]},
@@ -452,8 +459,12 @@ def delete_chapter(request: Request, db: DbDep, user_id: UserIdDep, chapter_id: 
     db.delete(row)
     _mark_vector_index_dirty(db, project_id=str(row.project_id))
     db.commit()
-    schedule_vector_rebuild_task(db=db, project_id=str(row.project_id), actor_user_id=user_id, request_id=request_id, reason="chapter_delete")
-    schedule_search_rebuild_task(db=db, project_id=str(row.project_id), actor_user_id=user_id, request_id=request_id, reason="chapter_delete")
+    schedule_vector_rebuild_task(
+        db=db, project_id=str(row.project_id), actor_user_id=user_id, request_id=request_id, reason="chapter_delete"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=str(row.project_id), actor_user_id=user_id, request_id=request_id, reason="chapter_delete"
+    )
     return ok_payload(request_id=request_id, data={})
 
 

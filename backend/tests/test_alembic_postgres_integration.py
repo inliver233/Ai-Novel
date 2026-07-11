@@ -17,14 +17,17 @@ from app.db.utils import new_id
 from app.core.config import settings
 from app.core.errors import AppError
 from app.api.routes import batch_generation as batch_generation_routes
+from app.api.routes import chapters as chapters_routes
 from app.models.batch_generation_task import BatchGenerationQuotaGuard, BatchGenerationTask, BatchGenerationTaskItem
 from app.models.chapter import Chapter
 from app.models.llm_preset import LLMPreset
 from app.models.outline import Outline
 from app.models.project import Project
+from app.models.project_settings import ProjectSettings
 from app.models.prompt_preset import PromptPreset
 from app.models.user import User
 from app.schemas.batch_generation import BatchGenerationCreateRequest
+from app.schemas.chapters import BulkCreateRequest
 from app.services.prompt_preset_defaults import sync_builtin_prompt_defaults
 from app.services.batch_generation_quota import (
     enter_batch_generation_quota_admission,
@@ -385,7 +388,9 @@ def _assert_postgres_worker_control_races(session_factory: sessionmaker) -> None
                     params_json='{"context": {}}',
                 )
             )
-            db.add(BatchGenerationTaskItem(id=item_id, task_id=task_id, chapter_id=None, chapter_number=1, status="queued"))
+            db.add(
+                BatchGenerationTaskItem(id=item_id, task_id=task_id, chapter_id=None, chapter_number=1, status="queued")
+            )
             db.commit()
 
         prepare_entered = threading.Event()
@@ -396,7 +401,17 @@ def _assert_postgres_worker_control_races(session_factory: sessionmaker) -> None
             prepare_entered.set()
             if not release_prepare.wait(timeout=15):
                 raise RuntimeError("postgres worker race timed out")
-            return (SimpleNamespace(id="quota-project-1"), SimpleNamespace(provider="openai"), "key", "", "", "", "", "", {})
+            return (
+                SimpleNamespace(id="quota-project-1"),
+                SimpleNamespace(provider="openai"),
+                "key",
+                "",
+                "",
+                "",
+                "",
+                "",
+                {},
+            )
 
         def _run_worker() -> None:
             try:
@@ -432,6 +447,133 @@ def _assert_postgres_worker_control_races(session_factory: sessionmaker) -> None
             db.delete(item)
             db.delete(task)
             db.commit()
+
+
+def _assert_postgres_chapter_replace_transaction(session_factory: sessionmaker) -> None:
+    user_id = "chapter-replace-user"
+    project_id = "chapter-replace-project"
+    outline_id = "chapter-replace-outline"
+    other_outline_id = "chapter-replace-other-outline"
+    collision_id = "chapter-replace-collision"
+    with session_factory() as db:
+        db.add(User(id=user_id, display_name="Chapter Replace User"))
+        db.commit()
+        db.add(Project(id=project_id, owner_user_id=user_id, name="Chapter Replace", active_outline_id=outline_id))
+        db.commit()
+        db.add_all(
+            [
+                Outline(id=outline_id, project_id=project_id, title="Replace Target"),
+                Outline(id=other_outline_id, project_id=project_id, title="Collision Source"),
+            ]
+        )
+        db.commit()
+        db.add_all(
+            [
+                Chapter(
+                    id="chapter-replace-old",
+                    project_id=project_id,
+                    outline_id=outline_id,
+                    number=9,
+                    title="Old title",
+                    plan="Old plan",
+                    content_md="Old content",
+                    summary="Old summary",
+                    status="done",
+                ),
+                Chapter(
+                    id=collision_id,
+                    project_id=project_id,
+                    outline_id=other_outline_id,
+                    number=1,
+                    title="Collision owner",
+                ),
+            ]
+        )
+        db.add(ProjectSettings(project_id=project_id, vector_index_dirty=False))
+        db.commit()
+
+    def _snapshot() -> tuple[list[tuple[object, ...]], bool]:
+        with session_factory() as db:
+            rows = [
+                (
+                    row.id,
+                    row.project_id,
+                    row.outline_id,
+                    row.number,
+                    row.title,
+                    row.plan,
+                    row.content_md,
+                    row.summary,
+                    row.status,
+                    row.updated_at,
+                )
+                for row in db.query(Chapter).filter(Chapter.project_id == project_id).order_by(Chapter.id).all()
+            ]
+            settings_row = db.get(ProjectSettings, project_id)
+            assert settings_row is not None
+            return rows, bool(settings_row.vector_index_dirty)
+
+    before = _snapshot()
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    request.state.request_id = "postgres-chapter-replace-conflict"
+    with (
+        patch.object(chapters_routes, "new_id", return_value=collision_id),
+        patch.object(chapters_routes, "schedule_vector_rebuild_task") as vector_schedule,
+        patch.object(chapters_routes, "schedule_search_rebuild_task") as search_schedule,
+        session_factory() as db,
+    ):
+        with pytest.raises(AppError) as exc_info:
+            chapters_routes.bulk_create(
+                request=request,
+                db=db,
+                user_id=user_id,
+                project_id=project_id,
+                body=BulkCreateRequest(chapters=[{"number": 1, "title": "Must roll back"}]),
+                replace=True,
+                outline_id=outline_id,
+            )
+        assert exc_info.value.status_code == 409
+        vector_schedule.assert_not_called()
+        search_schedule.assert_not_called()
+    assert _snapshot() == before
+
+    committed_side_effects: list[str] = []
+
+    def _assert_committed(*, reason: str, **_kwargs: object) -> None:
+        assert reason == "chapters_bulk_create"
+        with session_factory() as observer:
+            rows = (
+                observer.query(Chapter)
+                .filter(Chapter.project_id == project_id, Chapter.outline_id == outline_id)
+                .order_by(Chapter.number)
+                .all()
+            )
+            assert [(row.id, row.number, row.title) for row in rows] == [
+                ("chapter-replace-new-1", 1, "New one"),
+                ("chapter-replace-new-2", 2, "New two"),
+            ]
+            settings_row = observer.get(ProjectSettings, project_id)
+            assert settings_row is not None and settings_row.vector_index_dirty is True
+        committed_side_effects.append(reason)
+
+    request.state.request_id = "postgres-chapter-replace-success"
+    with (
+        patch.object(chapters_routes, "new_id", side_effect=["chapter-replace-new-1", "chapter-replace-new-2"]),
+        patch.object(chapters_routes, "schedule_vector_rebuild_task", side_effect=_assert_committed),
+        patch.object(chapters_routes, "schedule_search_rebuild_task", side_effect=_assert_committed),
+        session_factory() as db,
+    ):
+        result = chapters_routes.bulk_create(
+            request=request,
+            db=db,
+            user_id=user_id,
+            project_id=project_id,
+            body=BulkCreateRequest(chapters=[{"number": 2, "title": "New two"}, {"number": 1, "title": "New one"}]),
+            replace=True,
+            outline_id=outline_id,
+        )
+    assert [chapter["number"] for chapter in result["data"]["chapters"]] == [1, 2]
+    assert committed_side_effects == ["chapters_bulk_create", "chapters_bulk_create"]
 
 
 @pytest.mark.postgres_integration
@@ -549,11 +691,7 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
         assert not errors
         assert all(not thread.is_alive() for thread in threads)
         with session_factory() as db:
-            rows = (
-                db.query(PromptPreset)
-                .filter(PromptPreset.project_id == "prompt-sync-project")
-                .all()
-            )
+            rows = db.query(PromptPreset).filter(PromptPreset.project_id == "prompt-sync-project").all()
             assert len(rows) == 6
             assert len({row.resource_key for row in rows}) == 6
 
@@ -604,6 +742,7 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
         _assert_postgres_create_route_race(session_factory)
         _assert_postgres_batch_command_races(session_factory)
         _assert_postgres_worker_control_races(session_factory)
+        _assert_postgres_chapter_replace_transaction(session_factory)
         _assert_postgres_quota_race(
             session_factory,
             dimension="project",
