@@ -267,6 +267,7 @@ class Settings(BaseSettings):
     auth_bcrypt_rounds: Annotated[ParsedInt, Field(ge=10, le=15)] = 12
 
     linuxdo_oidc_discovery_url: RequiredString = "https://connect.linux.do/.well-known/openid-configuration"
+    linuxdo_oidc_discovery_ttl_seconds: Annotated[ParsedInt, Field(gt=0, le=24 * 60 * 60)] = 300
     linuxdo_oidc_client_id: OptionalString = None
     linuxdo_oidc_client_secret: OptionalString = None
     linuxdo_oidc_scopes: RequiredString = "openid profile email"

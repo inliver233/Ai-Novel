@@ -24,6 +24,7 @@ _NUMERIC_CASES = [
     ("auth_activity_touch_interval_seconds", (("1", 1), ("3600", 3600)), ("0", "3601")),
     ("auth_online_window_seconds", (("1", 1), ("86400", 86400)), ("0", "86401")),
     ("auth_bcrypt_rounds", (("10", 10), ("15", 15)), ("9", "16")),
+    ("linuxdo_oidc_discovery_ttl_seconds", (("1", 1), ("86400", 86400)), ("0", "86401")),
     ("project_task_heartbeat_interval_seconds", (("1", 1),), ("0",)),
     ("project_task_watchdog_interval_seconds", (("1", 1),), ("0",)),
     ("project_task_stale_running_timeout_seconds", (("1", 1),), ("0",)),
@@ -63,6 +64,7 @@ _NUMERIC_DEFAULTS = {
     "auth_activity_touch_interval_seconds": 30,
     "auth_online_window_seconds": 300,
     "auth_bcrypt_rounds": 12,
+    "linuxdo_oidc_discovery_ttl_seconds": 300,
     "project_task_heartbeat_interval_seconds": 5,
     "project_task_watchdog_interval_seconds": 15,
     "project_task_stale_running_timeout_seconds": 120,
@@ -325,6 +327,7 @@ def test_environment_templates_satisfy_the_strict_settings_contract(monkeypatch:
         "db_pool_recycle_seconds": "1800",
         "auth_activity_touch_interval_seconds": "30",
         "auth_online_window_seconds": "300",
+        "linuxdo_oidc_discovery_ttl_seconds": "300",
     }
     for field_name, expected_default in numeric_defaults.items():
         compose_value = environment[field_name.upper()]
@@ -339,6 +342,17 @@ def test_environment_templates_satisfy_the_strict_settings_contract(monkeypatch:
     for field_name in ("db_pool_size", "db_max_overflow", "db_pool_timeout_seconds", "db_pool_recycle_seconds"):
         env_name = field_name.upper()
         assert root_template_values[env_name] == numeric_defaults[field_name]
+
+    backend_template_values = {
+        line.partition("=")[0].strip(): line.partition("=")[2].strip()
+        for line in (_BACKEND_DIR / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and "=" in line
+    }
+    ttl_env_name = "LINUXDO_OIDC_DISCOVERY_TTL_SECONDS"
+    assert root_template_values[ttl_env_name] == backend_template_values[ttl_env_name] == numeric_defaults[
+        "linuxdo_oidc_discovery_ttl_seconds"
+    ]
+    assert backend_template.linuxdo_oidc_discovery_ttl_seconds == int(root_template_values[ttl_env_name])
 
     database_url = environment["DATABASE_URL"]
     assert database_url.startswith("${DATABASE_URL:-postgresql+psycopg2://")

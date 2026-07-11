@@ -29,6 +29,7 @@ from app.models.user_password import UserPassword
 from app.models.user_usage_stat import UserUsageStat
 from app.schemas.auth import OptionalNewPassword
 from app.schemas.base import RequestModel
+from app.services.authentication import oidc_client
 from app.services.auth_service import commit_user_creation, hash_password, verify_password
 
 router = APIRouter()
@@ -82,96 +83,6 @@ def _pkce_code_verifier() -> str:
     if len(verifier) < 43:
         verifier = (verifier + secrets.token_urlsafe(96))[:96]
     return verifier[:128]
-
-
-def _linuxdo_discovery() -> dict[str, str]:
-    try:
-        import httpx
-
-        url = str(settings.linuxdo_oidc_discovery_url or "").strip()
-        if not url:
-            raise ValueError("missing_discovery_url")
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(url, headers={"Accept": "application/json"})
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as exc:
-        raise AppError(
-            code="OIDC_DISCOVERY_FAILED",
-            message="LinuxDo OIDC discovery 获取失败",
-            status_code=502,
-            details={"provider": _LINUXDO_PROVIDER, "error_type": type(exc).__name__},
-        ) from exc
-
-    if not isinstance(data, dict):
-        raise AppError(code="OIDC_DISCOVERY_FAILED", message="LinuxDo OIDC discovery 响应无效", status_code=502, details={"provider": _LINUXDO_PROVIDER})
-
-    def _req(key: str) -> str:
-        value = data.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise AppError(
-                code="OIDC_DISCOVERY_FAILED",
-                message=f"LinuxDo OIDC discovery 缺少字段：{key}",
-                status_code=502,
-                details={"provider": _LINUXDO_PROVIDER, "missing_key": key},
-            )
-        return value.strip()
-
-    return {
-        "authorization_endpoint": _req("authorization_endpoint"),
-        "token_endpoint": _req("token_endpoint"),
-        "userinfo_endpoint": _req("userinfo_endpoint"),
-        "issuer": _req("issuer"),
-    }
-
-
-def _linuxdo_exchange_code_for_token(*, token_endpoint: str, code: str, redirect_uri: str, code_verifier: str) -> dict:
-    try:
-        import httpx
-
-        payload = {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "client_id": str(settings.linuxdo_oidc_client_id or "").strip(),
-            "client_secret": str(settings.linuxdo_oidc_client_secret or "").strip(),
-            "code_verifier": code_verifier,
-        }
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(token_endpoint, data=payload, headers={"Accept": "application/json"})
-            resp.raise_for_status()
-            out = resp.json()
-    except Exception as exc:
-        raise AppError(
-            code="OIDC_TOKEN_EXCHANGE_FAILED",
-            message="LinuxDo OIDC token 交换失败",
-            status_code=502,
-            details={"provider": _LINUXDO_PROVIDER, "error_type": type(exc).__name__},
-        ) from exc
-
-    return out if isinstance(out, dict) else {}
-
-
-def _linuxdo_fetch_userinfo(*, userinfo_endpoint: str, access_token: str) -> dict:
-    try:
-        import httpx
-
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(
-                userinfo_endpoint,
-                headers={"Accept": "application/json", "Authorization": f"Bearer {access_token}"},
-            )
-            resp.raise_for_status()
-            out = resp.json()
-    except Exception as exc:
-        raise AppError(
-            code="OIDC_USERINFO_FAILED",
-            message="LinuxDo OIDC userinfo 获取失败",
-            status_code=502,
-            details={"provider": _LINUXDO_PROVIDER, "error_type": type(exc).__name__},
-        ) from exc
-
-    return out if isinstance(out, dict) else {}
 
 
 def _oidc_cookie_kwargs() -> dict[str, object]:
@@ -382,7 +293,10 @@ def linuxdo_oidc_start(request: Request, next: str | None = None) -> RedirectRes
     if not _linuxdo_oidc_enabled():
         raise AppError(code="OIDC_NOT_CONFIGURED", message="LinuxDo OIDC 未配置（缺少 client_id/client_secret）", status_code=400)
 
-    discovery = _linuxdo_discovery()
+    discovery = oidc_client.get_linuxdo_discovery(
+        discovery_url=settings.linuxdo_oidc_discovery_url,
+        ttl_seconds=settings.linuxdo_oidc_discovery_ttl_seconds,
+    )
 
     state = secrets.token_urlsafe(24)
     verifier = _pkce_code_verifier()
@@ -444,19 +358,27 @@ def linuxdo_oidc_callback(request: Request, db: DbDep, code: str | None = None, 
         return _fail("OIDC_VERIFIER_MISSING")
 
     try:
-        discovery = _linuxdo_discovery()
+        discovery = oidc_client.get_linuxdo_discovery(
+            discovery_url=settings.linuxdo_oidc_discovery_url,
+            ttl_seconds=settings.linuxdo_oidc_discovery_ttl_seconds,
+        )
         redirect_uri = (settings.linuxdo_oidc_redirect_uri or "").strip() or str(request.url_for("linuxdo_oidc_callback"))
-        token_res = _linuxdo_exchange_code_for_token(
+        token_res = oidc_client.exchange_linuxdo_code_for_token(
             token_endpoint=discovery["token_endpoint"],
             code=code_q,
             redirect_uri=redirect_uri,
             code_verifier=verifier,
+            client_id=str(settings.linuxdo_oidc_client_id or "").strip(),
+            client_secret=str(settings.linuxdo_oidc_client_secret or "").strip(),
         )
         access_token = str(token_res.get("access_token") or "").strip()
         if not access_token:
             return _fail("OIDC_TOKEN_MISSING")
 
-        userinfo = _linuxdo_fetch_userinfo(userinfo_endpoint=discovery["userinfo_endpoint"], access_token=access_token)
+        userinfo = oidc_client.fetch_linuxdo_userinfo(
+            userinfo_endpoint=discovery["userinfo_endpoint"],
+            access_token=access_token,
+        )
         subject = str(userinfo.get("sub") or "").strip()
         if not subject:
             return _fail("OIDC_SUBJECT_MISSING")

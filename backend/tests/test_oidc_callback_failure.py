@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 
 from app.api.routes import auth as auth_routes
 from app.core.config import settings
+from app.services.authentication import oidc_client
 
 from tests.support import create_tables, make_session_factory, make_sqlite_engine, make_test_app
 
@@ -48,9 +49,9 @@ def test_linuxdo_oidc_callback_missing_access_token_returns_error(
     }
     try:
         with (
-            patch.object(auth_routes, "_linuxdo_discovery", return_value=fake_discovery),
-            patch.object(auth_routes, "_linuxdo_exchange_code_for_token", return_value=token_response),
-            patch.object(auth_routes, "_linuxdo_fetch_userinfo") as fetch_userinfo,
+            patch.object(oidc_client, "get_linuxdo_discovery", return_value=fake_discovery),
+            patch.object(oidc_client, "exchange_linuxdo_code_for_token", return_value=token_response),
+            patch.object(oidc_client, "fetch_linuxdo_userinfo") as fetch_userinfo,
         ):
             response = client.get(
                 "/api/auth/oidc/linuxdo/callback",
