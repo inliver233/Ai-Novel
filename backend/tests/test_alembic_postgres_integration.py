@@ -196,6 +196,7 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
         session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         with session_factory() as db:
             db.add(User(id="prompt-sync-user", display_name="Prompt Sync"))
+            db.commit()
             db.add(
                 Project(
                     id="prompt-sync-project",
