@@ -448,7 +448,10 @@ def _pgvector_hybrid_fetch(
         """.strip()
     )
     if is_cjk:
-        lexical_score_sql = "GREATEST(similarity(text_md, :qtext), word_similarity(:qtext, text_md))"
+        lexical_score_sql = (
+            "CASE WHEN text_md ILIKE :qpattern ESCAPE '\\' THEN 1.0 "
+            "ELSE GREATEST(similarity(text_md, :qtext), word_similarity(:qtext, text_md)) END"
+        )
         lexical_where_sql = "(text_md ILIKE :qpattern ESCAPE '\\' OR text_md %> :qtext)"
     else:
         lexical_score_sql = "ts_rank_cd(content_tsv, plainto_tsquery('simple', :qtext))"
