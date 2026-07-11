@@ -7,10 +7,8 @@ import { ApiError } from "@/services/apiClient";
 
 const mocks = vi.hoisted(() => ({
   fetchAllChapterMeta: vi.fn(),
-  toast: { toastError: vi.fn() },
 }));
 
-vi.mock("@/components/ui/toast", () => ({ useToast: () => mocks.toast }));
 vi.mock("@/services/chapterStore", async (importOriginal) => {
   const original = (await importOriginal()) as typeof import("@/services/chapterStore");
   return {
@@ -57,19 +55,18 @@ describe("useChapterMetaList with real chapter store", () => {
     });
     mocks.fetchAllChapterMeta.mockRejectedValue(error);
 
-    const { result } = renderHook(() => useChapterMetaList("project-initial-failure", { toastOnError: false }));
+    const { result } = renderHook(() => useChapterMetaList("project-initial-failure"));
 
     await waitFor(() => expect(result.current.error).toBe(error));
     await Promise.resolve();
     expect(result.current.hasData).toBe(false);
-    expect(mocks.toast.toastError).not.toHaveBeenCalled();
     expect(unhandled).not.toHaveBeenCalled();
     window.removeEventListener("unhandledrejection", unhandled);
   });
 
   it("retains stale chapter data when a real-store refresh rejects", async () => {
     mocks.fetchAllChapterMeta.mockResolvedValueOnce([chapterMeta()]);
-    const { result } = renderHook(() => useChapterMetaList("project-stale-failure", { toastOnError: false }));
+    const { result } = renderHook(() => useChapterMetaList("project-stale-failure"));
     await waitFor(() => expect(result.current.hasData).toBe(true));
 
     const error = new ApiError({
@@ -87,6 +84,5 @@ describe("useChapterMetaList with real chapter store", () => {
     await waitFor(() => expect(result.current.error).toBe(error));
     expect(result.current.hasData).toBe(true);
     expect(result.current.chapters).toHaveLength(1);
-    expect(mocks.toast.toastError).not.toHaveBeenCalled();
   });
 });

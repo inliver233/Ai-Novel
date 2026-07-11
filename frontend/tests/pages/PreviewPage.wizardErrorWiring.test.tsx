@@ -9,8 +9,6 @@ const mocks = vi.hoisted(() => ({
   reload: vi.fn(async () => undefined),
   error: null as ApiError | null,
   capturedWizardBarProps: null as Record<string, unknown> | null,
-  chapterMetaOptions: null as Record<string, unknown> | null,
-  chapterDetailOptions: null as Record<string, unknown> | null,
 }));
 
 vi.mock("@/hooks/useWizardProgress", () => ({
@@ -23,8 +21,7 @@ vi.mock("@/hooks/useWizardProgress", () => ({
   }),
 }));
 vi.mock("@/hooks/useChapterMetaList", () => ({
-  useChapterMetaList: (_projectId: string, options: Record<string, unknown>) => {
-    mocks.chapterMetaOptions = options;
+  useChapterMetaList: () => {
     return {
       chapters: [],
       error: null,
@@ -37,8 +34,7 @@ vi.mock("@/hooks/useChapterMetaList", () => ({
   },
 }));
 vi.mock("@/hooks/useChapterDetail", () => ({
-  useChapterDetail: (_chapterId: string | null, options: Record<string, unknown>) => {
-    mocks.chapterDetailOptions = options;
+  useChapterDetail: () => {
     return {
       chapter: null,
       error: null,
@@ -86,7 +82,5 @@ describe("PreviewPage wizard error wiring", () => {
     const captured = mocks.capturedWizardBarProps as Record<string, unknown> | null;
     expect(captured?.loadError).toBe(mocks.error);
     expect(captured?.onRetryLoad).toBe(mocks.reload);
-    expect(mocks.chapterMetaOptions).toMatchObject({ toastOnError: false });
-    expect(mocks.chapterDetailOptions).toMatchObject({ toastOnError: false });
   });
 });

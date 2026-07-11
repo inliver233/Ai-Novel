@@ -6,7 +6,6 @@ import { useChapterMetaList } from "@/hooks/useChapterMetaList";
 import { ApiError } from "@/services/apiClient";
 
 const mocks = vi.hoisted(() => ({
-  toast: { toastError: vi.fn() },
   snapshot: {
     data: null,
     error: null as ApiError | null,
@@ -16,7 +15,6 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@/components/ui/toast", () => ({ useToast: () => mocks.toast }));
 vi.mock("@/services/chapterStore", () => ({
   chapterStore: {
     subscribeMeta: () => () => undefined,
@@ -27,7 +25,6 @@ vi.mock("@/services/chapterStore", () => ({
 
 describe("useChapterMetaList toast policy", () => {
   it("lets the writing page own query error presentation", () => {
-    mocks.toast.toastError.mockClear();
     mocks.snapshot.error = new ApiError({
       code: "CHAPTER_LIST_FAILED",
       message: "章节列表失败",
@@ -35,10 +32,9 @@ describe("useChapterMetaList toast policy", () => {
       status: 503,
     });
 
-    const { result } = renderHook(() => useChapterMetaList("project-1", { toastOnError: false }));
+    const { result } = renderHook(() => useChapterMetaList("project-1"));
 
     expect(result.current.error).toBe(mocks.snapshot.error);
     expect(result.current.hasData).toBe(false);
-    expect(mocks.toast.toastError).not.toHaveBeenCalled();
   });
 });

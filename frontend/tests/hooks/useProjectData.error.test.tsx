@@ -1,20 +1,8 @@
 // @vitest-environment jsdom
 // M39/frontend-arch#8 回归：useProjectData 必须暴露稳定 error/reset/retry 状态，
 // 且并发或 project 切换后的过期请求不得覆盖最新状态。
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
-
-// vi.mock 工厂会被提升到文件顶部执行，故用 vi.hoisted 声明桩，避免 TDZ（参考
-// ThemeToggle.test.tsx / AdminUsersPage.refresh known_issue 测试）。toast 必须返回稳定引用：
-// refresh 的 useCallback deps 含 toast，若每次 render 返回新对象 → 回调身份变化 →
-// 挂载 effect 每 render 重跑 → 无限循环（见 ImportPage stall 测试教训）。
-const mocks = vi.hoisted(() => ({
-  toast: {
-    toastSuccess: vi.fn(),
-    toastWarning: vi.fn(),
-    toastError: vi.fn(),
-  } as const,
-}));
 
 // useProjectData 仅用到 ApiError（用于 instanceof 判定）。提供最小 ApiError 类即可，
 // 使测试中抛出的 ApiError 实例与 hook 内 instanceof 判定指向同一（mock）类。
@@ -35,11 +23,6 @@ vi.mock("@/services/apiClient", () => ({
   },
 }));
 
-// useToast 需 ToastProvider；用 no-op mock 隔离，避免拉入 portal/全局副作用。
-vi.mock("@/components/ui/toast", () => ({
-  useToast: () => mocks.toast,
-}));
-
 import { useProjectData } from "@/hooks/useProjectData";
 import { ApiError } from "@/services/apiClient";
 
@@ -52,12 +35,6 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-
-beforeEach(() => {
-  mocks.toast.toastSuccess.mockClear();
-  mocks.toast.toastWarning.mockClear();
-  mocks.toast.toastError.mockClear();
-});
 
 describe("useProjectData error state", () => {
   it("保留 ApiError identity 与追踪字段，并允许 resetError 清除", async () => {
@@ -81,8 +58,6 @@ describe("useProjectData error state", () => {
       requestId: "rid-m39",
       status: 500,
     });
-    expect(mocks.toast.toastError).not.toHaveBeenCalled();
-
     act(() => result.current.resetError());
     expect(result.current.error).toBeNull();
   });
@@ -101,7 +76,6 @@ describe("useProjectData error state", () => {
       status: 0,
       details: thrown,
     });
-    expect(mocks.toast.toastError).not.toHaveBeenCalled();
   });
 
   it("refresh 重试时清除旧错误并在成功后写入数据", async () => {
@@ -183,14 +157,6 @@ describe("useProjectData error state", () => {
     expect(result.current).toMatchObject({ data: "data-b", error: null, loading: false });
   });
 
-  it("仅在显式选择时 toast，且未知 request id 不进入提示", async () => {
-    const { result } = renderHook(() =>
-      useProjectData("proj-toast", vi.fn().mockRejectedValue(new TypeError("raw")), { toastOnError: true }),
-    );
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(mocks.toast.toastError).toHaveBeenCalledWith("请求失败 (UNKNOWN_ERROR)", undefined);
-  });
-
   it("较旧请求的迟到失败不会覆盖较新成功结果", async () => {
     const first = deferred<string>();
     const second = deferred<string>();
@@ -217,7 +183,6 @@ describe("useProjectData error state", () => {
 
     expect(result.current.data).toBe("latest");
     expect(result.current.error).toBeNull();
-    expect(mocks.toast.toastError).not.toHaveBeenCalledWith("stale (STALE)", "rid-stale");
   });
 
   it("projectId 清空时重置 data/error/loading", async () => {

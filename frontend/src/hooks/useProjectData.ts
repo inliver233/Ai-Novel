@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 
-import { useToast } from "../components/ui/toast";
-import { toastApiError } from "../lib/apiErrorPresentation";
 import { createRequestSeqGuard } from "../lib/requestSeqGuard";
 import { ApiError } from "../services/apiClient";
 import { toApiError } from "../services/apiError";
@@ -15,28 +13,17 @@ export type ProjectDataResult<T> = {
   resetError: () => void;
 };
 
-export type UseProjectDataOptions = {
-  toastOnError?: boolean;
-};
-
 export function useProjectData<T>(
   projectId: string | undefined,
   loader: (projectId: string) => Promise<T>,
-  options: UseProjectDataOptions = {},
 ): ProjectDataResult<T> {
-  const toast = useToast();
   const loaderRef = useRef(loader);
-  const toastOnErrorRef = useRef(options.toastOnError ?? false);
   const requestGuardRef = useRef(createRequestSeqGuard());
   const activeProjectIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     loaderRef.current = loader;
   }, [loader]);
-
-  useEffect(() => {
-    toastOnErrorRef.current = options.toastOnError ?? false;
-  }, [options.toastOnError]);
 
   useEffect(() => {
     const guard = requestGuardRef.current;
@@ -63,13 +50,12 @@ export function useProjectData<T>(
       if (!requestGuardRef.current.isLatest(seq)) return;
       const nextError = toApiError(e, { code: "UNKNOWN_ERROR", message: "请求失败" });
       setError(nextError);
-      if (toastOnErrorRef.current) toastApiError(toast, nextError);
     } finally {
       if (requestGuardRef.current.isLatest(seq)) {
         setLoading(false);
       }
     }
-  }, [projectId, toast]);
+  }, [projectId]);
 
   useEffect(() => {
     const projectChanged = activeProjectIdRef.current !== projectId;

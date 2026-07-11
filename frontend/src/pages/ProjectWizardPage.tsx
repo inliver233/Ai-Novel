@@ -54,7 +54,7 @@ export function ProjectWizardPage() {
 
   const [version, setVersion] = useState(0);
   const [autoRunning, setAutoRunning] = useState(false);
-  const chapterListQuery = useChapterMetaList(projectId, { toastOnError: false });
+  const chapterListQuery = useChapterMetaList(projectId);
 
   const wizardQuery = useProjectData<WizardLoaded>(projectId, async (id) => {
     const [settingsRes, charsRes, outlineRes, presetRes, profilesRes] = await Promise.all([

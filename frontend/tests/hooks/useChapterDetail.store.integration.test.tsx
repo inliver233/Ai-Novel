@@ -8,10 +8,8 @@ import type { ChapterDetail } from "@/types";
 
 const mocks = vi.hoisted(() => ({
   fetchChapterDetail: vi.fn(),
-  toast: { toastError: vi.fn() },
 }));
 
-vi.mock("@/components/ui/toast", () => ({ useToast: () => mocks.toast }));
 vi.mock("@/services/chapterStore", async (importOriginal) => {
   const original = (await importOriginal()) as typeof import("@/services/chapterStore");
   return {
@@ -63,22 +61,19 @@ describe("useChapterDetail with real chapter store", () => {
     const error = new ApiError({ code: "DETAIL_FAILED", message: "正文失败", requestId: "rid-detail", status: 503 });
     mocks.fetchChapterDetail.mockRejectedValueOnce(error);
 
-    const { result } = renderHook(() =>
-      useChapterDetail("chapter-initial-failure", { enabled: true, toastOnError: false }),
-    );
+    const { result } = renderHook(() => useChapterDetail("chapter-initial-failure", { enabled: true }));
 
     await waitFor(() => expect(result.current.error).toBe(error));
     await Promise.resolve();
     expect(result.current.hasLoaded).toBe(true);
     expect(result.current.hasData).toBe(false);
-    expect(mocks.toast.toastError).not.toHaveBeenCalled();
     expect(unhandled).not.toHaveBeenCalled();
     window.removeEventListener("unhandledrejection", unhandled);
   });
 
   it("retains stale detail data when a forced refresh rejects", async () => {
     mocks.fetchChapterDetail.mockResolvedValueOnce(chapter("chapter-stale", "旧正文"));
-    const { result } = renderHook(() => useChapterDetail("chapter-stale", { enabled: true, toastOnError: false }));
+    const { result } = renderHook(() => useChapterDetail("chapter-stale", { enabled: true }));
     await waitFor(() => expect(result.current.hasData).toBe(true));
 
     const error = new ApiError({
@@ -95,7 +90,6 @@ describe("useChapterDetail with real chapter store", () => {
     expect(result.current.error).toBe(error);
     expect(result.current.chapter?.content_md).toBe("旧正文");
     expect(result.current.hasData).toBe(true);
-    expect(mocks.toast.toastError).not.toHaveBeenCalled();
   });
 
   it("does not expose an old chapter failure after switching chapters", async () => {
@@ -106,10 +100,9 @@ describe("useChapterDetail with real chapter store", () => {
     const unhandled = vi.fn();
     window.addEventListener("unhandledrejection", unhandled);
 
-    const { result, rerender } = renderHook(
-      ({ chapterId }) => useChapterDetail(chapterId, { enabled: true, toastOnError: false }),
-      { initialProps: { chapterId: "chapter-a" } },
-    );
+    const { result, rerender } = renderHook(({ chapterId }) => useChapterDetail(chapterId, { enabled: true }), {
+      initialProps: { chapterId: "chapter-a" },
+    });
     rerender({ chapterId: "chapter-b" });
     await waitFor(() => expect(result.current.chapter?.id).toBe("chapter-b"));
 

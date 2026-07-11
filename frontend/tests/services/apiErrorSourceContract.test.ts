@@ -33,4 +33,11 @@ describe("API error source contract", () => {
       matchingSources(/\$\{[^}]+\.message\}\s*\(\$\{[^}]+\.code\}\)/, new Set(["lib/apiErrorPresentation.ts"])),
     ).toEqual([]);
   });
+
+  it("keeps query hooks independent from toast presentation", () => {
+    for (const name of ["hooks/useProjectData.ts", "hooks/useChapterMetaList.ts", "hooks/useChapterDetail.ts"]) {
+      const source = readFileSync(join(SRC_ROOT, name), "utf8");
+      expect(source).not.toMatch(/components\/ui\/toast|apiErrorPresentation/);
+    }
+  });
 });

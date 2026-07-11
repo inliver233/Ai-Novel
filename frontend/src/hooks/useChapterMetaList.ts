@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 
-import { useToast } from "../components/ui/toast";
-import { toastApiError } from "../lib/apiErrorPresentation";
 import type { ApiError } from "../services/apiClient";
 import { chapterStore } from "../services/chapterStore";
 import type { ChapterListItem } from "../types";
@@ -15,10 +13,7 @@ const EMPTY_SNAPSHOT = Object.freeze({
   stale: false,
 });
 
-export function useChapterMetaList(
-  projectId: string | undefined,
-  options: { toastOnError?: boolean } = {},
-): {
+export function useChapterMetaList(projectId: string | undefined): {
   chapters: readonly ChapterListItem[];
   error: ApiError | null;
   hasData: boolean;
@@ -27,9 +22,6 @@ export function useChapterMetaList(
   refresh: () => Promise<ChapterListItem[]>;
   stale: boolean;
 } {
-  const toast = useToast();
-  const lastErrorKeyRef = useRef<string | null>(null);
-
   const subscribe = useCallback(
     (onStoreChange: () => void) => {
       if (!projectId) return () => undefined;
@@ -55,18 +47,6 @@ export function useChapterMetaList(
     if (!projectId || !snapshot.stale) return;
     void chapterStore.loadProjectChapterMeta(projectId).catch(() => undefined);
   }, [projectId, snapshot.stale]);
-
-  useEffect(() => {
-    if (!(options.toastOnError ?? true)) return;
-    if (!snapshot.error) {
-      lastErrorKeyRef.current = null;
-      return;
-    }
-    const errorKey = `${snapshot.error.code}:${snapshot.error.requestId}:${snapshot.error.message}`;
-    if (lastErrorKeyRef.current === errorKey) return;
-    lastErrorKeyRef.current = errorKey;
-    toastApiError(toast, snapshot.error);
-  }, [options.toastOnError, snapshot.error, toast]);
 
   const refresh = useCallback(async () => {
     if (!projectId) return [...EMPTY_CHAPTERS];

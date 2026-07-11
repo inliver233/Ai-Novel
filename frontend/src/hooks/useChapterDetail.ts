@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 
-import { useToast } from "../components/ui/toast";
-import { toastApiError } from "../lib/apiErrorPresentation";
 import { chapterStore } from "../services/chapterStore";
 import type { ChapterDetail } from "../types";
 import type { ApiError } from "../services/apiClient";
@@ -16,7 +14,7 @@ const EMPTY_SNAPSHOT = Object.freeze({
 
 export function useChapterDetail(
   chapterId: string | null | undefined,
-  options: { enabled?: boolean; toastOnError?: boolean } = {},
+  options: { enabled?: boolean } = {},
 ): {
   chapter: ChapterDetail | null;
   error: ApiError | null;
@@ -26,8 +24,6 @@ export function useChapterDetail(
   refresh: () => Promise<ChapterDetail | null>;
   stale: boolean;
 } {
-  const toast = useToast();
-  const lastErrorKeyRef = useRef<string | null>(null);
   const enabled = options.enabled ?? true;
 
   const subscribe = useCallback(
@@ -49,18 +45,6 @@ export function useChapterDetail(
     if (!chapterId || !enabled) return;
     void chapterStore.loadChapterDetail(chapterId).catch(() => undefined);
   }, [chapterId, enabled]);
-
-  useEffect(() => {
-    if (!snapshot.error) {
-      lastErrorKeyRef.current = null;
-      return;
-    }
-    if (!(options.toastOnError ?? true)) return;
-    const errorKey = `${snapshot.error.code}:${snapshot.error.requestId}:${snapshot.error.message}`;
-    if (lastErrorKeyRef.current === errorKey) return;
-    lastErrorKeyRef.current = errorKey;
-    toastApiError(toast, snapshot.error);
-  }, [options.toastOnError, snapshot.error, toast]);
 
   const refresh = useCallback(async () => {
     if (!chapterId || !enabled) return null;

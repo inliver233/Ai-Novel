@@ -57,7 +57,7 @@ export function useChapterEditor(args: {
   const queuedPromiseRef = useRef<Promise<boolean> | null>(null);
   const queuedPromiseResolveRef = useRef<((ok: boolean) => void) | null>(null);
   const queuedToastShownRef = useRef(false);
-  const chaptersQuery = useChapterMetaList(projectId, { toastOnError: false });
+  const chaptersQuery = useChapterMetaList(projectId);
   const chapters = chaptersQuery.chapters as ChapterListItem[];
   const refreshChapters = chaptersQuery.refresh;
   const loading = !chaptersQuery.hasData && chaptersQuery.loading;

@@ -29,7 +29,7 @@ export function useWizardProgress(projectId: string | undefined): {
   bumpLocal: () => void;
 } {
   const [, setVersion] = useState(0);
-  const chapterListQuery = useChapterMetaList(projectId, { toastOnError: false });
+  const chapterListQuery = useChapterMetaList(projectId);
 
   const wizardQuery = useProjectData<WizardLoaded>(projectId, async (id) => {
     const [pRes, settingsRes, charsRes, outlineRes, presetRes, profilesRes] = await Promise.all([

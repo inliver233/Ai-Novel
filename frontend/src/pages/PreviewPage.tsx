@@ -49,7 +49,7 @@ export function PreviewPage() {
     bumpLocal();
   }, [bumpLocal, projectId]);
 
-  const chapterListQuery = useChapterMetaList(projectId, { toastOnError: false });
+  const chapterListQuery = useChapterMetaList(projectId);
   const chapters = chapterListQuery.chapters as ChapterListItem[];
   const sortedChapters = useMemo(() => [...chapters].sort((a, b) => (a.number ?? 0) - (b.number ?? 0)), [chapters]);
   const doneCount = useMemo(
@@ -99,7 +99,6 @@ export function PreviewPage() {
 
   const chapterDetailQuery = useChapterDetail(effectiveActiveId, {
     enabled: Boolean(effectiveActiveId),
-    toastOnError: false,
   });
   const activeChapter = chapterDetailQuery.chapter;
   const loadingChapter = chapterDetailQuery.loading;
@@ -339,7 +338,9 @@ export function PreviewPage() {
                         />
                       ) : null}
                       <div className="atelier-reader">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeChapter.content_md || "_（空）_"}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {activeChapter.content_md || "_（空）_"}
+                        </ReactMarkdown>
                       </div>
                     </div>
                   ) : (
