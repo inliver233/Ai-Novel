@@ -802,12 +802,15 @@ def test_pgvector_cleanup_reconciliation_and_alembic_contract() -> None:
             assert isinstance(actor_user_id["type"], sa.String)
             assert actor_user_id["type"].length == 36
             connection.execute(
-                sa.text("INSERT INTO users (id, display_name) VALUES ('legacy-vector-user', 'Legacy Vector User')")
+                sa.text(
+                    "INSERT INTO users (id, display_name, created_at, updated_at) "
+                    "VALUES ('legacy-vector-user', 'Legacy Vector User', now(), now())"
+                )
             )
             connection.execute(
                 sa.text(
-                    "INSERT INTO projects (id, owner_user_id, name) "
-                    "VALUES ('legacy-vector-project', 'legacy-vector-user', 'Legacy Vector Project')"
+                    "INSERT INTO projects (id, owner_user_id, name, created_at, updated_at) "
+                    "VALUES ('legacy-vector-project', 'legacy-vector-user', 'Legacy Vector Project', now(), now())"
                 )
             )
             connection.execute(
