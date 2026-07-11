@@ -58,7 +58,7 @@ from app.services.generation_pipeline import (
 from app.services.length_control import estimate_max_tokens
 from app.services.llm_task_preset_resolver import resolve_task_llm_config
 from app.services.style_resolution_service import resolve_style_guide
-from app.services.prompt_presets import ensure_default_plan_preset, render_preset_for_task
+from app.services.prompt_presets import render_preset_for_task
 from app.services.prompt_store import format_characters
 
 logger = logging.getLogger("ainovel")
@@ -432,7 +432,6 @@ def run_batch_generation_task(*, task_id: str) -> None:
                     if resolved_plan is not None:
                         plan_llm_call = resolved_plan.llm_call
                         plan_api_key = resolved_plan.api_key
-                    ensure_default_plan_preset(db, project_id=project_id)
                     plan_values = dict(values)
                     plan_values["instruction"] = base_instruction
                     plan_values["user"] = {"instruction": base_instruction, "requirements": requirements_obj}

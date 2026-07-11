@@ -14,7 +14,10 @@ from app.models.project import Project
 from app.models.project_settings import ProjectSettings
 from app.schemas.chapter_generate import ChapterGenerateRequest
 from app.services.chapter_context_service import build_chapter_generate_render_values
-from app.services.chapter_generation.memory_service import build_memory_run_params_extra_json, prepare_chapter_memory_injection
+from app.services.chapter_generation.memory_service import (
+    build_memory_run_params_extra_json,
+    prepare_chapter_memory_injection,
+)
 from app.services.chapter_generation.models import PreparedChapterGenerateRequest
 from app.services.chapter_generation.prompt_service import (
     apply_prompt_override,
@@ -27,7 +30,7 @@ from app.services.chapter_generation.prompt_service import (
 from app.services.generation_pipeline import run_mcp_research_step
 from app.services.generation_service import build_run_params_json, prepare_llm_call
 from app.services.llm_task_preset_resolver import resolve_task_llm_config, resolve_task_preset
-from app.services.prompt_presets import ensure_default_plan_preset, render_preset_for_task
+from app.services.prompt_presets import render_preset_for_task
 
 
 def resolve_task_llm_for_call(
@@ -49,8 +52,11 @@ def resolve_task_llm_for_call(
     if resolved is None:
         raise AppError(code="LLM_CONFIG_ERROR", message="请先在 Prompts 页保存 LLM 配置", status_code=400)
     if x_llm_api_key and x_llm_provider and resolved.llm_call.provider != x_llm_provider:
-        raise AppError(code="LLM_CONFIG_ERROR", message="当前任务 provider 与请求头不一致，请先保存/切换", status_code=400)
+        raise AppError(
+            code="LLM_CONFIG_ERROR", message="当前任务 provider 与请求头不一致，请先保存/切换", status_code=400
+        )
     return resolved
+
 
 def find_missing_prereq_numbers(
     db: Session,
@@ -80,6 +86,7 @@ def find_missing_prereq_numbers(
             missing.append(n)
     return missing
 
+
 def _require_chapter_prereqs_if_needed(*, db: Session, chapter: Chapter, body_context: object) -> None:
     if not bool(getattr(body_context, "require_sequential", False)):
         return
@@ -96,6 +103,7 @@ def _require_chapter_prereqs_if_needed(*, db: Session, chapter: Chapter, body_co
             status_code=400,
             details={"missing_numbers": missing_numbers},
         )
+
 
 def prepare_chapter_generate_request(
     *,
@@ -134,7 +142,9 @@ def prepare_chapter_generate_request(
                 raise AppError(code="LLM_CONFIG_ERROR", message="请先在 Prompts 页保存 LLM 配置", status_code=400)
             llm_call = prepare_llm_call(preset_row)
             if x_llm_api_key and x_llm_provider and llm_call.provider != x_llm_provider:
-                raise AppError(code="LLM_CONFIG_ERROR", message="当前任务 provider 与请求头不一致，请先保存/切换", status_code=400)
+                raise AppError(
+                    code="LLM_CONFIG_ERROR", message="当前任务 provider 与请求头不一致，请先保存/切换", status_code=400
+                )
             resolved_api_key = ""
 
         values, base_instruction, requirements_obj, style_resolution = build_chapter_generate_render_values(
@@ -209,17 +219,18 @@ def prepare_chapter_generate_request(
                 x_llm_provider=x_llm_provider,
                 x_llm_api_key=x_llm_api_key,
             )
-            ensure_default_plan_preset(db, project_id=project_id)
             plan_values = dict(values)
             plan_values["instruction"] = base_instruction
             plan_values["user"] = {"instruction": base_instruction, "requirements": requirements_obj}
-            plan_prompt_system, plan_prompt_user, plan_prompt_messages, _, _, _, plan_render_log = render_preset_for_task(
-                db,
-                project_id=project_id,
-                task="plan_chapter",
-                values=plan_values,  # type: ignore[arg-type]
-                macro_seed=f"{macro_seed}:plan",
-                provider=resolved_plan.llm_call.provider,
+            plan_prompt_system, plan_prompt_user, plan_prompt_messages, _, _, _, plan_render_log = (
+                render_preset_for_task(
+                    db,
+                    project_id=project_id,
+                    task="plan_chapter",
+                    values=plan_values,  # type: ignore[arg-type]
+                    macro_seed=f"{macro_seed}:plan",
+                    provider=resolved_plan.llm_call.provider,
+                )
             )
             prepared.plan_prompt_system = plan_prompt_system
             prepared.plan_prompt_user = plan_prompt_user
@@ -236,6 +247,7 @@ def prepare_chapter_generate_request(
             extra_json=prepared.run_params_extra_json,
         )
     return prepared
+
 
 def render_main_prompt(
     *,

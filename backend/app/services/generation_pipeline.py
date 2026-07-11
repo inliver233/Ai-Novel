@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
@@ -16,7 +16,7 @@ from app.services.llm_task_preset_resolver import resolve_task_llm_config
 from app.services.mcp.service import McpResearchConfig, McpToolCallResult, run_mcp_research_and_record
 from app.services.output_contracts import contract_for_task
 from app.services.post_edit_validation import validate_content_optimize_output, validate_post_edit_output
-from app.services.prompt_presets import ensure_default_content_optimize_preset, ensure_default_post_edit_preset, render_preset_for_task
+from app.services.prompt_presets import render_preset_for_task
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,10 +73,6 @@ class _RewriteStepResult:
     parse_error: dict[str, object] | None
 
 
-class _EnsurePreset(Protocol):
-    def __call__(self, db: Session, *, project_id: str) -> object: ...
-
-
 def run_mcp_research_step(
     *,
     logger: logging.Logger,
@@ -127,7 +123,6 @@ def _run_rewrite_step(
     macro_seed: str,
     task_key: Literal["post_edit", "content_optimize"],
     temperature: float,
-    ensure_preset: _EnsurePreset,
     validate_output: Callable[[str, str], list[str]],
     run_type: str,
     render_value_overrides: dict[str, object] | None = None,
@@ -159,7 +154,6 @@ def _run_rewrite_step(
                 effective_llm_call = resolved.llm_call
                 effective_api_key = str(resolved.api_key)
 
-        ensure_preset(db, project_id=project_id)
         values = build_post_edit_render_values(render_values, raw_content=raw_content)
         if render_value_overrides:
             values.update(render_value_overrides)
@@ -242,7 +236,6 @@ def run_post_edit_step(
         macro_seed=macro_seed,
         task_key="post_edit",
         temperature=0.4,
-        ensure_preset=ensure_default_post_edit_preset,
         validate_output=lambda source, output: validate_post_edit_output(
             raw_content=source,
             edited_content=output,
@@ -287,7 +280,6 @@ def run_content_optimize_step(
         macro_seed=macro_seed,
         task_key="content_optimize",
         temperature=0.35,
-        ensure_preset=ensure_default_content_optimize_preset,
         validate_output=lambda source, output: validate_content_optimize_output(
             raw_content=source,
             optimized_content=output,

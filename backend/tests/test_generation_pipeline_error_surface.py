@@ -16,6 +16,7 @@ from app.models.llm_preset import LLMPreset
 from app.models.project import Project
 from app.services.generation_pipeline import run_content_optimize_step, run_post_edit_step
 from app.services.generation_service import PreparedLlmCall
+from app.services.prompt_presets import sync_builtin_prompt_defaults
 from tests.support import (
     create_tables,
     make_recorded_result,
@@ -66,6 +67,7 @@ def env():
         # resolve_task_llm_config 直接返回 None（不抛异常，不触发 bug）
         db.add(LLMPreset(project_id=PROJECT_ID, provider="openai", model="gpt-4"))
         db.commit()
+        sync_builtin_prompt_defaults(db, project_id=PROJECT_ID)
 
     yield {"factory": factory}
     engine.dispose()
@@ -79,9 +81,7 @@ def test_post_edit_surfaces_llm_config_error(env, caplog: pytest.LogCaptureFixtu
     with caplog.at_level(logging.WARNING, logger="test"):
         caplog.clear()
         with patch("app.services.generation_pipeline.SessionLocal", factory):
-            with patch_call_llm(
-                fake_result, path="app.services.generation_pipeline.call_llm_and_record"
-            ) as call_mock:
+            with patch_call_llm(fake_result, path="app.services.generation_pipeline.call_llm_and_record") as call_mock:
                 result = run_post_edit_step(
                     logger=logging.getLogger("test"),
                     request_id="rid-test",
@@ -104,9 +104,7 @@ def test_post_edit_surfaces_llm_config_error(env, caplog: pytest.LogCaptureFixtu
     assert call_kwargs["llm_call"].params["temperature"] == 0.4
 
     warning_messages = [
-        record.getMessage()
-        for record in caplog.records
-        if record.name == "test" and record.levelno == logging.WARNING
+        record.getMessage() for record in caplog.records if record.name == "test" and record.levelno == logging.WARNING
     ]
     assert warning_messages == ["llm_config_resolve_failed task=post_edit error_type=AppError"]
     assert "fallback-key" not in warning_messages[0]
@@ -120,9 +118,7 @@ def test_content_optimize_surfaces_llm_config_error(env, caplog: pytest.LogCaptu
     with caplog.at_level(logging.WARNING, logger="test"):
         caplog.clear()
         with patch("app.services.generation_pipeline.SessionLocal", factory):
-            with patch_call_llm(
-                fake_result, path="app.services.generation_pipeline.call_llm_and_record"
-            ) as call_mock:
+            with patch_call_llm(fake_result, path="app.services.generation_pipeline.call_llm_and_record") as call_mock:
                 result = run_content_optimize_step(
                     logger=logging.getLogger("test"),
                     request_id="rid-test",
@@ -145,9 +141,7 @@ def test_content_optimize_surfaces_llm_config_error(env, caplog: pytest.LogCaptu
     assert call_kwargs["llm_call"].params["temperature"] == 0.35
 
     warning_messages = [
-        record.getMessage()
-        for record in caplog.records
-        if record.name == "test" and record.levelno == logging.WARNING
+        record.getMessage() for record in caplog.records if record.name == "test" and record.levelno == logging.WARNING
     ]
     assert warning_messages == ["llm_config_resolve_failed task=content_optimize error_type=AppError"]
     assert "fallback-key" not in warning_messages[0]
