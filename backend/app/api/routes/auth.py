@@ -14,7 +14,7 @@ from pydantic import Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import AuthenticatedUserIdDep, DbDep
+from app.api.deps import AdminUserDep, AuthenticatedUserIdDep, DbDep
 from app.core.auth_password import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 from app.core.auth_session import build_session, clear_session_cookies, set_session_cookies
 from app.core.config import settings
@@ -207,13 +207,6 @@ def _linuxdo_suggest_user_id(db: DbDep, *, login: str) -> str:
 
 def _user_public(user: User) -> dict:
     return {"id": user.id, "display_name": user.display_name, "is_admin": bool(user.is_admin)}
-
-
-def _require_admin(db: DbDep, *, user_id: str) -> User:
-    actor = db.get(User, user_id)
-    if actor is None or not actor.is_admin:
-        raise AppError.forbidden()
-    return actor
 
 
 def _user_admin_public(
@@ -610,12 +603,11 @@ def change_password(request: Request, db: DbDep, user_id: AuthenticatedUserIdDep
 def set_user_disabled(
     request: Request,
     db: DbDep,
-    user_id: AuthenticatedUserIdDep,
+    _admin_user: AdminUserDep,
     target_user_id: str,
     body: DisableUserRequest,
 ) -> dict:
     request_id = request.state.request_id
-    _require_admin(db, user_id=user_id)
 
     pwd = db.get(UserPassword, target_user_id)
     if pwd is None:
@@ -631,14 +623,13 @@ def set_user_disabled(
 def list_users(
     request: Request,
     db: DbDep,
-    user_id: AuthenticatedUserIdDep,
+    _admin_user: AdminUserDep,
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = Query(default=None, max_length=64),
     q: str | None = Query(default=None, max_length=128),
     online_only: bool = Query(default=False),
 ) -> dict:
     request_id = request.state.request_id
-    _require_admin(db, user_id=user_id)
 
     now = utc_now()
     online_cutoff = now - timedelta(seconds=int(settings.auth_online_window_seconds or 300))
@@ -741,9 +732,8 @@ def list_users(
 
 
 @router.post("/auth/admin/users")
-def create_user(request: Request, db: DbDep, user_id: AuthenticatedUserIdDep, body: AdminCreateUserRequest) -> dict:
+def create_user(request: Request, db: DbDep, _admin_user: AdminUserDep, body: AdminCreateUserRequest) -> dict:
     request_id = request.state.request_id
-    _require_admin(db, user_id=user_id)
 
     target_user_id = body.user_id.strip()
     if not target_user_id:
@@ -784,12 +774,11 @@ def create_user(request: Request, db: DbDep, user_id: AuthenticatedUserIdDep, bo
 def reset_user_password(
     request: Request,
     db: DbDep,
-    user_id: AuthenticatedUserIdDep,
+    _admin_user: AdminUserDep,
     target_user_id: str,
     body: AdminResetPasswordRequest,
 ) -> dict:
     request_id = request.state.request_id
-    _require_admin(db, user_id=user_id)
 
     user = db.get(User, target_user_id)
     if user is None:

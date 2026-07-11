@@ -14,6 +14,7 @@ from app.models.llm_profile import LLMProfile
 from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_membership import ProjectMembership
+from app.models.user import User
 
 if TYPE_CHECKING:
     # Entry 采用惰性运行时导入（见 require_entry_*），此处仅用于类型注解解析，
@@ -40,6 +41,16 @@ def get_authenticated_user_id(request: Request) -> str:
 DbDep = Annotated[Session, Depends(get_db)]
 UserIdDep = Annotated[str, Depends(get_current_user_id)]
 AuthenticatedUserIdDep = Annotated[str, Depends(get_authenticated_user_id)]
+
+
+def get_admin_user(db: DbDep, user_id: AuthenticatedUserIdDep) -> User:
+    user = db.get(User, user_id)
+    if user is None or not user.is_admin:
+        raise AppError.forbidden()
+    return user
+
+
+AdminUserDep = Annotated[User, Depends(get_admin_user)]
 
 
 ProjectRole = Literal["viewer", "editor", "owner"]
@@ -193,4 +204,3 @@ def require_owned_outline(db: Session, *, outline_id: str, user_id: str) -> Outl
 
 def require_owned_generation_run(db: Session, *, run_id: str, user_id: str) -> GenerationRun:
     return require_generation_run_editor(db, run_id=run_id, user_id=user_id)
-
