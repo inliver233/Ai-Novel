@@ -12,6 +12,7 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy.orm import sessionmaker
 
 from app.db.migrations import _alembic_config
+from app.db.utils import new_id
 from app.core.config import settings
 from app.core.errors import AppError
 from app.api.routes import batch_generation as batch_generation_routes
@@ -218,7 +219,7 @@ def _assert_postgres_create_route_race(session_factory: sessionmaker) -> None:
     def _ensure_with_candidate(db, *, project):  # type: ignore[no-untyped-def]
         before_outline.wait(timeout=10)
         outline = original_ensure(db, project=project)
-        chapter_id = f"chapter-{outline.id}"
+        chapter_id = new_id()
         if db.get(Chapter, chapter_id) is None:
             db.add(
                 Chapter(
