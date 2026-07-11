@@ -115,14 +115,13 @@ class TestVectorRoutesRerankOverrides(unittest.TestCase):
                 "api_key": rerank.get("api_key"),
             }
 
-        with patch.object(vector_routes, "SessionLocal", self.SessionLocal):
-            with patch.object(vector_routes, "vector_rag_status", side_effect=_fake_vector_status):
-                client = TestClient(self.app)
-                resp = client.post(
-                    "/api/projects/p1/vector/status",
-                    headers={"X-Test-User": "u_owner"},
-                    json={},
-                )
+        with patch.object(vector_routes, "vector_rag_status", side_effect=_fake_vector_status):
+            client = TestClient(self.app)
+            resp = client.post(
+                "/api/projects/p1/vector/status",
+                headers={"X-Test-User": "u_owner"},
+                json={},
+            )
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
@@ -130,7 +129,7 @@ class TestVectorRoutesRerankOverrides(unittest.TestCase):
         self.assertNotIn("api_key", keys)
         self.assertNotIn(self.secret, json.dumps(payload, ensure_ascii=False))
 
-        rerank = (((payload.get("data") or {}).get("result") or {}).get("rerank") or {})
+        rerank = ((payload.get("data") or {}).get("result") or {}).get("rerank") or {}
         self.assertEqual(rerank.get("provider"), "external_rerank_api")
         self.assertEqual(rerank.get("base_url"), "http://127.0.0.1:4011")
         self.assertEqual(rerank.get("model"), "rerank-mock")
@@ -148,14 +147,13 @@ class TestVectorRoutesRerankOverrides(unittest.TestCase):
                 "api_key": (rerank or {}).get("api_key"),
             }
 
-        with patch.object(vector_routes, "SessionLocal", self.SessionLocal):
-            with patch.object(vector_routes, "query_project", side_effect=_fake_query_project):
-                client = TestClient(self.app)
-                resp = client.post(
-                    "/api/projects/p1/vector/query",
-                    headers={"X-Test-User": "u_owner"},
-                    json={"query_text": "hello"},
-                )
+        with patch.object(vector_routes, "query_project", side_effect=_fake_query_project):
+            client = TestClient(self.app)
+            resp = client.post(
+                "/api/projects/p1/vector/query",
+                headers={"X-Test-User": "u_owner"},
+                json={"query_text": "hello"},
+            )
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
@@ -163,7 +161,7 @@ class TestVectorRoutesRerankOverrides(unittest.TestCase):
         self.assertNotIn("api_key", keys)
         self.assertNotIn(self.secret, json.dumps(payload, ensure_ascii=False))
 
-        rerank = (((payload.get("data") or {}).get("result") or {}).get("rerank") or {})
+        rerank = ((payload.get("data") or {}).get("result") or {}).get("rerank") or {}
         self.assertEqual(rerank.get("provider"), "external_rerank_api")
         self.assertEqual(rerank.get("base_url"), "http://127.0.0.1:4011")
         self.assertEqual(rerank.get("model"), "rerank-mock")

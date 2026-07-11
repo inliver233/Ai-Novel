@@ -5,11 +5,11 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select, update
 
 from app.api.deps import DbDep, UserIdDep, require_project_editor, require_project_owner, require_project_viewer
 from app.core.errors import AppError, ok_payload
 from app.core.secrets import redact_api_keys
-from app.db.session import SessionLocal
 from app.db.utils import utc_now
 from app.models.knowledge_base import KnowledgeBase
 from app.models.project_settings import ProjectSettings
@@ -347,8 +347,11 @@ def rebuild_vector_index(
         kb_ids_unique = [kb_id] if kb_id else ["default"]
 
     require_project_editor(db, project_id=project_id, user_id=user_id)
+    settings_row = _ensure_settings_row(db, project_id=project_id)
+    db.commit()
+    build_revision = int(settings_row.vector_dirty_revision)
     chunks = build_project_chunks(db=db, project_id=project_id, sources=body.sources)
-    embedding = vector_embedding_overrides(db.get(ProjectSettings, project_id))
+    embedding = vector_embedding_overrides(settings_row)
     ensure_default_vector_kb(db, project_id=project_id)
     for kid in kb_ids_unique:
         get_vector_kb(db, project_id=project_id, kb_id=kid)
@@ -376,11 +379,22 @@ def rebuild_vector_index(
     }
 
     if bool(enabled) and not bool(skipped):
-        with SessionLocal() as db2:
-            settings_row = _ensure_settings_row(db2, project_id=project_id)
-            settings_row.vector_index_dirty = False
-            settings_row.last_vector_build_at = utc_now()
-            db2.commit()
+        cleared = db.execute(
+            update(ProjectSettings)
+            .where(
+                ProjectSettings.project_id == project_id,
+                ProjectSettings.vector_dirty_revision == build_revision,
+            )
+            .values(vector_index_dirty=False, last_vector_build_at=utc_now())
+        )
+        db.commit()
+        revision_matched = bool(getattr(cleared, "rowcount", 0))
+        result.update({"stale": not revision_matched, "degraded": not revision_matched})
+        if not revision_matched:
+            current_revision = db.execute(
+                select(ProjectSettings.vector_dirty_revision).where(ProjectSettings.project_id == project_id)
+            ).scalar_one_or_none()
+            result["current_dirty_revision"] = int(current_revision or 0)
     return ok_payload(request_id=request_id, data={"result": result})
 
 

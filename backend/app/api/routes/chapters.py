@@ -29,6 +29,7 @@ from app.models.generation_run import GenerationRun
 from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_settings import ProjectSettings
+from app.services.vector_index_state import mark_vector_index_dirty
 from app.schemas.chapters import (
     BulkCreateRequest,
     ChapterCreate,
@@ -77,12 +78,7 @@ class ChapterTriggerAutoUpdates(BaseModel):
 
 
 def _mark_vector_index_dirty(db: DbDep, *, project_id: str) -> None:
-    row = db.get(ProjectSettings, project_id)
-    if row is None:
-        row = ProjectSettings(project_id=project_id)
-        db.add(row)
-        db.flush()
-    row.vector_index_dirty = True
+    mark_vector_index_dirty(db, project_id=project_id)
 
 
 def _resolve_target_outline_id(*, db: Session, project_id: str, user_id: str, outline_id: str | None) -> str | None:

@@ -19,24 +19,26 @@ from app.models.chapter import Chapter
 from app.models.outline import Outline
 from app.models.project_settings import ProjectSettings
 from app.schemas.outline import OutlineCreate, OutlineListItem, OutlineOut, OutlineUpdate
-from app.services.outline_payload_normalizer import normalize_outline_content_and_structure, parse_outline_structure_json
+from app.services.outline_payload_normalizer import (
+    normalize_outline_content_and_structure,
+    parse_outline_structure_json,
+)
 from app.services.search_index_service import schedule_search_rebuild_task
 from app.services.vector_rag_service import schedule_vector_rebuild_task
+from app.services.vector_index_state import mark_vector_index_dirty
 
 router = APIRouter()
 
 
 def _mark_vector_index_dirty(db: DbDep, *, project_id: str) -> None:
-    row = db.get(ProjectSettings, project_id)
-    if row is None:
-        row = ProjectSettings(project_id=project_id)
-        db.add(row)
-        db.flush()
-    row.vector_index_dirty = True
+    mark_vector_index_dirty(db, project_id=project_id)
+
 
 def _outline_out(row: Outline) -> dict:
     parsed_structure = parse_outline_structure_json(row.structure_json)
-    content_md, structure, _ = normalize_outline_content_and_structure(content_md=row.content_md or "", structure=parsed_structure)
+    content_md, structure, _ = normalize_outline_content_and_structure(
+        content_md=row.content_md or "", structure=parsed_structure
+    )
     return OutlineOut(
         id=row.id,
         project_id=row.project_id,
@@ -60,7 +62,9 @@ def list_outlines(request: Request, db: DbDep, user_id: UserIdDep, project_id: s
     )
     counts = dict(
         db.execute(
-            select(Chapter.outline_id, func.count(Chapter.id)).where(Chapter.project_id == project_id).group_by(Chapter.outline_id)
+            select(Chapter.outline_id, func.count(Chapter.id))
+            .where(Chapter.project_id == project_id)
+            .group_by(Chapter.outline_id)
         ).all()
     )
     items = [
@@ -80,7 +84,9 @@ def list_outlines(request: Request, db: DbDep, user_id: UserIdDep, project_id: s
 def create_outline(request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: OutlineCreate) -> dict:
     request_id = request.state.request_id
     project = require_project_editor(db, project_id=project_id, user_id=user_id)
-    content_md, structure, _ = normalize_outline_content_and_structure(content_md=body.content_md, structure=body.structure)
+    content_md, structure, _ = normalize_outline_content_and_structure(
+        content_md=body.content_md, structure=body.structure
+    )
 
     row = Outline(
         id=new_id(),
@@ -94,8 +100,12 @@ def create_outline(request: Request, db: DbDep, user_id: UserIdDep, project_id: 
     _mark_vector_index_dirty(db, project_id=project_id)
     db.commit()
     db.refresh(row)
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_create")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_create")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_create"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_create"
+    )
     return ok_payload(request_id=request_id, data={"outline": _outline_out(row)})
 
 
@@ -138,8 +148,12 @@ def update_outline_item(
     _mark_vector_index_dirty(db, project_id=project_id)
     db.commit()
     db.refresh(row)
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_update")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_update")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_update"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_update"
+    )
     return ok_payload(request_id=request_id, data={"outline": _outline_out(row)})
 
 
@@ -169,6 +183,10 @@ def delete_outline_item(request: Request, db: DbDep, user_id: UserIdDep, project
 
     _mark_vector_index_dirty(db, project_id=project_id)
     db.commit()
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_delete")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_delete")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_delete"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_delete"
+    )
     return ok_payload(request_id=request_id, data={})

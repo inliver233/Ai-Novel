@@ -142,14 +142,13 @@ class TestVectorRerankDryRunEndpoint(unittest.TestCase):
             )
         )
 
-        with patch.object(vector_routes, "SessionLocal", self.SessionLocal):
-            with patch.object(rerank_service, "get_llm_http_client", return_value=fake):
-                client = TestClient(self.app)
-                resp = client.post(
-                    "/api/projects/p1/vector/rerank/dry-run",
-                    headers={"X-Test-User": "u_owner"},
-                    json={"query_text": "dragon castle", "documents": ["apple banana", "dragon castle"]},
-                )
+        with patch.object(rerank_service, "get_llm_http_client", return_value=fake):
+            client = TestClient(self.app)
+            resp = client.post(
+                "/api/projects/p1/vector/rerank/dry-run",
+                headers={"X-Test-User": "u_owner"},
+                json={"query_text": "dragon castle", "documents": ["apple banana", "dragon castle"]},
+            )
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
@@ -157,7 +156,7 @@ class TestVectorRerankDryRunEndpoint(unittest.TestCase):
         self.assertNotIn("api_key", keys)
         self.assertNotIn(self.secret, json.dumps(payload, ensure_ascii=False))
 
-        result = ((payload.get("data") or {}).get("result") or {})
+        result = (payload.get("data") or {}).get("result") or {}
         self.assertEqual(result.get("enabled"), True)
         self.assertEqual(result.get("order"), [1, 0])
         self.assertIsInstance((result.get("timings_ms") or {}).get("total"), int)

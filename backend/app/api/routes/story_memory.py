@@ -20,6 +20,7 @@ from app.schemas.story_memory import (
 )
 from app.services.search_index_service import schedule_search_rebuild_task
 from app.services.vector_rag_service import schedule_vector_rebuild_task
+from app.services.vector_index_state import mark_vector_index_dirty
 
 router = APIRouter()
 
@@ -55,12 +56,7 @@ def _compact_json_dumps(value: Any) -> str:
 
 
 def _mark_vector_index_dirty(db: DbDep, *, project_id: str) -> None:
-    row = db.get(ProjectSettings, project_id)
-    if row is None:
-        row = ProjectSettings(project_id=project_id)
-        db.add(row)
-        db.flush()
-    row.vector_index_dirty = True
+    mark_vector_index_dirty(db, project_id=project_id)
 
 
 def _tags_to_json(tags: list[str] | None) -> str:
@@ -100,7 +96,9 @@ def _to_out(m: StoryMemory) -> dict[str, Any]:
         "text_position": int(m.text_position or -1),
         "text_length": int(m.text_length or 0),
         "is_foreshadow": bool(getattr(m, "is_foreshadow", 0)),
-        "resolved_at_chapter_id": str(m.foreshadow_resolved_at_chapter_id) if m.foreshadow_resolved_at_chapter_id else None,
+        "resolved_at_chapter_id": str(m.foreshadow_resolved_at_chapter_id)
+        if m.foreshadow_resolved_at_chapter_id
+        else None,
         "done": _is_done(m),
         "created_at": m.created_at.isoformat() if m.created_at else None,
         "updated_at": m.updated_at.isoformat() if m.updated_at else None,
@@ -125,7 +123,13 @@ def list_story_memories(
         filters.append(StoryMemory.chapter_id == str(chapter_id))
 
     rows = (
-        db.execute(select(StoryMemory).where(*filters).order_by(StoryMemory.updated_at.desc(), StoryMemory.id.desc()).limit(limit + 1).offset(offset))
+        db.execute(
+            select(StoryMemory)
+            .where(*filters)
+            .order_by(StoryMemory.updated_at.desc(), StoryMemory.id.desc())
+            .limit(limit + 1)
+            .offset(offset)
+        )
         .scalars()
         .all()
     )
@@ -173,8 +177,12 @@ def create_story_memory(
     db.commit()
     db.refresh(row)
 
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_create")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_create")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_create"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_create"
+    )
 
     return ok_payload(request_id=request_id, data={"story_memory": _to_out(row)})
 
@@ -230,8 +238,12 @@ def update_story_memory(
     db.commit()
     db.refresh(row)
 
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_refresh")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_refresh")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_refresh"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_refresh"
+    )
 
     return ok_payload(request_id=request_id, data={"story_memory": _to_out(row)})
 
@@ -255,8 +267,12 @@ def delete_story_memory(
     _mark_vector_index_dirty(db, project_id=project_id)
     db.commit()
 
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_delete")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_delete")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_delete"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_delete"
+    )
     return ok_payload(request_id=request_id, data={"deleted_id": str(story_memory_id)})
 
 
@@ -303,7 +319,11 @@ def merge_story_memories(
 
     deleted_ids: list[str] = []
     for src in sources:
-        merged_content = (merged_content + "\n\n---\n\n" + str(src.content or "")).strip() if merged_content.strip() else str(src.content or "")
+        merged_content = (
+            (merged_content + "\n\n---\n\n" + str(src.content or "")).strip()
+            if merged_content.strip()
+            else str(src.content or "")
+        )
         if not merged_full_context.strip():
             merged_full_context = str(src.full_context_md or "").strip()
         merged_tags.extend(_parse_json_list(getattr(src, "tags_json", None)))
@@ -324,8 +344,12 @@ def merge_story_memories(
     db.commit()
     db.refresh(target)
 
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_merge")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_merge")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_merge"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_merge"
+    )
 
     return ok_payload(request_id=request_id, data={"story_memory": _to_out(target), "deleted_ids": deleted_ids})
 
@@ -360,7 +384,11 @@ def mark_story_memory_done(
     db.commit()
     db.refresh(row)
 
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_mark_done")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_mark_done")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_mark_done"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="story_memory_mark_done"
+    )
 
     return ok_payload(request_id=request_id, data={"story_memory": _to_out(row)})

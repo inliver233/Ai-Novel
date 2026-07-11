@@ -74,4 +74,5 @@ class ProjectSettings(Base):
         Boolean, nullable=False, default=True, server_default=true()
     )
     vector_index_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    vector_dirty_revision: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
     last_vector_build_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)

@@ -106,16 +106,21 @@ class TestVectorEmbeddingDryRunEndpoint(unittest.TestCase):
         def _fake_embed_texts(texts: list[str], *, embedding: dict | None = None) -> dict:  # type: ignore[no-untyped-def]
             captured["texts"] = list(texts)
             captured["embedding"] = dict(embedding or {})
-            return {"enabled": True, "disabled_reason": None, "provider": "openai_compatible", "vectors": [[0.0, 1.0, 2.0]], "error": None}
+            return {
+                "enabled": True,
+                "disabled_reason": None,
+                "provider": "openai_compatible",
+                "vectors": [[0.0, 1.0, 2.0]],
+                "error": None,
+            }
 
-        with patch.object(vector_routes, "SessionLocal", self.SessionLocal):
-            with patch.object(vector_routes, "embed_texts", side_effect=_fake_embed_texts):
-                client = TestClient(self.app)
-                resp = client.post(
-                    "/api/projects/p1/vector/embeddings/dry-run",
-                    headers={"X-Test-User": "u_owner"},
-                    json={"text": "hello"},
-                )
+        with patch.object(vector_routes, "embed_texts", side_effect=_fake_embed_texts):
+            client = TestClient(self.app)
+            resp = client.post(
+                "/api/projects/p1/vector/embeddings/dry-run",
+                headers={"X-Test-User": "u_owner"},
+                json={"text": "hello"},
+            )
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
@@ -123,7 +128,7 @@ class TestVectorEmbeddingDryRunEndpoint(unittest.TestCase):
         self.assertNotIn("api_key", keys)
         self.assertNotIn(self.secret, json.dumps(payload, ensure_ascii=False))
 
-        result = ((payload.get("data") or {}).get("result") or {})
+        result = (payload.get("data") or {}).get("result") or {}
         self.assertEqual(result.get("enabled"), True)
         self.assertEqual(result.get("dims"), 3)
         self.assertIsInstance((result.get("timings_ms") or {}).get("total"), int)

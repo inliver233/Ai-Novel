@@ -178,7 +178,6 @@ def list_project_tasks(
     return {"items": items, "next_before": next_before}
 
 
-
 def _task_params_reason(params_json: str | None) -> str:
     if not params_json:
         return ""
@@ -253,7 +252,10 @@ def _dedupe_queued_chapter_tasks(*, db: Session, project_id: str, keep_task: Pro
             task=t,
             event_type="canceled",
             source="dedupe",
-            payload={"reason": "deduped_by_newer_trigger", "replaced_by_task_id": str(getattr(keep_task, "id", "") or "")},
+            payload={
+                "reason": "deduped_by_newer_trigger",
+                "replaced_by_task_id": str(getattr(keep_task, "id", "") or ""),
+            },
         )
         canceled += 1
 
@@ -313,7 +315,9 @@ def schedule_chapter_done_tasks(
     from app.models.project_settings import ProjectSettings
 
     settings_row = db.get(ProjectSettings, pid)
-    auto_characters = bool(getattr(settings_row, "auto_update_characters_enabled", True)) if settings_row is not None else True
+    auto_characters = (
+        bool(getattr(settings_row, "auto_update_characters_enabled", True)) if settings_row is not None else True
+    )
     auto_vector = bool(getattr(settings_row, "auto_update_vector_enabled", True)) if settings_row is not None else True
     auto_search = bool(getattr(settings_row, "auto_update_search_enabled", True)) if settings_row is not None else True
 
@@ -438,7 +442,9 @@ def cancel_project_task(*, db: Session, task: ProjectTask) -> ProjectTask:
     task.updated_at = utc_now()
     task.result_json = _compact_json_dumps({"canceled": True})
     task.error_json = None
-    append_project_task_event(db, task=task, event_type="canceled", source="manual_cancel", payload={"reason": "manual_cancel"})
+    append_project_task_event(
+        db, task=task, event_type="canceled", source="manual_cancel", payload={"reason": "manual_cancel"}
+    )
     db.commit()
     return task
 
@@ -486,7 +492,9 @@ def run_project_task(*, task_id: str) -> str:
         task = db.get(ProjectTask, task_id)
         if task is None:
             return task_id
-        append_project_task_event(db, task=task, event_type="running", source="worker", payload={"reason": "worker_start"})
+        append_project_task_event(
+            db, task=task, event_type="running", source="worker", payload={"reason": "worker_start"}
+        )
         db.commit()
         heartbeat_handle = start_project_task_heartbeat(task_id=task_id)
 
@@ -548,9 +556,15 @@ def run_project_task(*, task_id: str) -> str:
                 elif reason == "llm_preset_missing":
                     how_to_fix = ["先在项目中选择/绑定可用的 LLM Profile，并刷新页面后重试任务"]
                 elif reason == "llm_call_failed":
-                    how_to_fix = ["检查 base_url / 网络连通性（可用「模型配置 → 测试连接」验证）", "确认模型与参数兼容；必要时切换 provider/model 后重试"]
+                    how_to_fix = [
+                        "检查 base_url / 网络连通性（可用「模型配置 → 测试连接」验证）",
+                        "确认模型与参数兼容；必要时切换 provider/model 后重试",
+                    ]
                 elif reason == "parse_error":
-                    how_to_fix = ["模型输出未满足 JSON 合同：可在任务详情中查看 run_id 并定位输出", "尝试更换模型/降低温度后重试"]
+                    how_to_fix = [
+                        "模型输出未满足 JSON 合同：可在任务详情中查看 run_id 并定位输出",
+                        "尝试更换模型/降低温度后重试",
+                    ]
                 elif reason == "apply_failed":
                     how_to_fix = ["数据库写入失败：请查看 error.details 或 backend.log；修复后重试任务"]
 
@@ -581,14 +595,20 @@ def run_project_task(*, task_id: str) -> str:
             from app.models.project_settings import ProjectSettings
             from app.services.vector_embedding_overrides import vector_embedding_overrides
             from app.services.vector_kb_service import list_kbs as list_vector_kbs
-            from app.services.vector_rag_service import build_project_chunks, rebuild_project, vector_rag_status
+            from app.services.vector_rag_service import (
+                build_project_chunks,
+                rebuild_project,
+                vector_rag_status,
+            )
 
             db2 = SessionLocal()
             kb_ids: list[str] = []
             embedding: dict[str, str | None] = {}
             chunks = []
+            build_revision = 0
             try:
                 settings_row = db2.get(ProjectSettings, project_id)
+                build_revision = int(getattr(settings_row, "vector_dirty_revision", 0) or 0)
                 embedding = vector_embedding_overrides(settings_row)
                 status = vector_rag_status(project_id=project_id, embedding=embedding)
                 if not bool(status.get("enabled")):
@@ -624,28 +644,77 @@ def run_project_task(*, task_id: str) -> str:
                     "backend": backend,
                     "error": error,
                     "kbs": {"selected": list(kb_ids), "per_kb": per_kb},
+                    "build_revision": build_revision,
                 }
 
                 if bool(enabled) and not bool(skipped):
-                    db3 = SessionLocal()
-                    try:
-                        settings_row2 = db3.get(ProjectSettings, project_id)
-                        if settings_row2 is None:
-                            settings_row2 = ProjectSettings(project_id=project_id)
-                            db3.add(settings_row2)
-                        settings_row2.vector_index_dirty = False
-                        settings_row2.last_vector_build_at = utc_now()
-                        db3.commit()
-                    finally:
-                        db3.close()
+                    cleared = db.execute(
+                        update(ProjectSettings)
+                        .where(
+                            ProjectSettings.project_id == project_id,
+                            ProjectSettings.vector_dirty_revision == build_revision,
+                        )
+                        .values(vector_index_dirty=False, last_vector_build_at=utc_now())
+                    )
+                    revision_matched = bool(getattr(cleared, "rowcount", 0))
+                    if revision_matched:
+                        result["stale"] = False
+                    else:
+                        current_revision = int(
+                            db.execute(
+                                select(ProjectSettings.vector_dirty_revision).where(
+                                    ProjectSettings.project_id == project_id
+                                )
+                            ).scalar_one_or_none()
+                            or 0
+                        )
+                        result.update({"stale": True, "current_dirty_revision": current_revision})
+
         else:
             raise ValueError(f"Unsupported ProjectTask.kind: {kind!r}")
+
+        if kind == "vector_rebuild" and bool(result.get("stale")):
+            params = _compact_json_loads(task.params_json) if task.params_json else None
+            params_dict = dict(params) if isinstance(params, dict) else {}
+            params_dict.update(
+                {
+                    "reason": "revision_advanced_during_rebuild",
+                    "dirty_revision": int(result.get("current_dirty_revision") or 0),
+                    "requeued_at": utc_now().isoformat().replace("+00:00", "Z"),
+                }
+            )
+            task.status = "queued"
+            task.params_json = _compact_json_dumps(params_dict)
+            task.result_json = None
+            task.error_json = None
+            task.started_at = None
+            task.heartbeat_at = None
+            task.finished_at = None
+            append_project_task_event(
+                db,
+                task=task,
+                event_type="queued",
+                source="worker",
+                payload={"reason": "revision_advanced_during_rebuild", "result": result},
+            )
+            db.commit()
+            _emit_and_enqueue_project_task(
+                db=db,
+                task=task,
+                request_id=str(params_dict.get("request_id") or "").strip() or None,
+                event_type=None,
+                source="worker",
+                payload=None,
+            )
+            return task_id
 
         task.status = "succeeded"
         task.result_json = _compact_json_dumps(redact_api_keys(result))
         task.heartbeat_at = utc_now()
         task.finished_at = utc_now()
-        append_project_task_event(db, task=task, event_type="succeeded", source="worker", payload={"result": redact_api_keys(result)})
+        append_project_task_event(
+            db, task=task, event_type="succeeded", source="worker", payload={"result": redact_api_keys(result)}
+        )
         db.commit()
 
         log_event(
@@ -658,6 +727,7 @@ def run_project_task(*, task_id: str) -> str:
         )
         return task_id
     except Exception as exc:
+        db.rollback()
         try:
             task2 = db.get(ProjectTask, task_id)
             if task2 is not None:

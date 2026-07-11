@@ -16,7 +16,7 @@ from app.db import migrations
 
 PREVIOUS_REVISION = "9f3a7c2d1e4b"
 CLEANUP_REVISION = "b2d4e6f8a0c1"
-HEAD_REVISION = "b6d1e8f3a5c7"
+HEAD_REVISION = "c7e2f9a4b6d8"
 _ARCHIVE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "archive_retired_tables.py"
 
 

@@ -16,10 +16,14 @@ from app.services.outline_generation.app_service import (
     generate_outline_stream_events,
     prepare_outline_stream_request,
 )
-from app.services.outline_payload_normalizer import normalize_outline_content_and_structure, parse_outline_structure_json
+from app.services.outline_payload_normalizer import (
+    normalize_outline_content_and_structure,
+    parse_outline_structure_json,
+)
 from app.services.outline_store import ensure_active_outline
 from app.services.search_index_service import schedule_search_rebuild_task
 from app.services.vector_rag_service import schedule_vector_rebuild_task
+from app.services.vector_index_state import mark_vector_index_dirty
 from app.utils.sse_response import create_sse_response
 
 router = APIRouter()
@@ -27,7 +31,9 @@ router = APIRouter()
 
 def _outline_out(row: Outline) -> dict[str, object]:
     parsed_structure = parse_outline_structure_json(row.structure_json)
-    content_md, structure, _ = normalize_outline_content_and_structure(content_md=row.content_md or "", structure=parsed_structure)
+    content_md, structure, _ = normalize_outline_content_and_structure(
+        content_md=row.content_md or "", structure=parsed_structure
+    )
     return OutlineOut(
         id=row.id,
         project_id=row.project_id,
@@ -40,12 +46,7 @@ def _outline_out(row: Outline) -> dict[str, object]:
 
 
 def _mark_vector_index_dirty(db: DbDep, *, project_id: str) -> None:
-    row = db.get(ProjectSettings, project_id)
-    if row is None:
-        row = ProjectSettings(project_id=project_id)
-        db.add(row)
-        db.flush()
-    row.vector_index_dirty = True
+    mark_vector_index_dirty(db, project_id=project_id)
 
 
 @router.get("/projects/{project_id}/outline")
@@ -55,7 +56,9 @@ def get_outline(request: Request, db: DbDep, user_id: UserIdDep, project_id: str
     row = db.get(Outline, project.active_outline_id) if project.active_outline_id else None
     if row is None:
         row = (
-            db.execute(select(Outline).where(Outline.project_id == project_id).order_by(Outline.updated_at.desc()).limit(1))
+            db.execute(
+                select(Outline).where(Outline.project_id == project_id).order_by(Outline.updated_at.desc()).limit(1)
+            )
             .scalars()
             .first()
         )
@@ -87,8 +90,12 @@ def put_outline(request: Request, db: DbDep, user_id: UserIdDep, project_id: str
     _mark_vector_index_dirty(db, project_id=project_id)
     db.commit()
     db.refresh(row)
-    schedule_vector_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_update")
-    schedule_search_rebuild_task(db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_update")
+    schedule_vector_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_update"
+    )
+    schedule_search_rebuild_task(
+        db=db, project_id=project_id, actor_user_id=user_id, request_id=request_id, reason="outline_update"
+    )
     return ok_payload(request_id=request_id, data={"outline": _outline_out(row)})
 
 

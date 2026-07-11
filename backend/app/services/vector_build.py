@@ -70,8 +70,10 @@ def schedule_vector_rebuild_task(
     """
     Fail-soft scheduler: ensure/enqueue a ProjectTask(kind=vector_rebuild) for the project.
 
-    Idempotency key is derived from `ProjectSettings.last_vector_build_at` to avoid task storms while still allowing
-    a new task after each successful rebuild.
+    Idempotency remains tied to the last successful build to coalesce a burst
+    of mutations into one database task. ``vector_dirty_revision`` is captured
+    in the task parameters so the worker can fence completion and requeue the
+    same task when content changes during a rebuild.
     """
 
     pid = str(project_id or "").strip()
@@ -86,6 +88,7 @@ def schedule_vector_rebuild_task(
         if settings_row is not None and not bool(getattr(settings_row, "vector_index_dirty", False)):
             return None
 
+        dirty_revision = int(getattr(settings_row, "vector_dirty_revision", 0) or 0)
         last_build_at = getattr(settings_row, "last_vector_build_at", None) if settings_row is not None else None
         token = "none"
         if last_build_at is not None:
@@ -117,6 +120,7 @@ def schedule_vector_rebuild_task(
                     {
                         "reason": reason_norm,
                         "request_id": request_id,
+                        "dirty_revision": dirty_revision,
                         "triggered_at": utc_now().isoformat().replace("+00:00", "Z"),
                     },
                     ensure_ascii=False,
