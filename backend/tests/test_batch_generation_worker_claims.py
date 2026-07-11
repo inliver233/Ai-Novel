@@ -9,13 +9,13 @@ from unittest.mock import patch
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.db.base import Base
 from app.models.batch_generation_task import BatchGenerationTask, BatchGenerationTaskItem
 from app.models.chapter import Chapter
 from app.models.project_task import ProjectTask
 from app.models.project_task_event import ProjectTaskEvent
 from app.services import batch_generation_commands, batch_generation_service
 from app.services.generation_service import PreparedLlmCall
+from tests.support import create_tables
 
 
 def _factory(path: Path) -> tuple[sa.Engine, sessionmaker[Session]]:
@@ -23,9 +23,7 @@ def _factory(path: Path) -> tuple[sa.Engine, sessionmaker[Session]]:
         f"sqlite:///{path.as_posix()}",
         connect_args={"check_same_thread": False, "timeout": 15},
     )
-    Base.metadata.create_all(engine)
-    ProjectTask.__table__.create(engine, checkfirst=True)
-    ProjectTaskEvent.__table__.create(engine, checkfirst=True)
+    create_tables(engine)
     return engine, sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
