@@ -14,7 +14,7 @@ import { usePersistentOutletIsActive } from "../../hooks/usePersistentOutlet";
 import { useQueuedSave } from "../../hooks/useQueuedSave";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
-import { apiJson } from "../../services/apiClient";
+import { apiJson, type ApiError } from "../../services/apiClient";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { LLMPreset, Outline, OutlineListItem, Project } from "../../types";
 import { deriveOutlineFromStoredContent } from "../outlineParsing";
@@ -39,6 +39,18 @@ type OutlineLoaded = {
   preset: LLMPreset;
 };
 
+export function deriveOutlinePageLoadState<T>(query: {
+  data: T | null;
+  error: ApiError | null;
+  loading: boolean;
+}): Pick<OutlinePageState, "blockingLoadError" | "loading" | "refreshLoadError"> {
+  return {
+    loading: query.loading && query.data === null,
+    blockingLoadError: query.data === null ? query.error : null,
+    refreshLoadError: query.data !== null ? query.error : null,
+  };
+}
+
 type SaveOutline = (
   nextContent?: string,
   nextStructure?: unknown,
@@ -47,6 +59,9 @@ type SaveOutline = (
 
 export type OutlinePageState = {
   loading: boolean;
+  blockingLoadError: ApiError | null;
+  refreshLoadError: ApiError | null;
+  reload: () => Promise<void>;
   dirty: boolean;
   showUnsavedGuard: boolean;
   headerProps: OutlineHeaderSectionProps;
@@ -90,22 +105,18 @@ export function useOutlinePageState(): OutlinePageState {
   const baselineRef = useRef("");
   const pendingDetailedSwitchOutlineIdRef = useRef<string | null>(null);
 
-  const outlineQuery = useProjectData<OutlineLoaded>(
-    projectId,
-    async (id) => {
-      const [outlineResponse, presetResponse] = await Promise.all([
-        apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
-        apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
-      ]);
-      const outlinesResponse = await apiJson<{ outlines: OutlineListItem[] }>(`/api/projects/${id}/outlines`);
-      return {
-        outlines: outlinesResponse.data.outlines,
-        outline: outlineResponse.data.outline,
-        preset: presetResponse.data.llm_preset,
-      };
-    },
-    { toastOnError: true },
-  );
+  const outlineQuery = useProjectData<OutlineLoaded>(projectId, async (id) => {
+    const [outlineResponse, presetResponse] = await Promise.all([
+      apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
+      apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
+    ]);
+    const outlinesResponse = await apiJson<{ outlines: OutlineListItem[] }>(`/api/projects/${id}/outlines`);
+    return {
+      outlines: outlinesResponse.data.outlines,
+      outline: outlineResponse.data.outline,
+      preset: presetResponse.data.llm_preset,
+    };
+  });
 
   useEffect(() => {
     if (!outlineQuery.data) return;
@@ -212,6 +223,11 @@ export function useOutlinePageState(): OutlinePageState {
   });
 
   const refreshOutline = outlineQuery.refresh;
+  const resetOutlineError = outlineQuery.resetError;
+  const reload = useCallback(async () => {
+    resetOutlineError();
+    await refreshOutline();
+  }, [refreshOutline, resetOutlineError]);
   const activeOutlineId = activeOutline?.id ?? "";
 
   const clearSwitchToDetailedRequest = useCallback(() => {
@@ -451,8 +467,11 @@ export function useOutlinePageState(): OutlinePageState {
     onCancel: detailedOutline.cancelSkeletonGenerate,
   };
 
+  const loadState = deriveOutlinePageLoadState(outlineQuery);
+
   return {
-    loading: outlineQuery.loading,
+    ...loadState,
+    reload,
     dirty,
     showUnsavedGuard: dirty && outletActive,
     headerProps: {
