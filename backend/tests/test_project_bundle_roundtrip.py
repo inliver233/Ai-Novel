@@ -22,6 +22,7 @@ from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
 from app.models.story_memory import StoryMemory
 from app.models.user import User
+from app.services import import_export_service
 from app.services.import_export_service import export_project_bundle, import_project_bundle
 from app.services.prompt_presets import ensure_default_chapter_preset, ensure_default_outline_preset
 from app.services.prompt_preset_resources import load_preset_resource
@@ -128,6 +129,7 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
             db.commit()
         with (
             self.SessionLocal() as db,
+            patch.object(import_export_service, "SessionLocal", self.SessionLocal),
             patch("app.services.vector_rag_service.build_project_chunks", side_effect=RuntimeError("vector prepare")),
         ):
             result = import_project_bundle(db, owner_user_id="u1", bundle=bundle, rebuild_vectors=True)
@@ -143,6 +145,7 @@ class TestProjectBundleRoundtrip(unittest.TestCase):
             db.commit()
         with (
             self.SessionLocal() as db,
+            patch.object(import_export_service, "SessionLocal", self.SessionLocal),
             patch("app.services.vector_rag_service.build_project_chunks", return_value=[]),
             patch("app.services.vector_rag_service.rebuild_project", side_effect=RuntimeError("rebuild failed")),
         ):
