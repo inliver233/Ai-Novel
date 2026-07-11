@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.auth_password import PASSWORD_MIN_LENGTH
 from app.core.config import settings
 from app.core.errors import AppError
 from app.db.utils import utc_now
@@ -12,8 +13,8 @@ from app.models.user_password import UserPassword
 
 def hash_password(password: str) -> str:
     raw = (password or "").strip()
-    if len(raw) < 8:
-        raise AppError.validation("密码长度至少 8 位")
+    if len(raw) < PASSWORD_MIN_LENGTH:
+        raise AppError.validation(f"密码长度至少 {PASSWORD_MIN_LENGTH} 位")
 
     import bcrypt
 

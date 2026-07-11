@@ -10,12 +10,13 @@ from __future__ import annotations
 from typing import Callable, Generator, Iterable
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.testclient import TestClient
 
 from app.core.errors import AppError
 from app.db.session import get_db
-from app.main import app_error_handler, auth_session_middleware
+from app.main import app_error_handler, auth_session_middleware, validation_error_handler
 
 
 def make_test_app(
@@ -55,6 +56,7 @@ def make_test_app(
             return await call_next(request)
 
     app.add_exception_handler(AppError, app_error_handler)
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
 
     for router in routers:
         _include(app, router)

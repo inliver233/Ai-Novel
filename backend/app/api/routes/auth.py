@@ -15,6 +15,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import AuthenticatedUserIdDep, DbDep
+from app.core.auth_password import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 from app.core.auth_session import build_session, clear_session_cookies, set_session_cookies
 from app.core.config import settings
 from app.core.errors import AppError, ok_payload
@@ -26,6 +27,7 @@ from app.models.user import User
 from app.models.user_activity_stat import UserActivityStat
 from app.models.user_password import UserPassword
 from app.models.user_usage_stat import UserUsageStat
+from app.schemas.auth import OptionalNewPassword
 from app.schemas.base import RequestModel
 from app.services.auth_service import commit_user_creation, hash_password, verify_password
 
@@ -255,19 +257,19 @@ def _user_admin_public(
 
 class LocalLoginRequest(RequestModel):
     user_id: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
 
 
 class LocalRegisterRequest(RequestModel):
     user_id: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
     display_name: str | None = Field(default=None, max_length=255)
     email: str | None = Field(default=None, max_length=255)
 
 
 class ChangePasswordRequest(RequestModel):
-    old_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=1, max_length=256)
+    old_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
 
 
 class DisableUserRequest(RequestModel):
@@ -279,11 +281,11 @@ class AdminCreateUserRequest(RequestModel):
     display_name: str | None = Field(default=None, max_length=255)
     email: str | None = Field(default=None, max_length=255)
     is_admin: bool = False
-    password: str | None = Field(default=None, max_length=256)
+    password: OptionalNewPassword = None
 
 
 class AdminResetPasswordRequest(RequestModel):
-    new_password: str | None = Field(default=None, max_length=256)
+    new_password: OptionalNewPassword = None
 
 
 @router.get("/auth/user")

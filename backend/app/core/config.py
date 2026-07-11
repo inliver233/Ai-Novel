@@ -9,6 +9,8 @@ from pydantic import BeforeValidator, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine.url import make_url
 
+from app.core.auth_password import PASSWORD_MIN_LENGTH
+
 
 def _backend_dir() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -97,7 +99,7 @@ def _is_weak_admin_password(value: str | None) -> bool:
     raw = str(value or "").strip()
     if not raw:
         return False
-    if len(raw) < 8:
+    if len(raw) < PASSWORD_MIN_LENGTH:
         return True
     return raw.lower() in WEAK_PROD_ADMIN_PASSWORDS
 

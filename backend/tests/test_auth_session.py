@@ -8,6 +8,7 @@ from typing import Generator
 import pytest
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -19,7 +20,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.db.session import get_db
 from app.db.utils import utc_now
-from app.main import app_error_handler, auth_session_middleware
+from app.main import app_error_handler, auth_session_middleware, validation_error_handler
 from app.models.user import User
 from app.models.user_password import UserPassword
 from app.services.auth_service import hash_password
@@ -35,6 +36,7 @@ def _make_test_app(SessionLocal: sessionmaker) -> FastAPI:
 
     app.middleware("http")(auth_session_middleware)
     app.add_exception_handler(AppError, app_error_handler)
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.include_router(auth_router, prefix="/api")
 
     def _override_get_db() -> Generator[Session, None, None]:
@@ -169,6 +171,27 @@ class TestAuthEndpoints(unittest.TestCase):
         resp = client.post("/api/auth/local/register", json={"user_id": "u2", "password": "short"})
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"]["code"], "VALIDATION_ERROR")
+        with self.SessionLocal() as db:
+            self.assertIsNone(db.get(User, "u2"))
+            self.assertIsNone(db.get(UserPassword, "u2"))
+
+    def test_change_password_rejects_short_new_password_without_updating_hash(self) -> None:
+        self._seed_user(user_id="u1", password="password123")
+        client = TestClient(self.app)
+        login = client.post("/api/auth/local/login", json={"user_id": "u1", "password": "password123"})
+        self.assertEqual(login.status_code, 200)
+
+        with self.SessionLocal() as db:
+            original_hash = db.get(UserPassword, "u1").password_hash
+
+        resp = client.post(
+            "/api/auth/password/change",
+            json={"old_password": "password123", "new_password": "short"},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["code"], "VALIDATION_ERROR")
+        with self.SessionLocal() as db:
+            self.assertEqual(db.get(UserPassword, "u1").password_hash, original_hash)
 
     def test_change_password(self) -> None:
         self._seed_user(user_id="u1", password="password123")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
+from app.core.auth_password import PASSWORD_MIN_LENGTH
 from app.core.config import settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, log_event
@@ -71,7 +72,7 @@ def ensure_configured_admin_user() -> None:
         ensure_admin_user(db)
     except AppError as exc:
         raw = (settings.auth_admin_password or "").strip()
-        if settings.app_env == "dev" and exc.code == "VALIDATION_ERROR" and raw and len(raw) < 8:
+        if settings.app_env == "dev" and exc.code == "VALIDATION_ERROR" and raw and len(raw) < PASSWORD_MIN_LENGTH:
             log_event(
                 logger,
                 "warning",
@@ -80,8 +81,8 @@ def ensure_configured_admin_user() -> None:
                 reason="invalid_password",
                 admin_user_id=settings.auth_admin_user_id,
                 password_length=len(raw),
-                min_password_length=8,
-                message="AUTH_ADMIN_PASSWORD 无效（长度 < 8），跳过 admin bootstrap（dev only）",
+                min_password_length=PASSWORD_MIN_LENGTH,
+                message=f"AUTH_ADMIN_PASSWORD 无效（长度 < {PASSWORD_MIN_LENGTH}），跳过 admin bootstrap（dev only）",
             )
             return
         raise

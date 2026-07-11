@@ -15,12 +15,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.api.routes import auth as auth_routes
 from app.api.routes import health as health_routes
 from app.models.user import User
 from app.models.user_activity_stat import UserActivityStat
 from app.models.user_password import UserPassword
 from app.models.user_usage_stat import UserUsageStat
+from app.services.auth_service import verify_password
 
 from tests.support import (
     auth_cookies,
@@ -133,6 +136,50 @@ def test_admin_create_user_without_password_generates_temp_password() -> None:
     assert isinstance(data["temp_password"], str) and len(data["temp_password"]) > 0
 
 
+@pytest.mark.parametrize("blank_password", ["", " ", "        "])
+def test_admin_create_user_treats_blank_explicit_password_as_generated(blank_password: str) -> None:
+    client, _ = _new_admin_client()
+
+    resp = client.post(
+        "/api/auth/admin/users",
+        json={"user_id": "blank_pw", "password": blank_password},
+    )
+
+    assert resp.status_code == 200
+    temp_password = resp.json()["data"]["temp_password"]
+    assert isinstance(temp_password, str)
+    assert len(temp_password) >= 8
+
+
+def test_admin_create_user_rejects_explicit_short_password_without_persisting() -> None:
+    client, factory = _new_admin_client()
+
+    resp = client.post(
+        "/api/auth/admin/users",
+        json={"user_id": "short_pw", "password": "1234567"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    with factory() as db:
+        assert db.get(User, "short_pw") is None
+        assert db.get(UserPassword, "short_pw") is None
+
+
+def test_admin_create_user_accepts_eight_character_explicit_password() -> None:
+    client, factory = _new_admin_client()
+
+    resp = client.post(
+        "/api/auth/admin/users",
+        json={"user_id": "eight_pw", "password": "12345678"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["temp_password"] is None
+    with factory() as db:
+        assert verify_password("12345678", db.get(UserPassword, "eight_pw").password_hash)
+
+
 def test_admin_disable_then_enable_user_toggles_disabled_at() -> None:
     """POST /api/auth/admin/users/{id}/disable 切换 disabled 标记。"""
     client, factory = _new_admin_client()
@@ -174,3 +221,69 @@ def test_admin_reset_user_password_returns_temp_password() -> None:
     body = resp.json()
     assert body["ok"] is True
     assert body["data"]["temp_password"] == "Brand-new-pw-2"
+
+
+def test_admin_reset_rejects_explicit_short_password_without_updating_hash() -> None:
+    client, factory = _new_admin_client()
+    client.post("/api/auth/admin/users", json={"user_id": "forgetful", "password": "old-pw-12"})
+
+    with factory() as db:
+        original_hash = db.get(UserPassword, "forgetful").password_hash
+
+    resp = client.post(
+        "/api/auth/admin/users/forgetful/password/reset",
+        json={"new_password": "1234567"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    with factory() as db:
+        current_hash = db.get(UserPassword, "forgetful").password_hash
+        assert current_hash == original_hash
+        assert verify_password("old-pw-12", current_hash)
+
+
+def test_admin_reset_without_password_generates_valid_temp_password() -> None:
+    client, _ = _new_admin_client()
+    client.post("/api/auth/admin/users", json={"user_id": "forgetful", "password": "old-pw-12"})
+
+    resp = client.post(
+        "/api/auth/admin/users/forgetful/password/reset",
+        json={},
+    )
+
+    assert resp.status_code == 200
+    temp_password = resp.json()["data"]["temp_password"]
+    assert isinstance(temp_password, str)
+    assert len(temp_password) >= 8
+
+
+@pytest.mark.parametrize("blank_password", ["", " ", "        "])
+def test_admin_reset_treats_blank_explicit_password_as_generated(blank_password: str) -> None:
+    client, _ = _new_admin_client()
+    client.post("/api/auth/admin/users", json={"user_id": "forgetful", "password": "old-pw-12"})
+
+    resp = client.post(
+        "/api/auth/admin/users/forgetful/password/reset",
+        json={"new_password": blank_password},
+    )
+
+    assert resp.status_code == 200
+    temp_password = resp.json()["data"]["temp_password"]
+    assert isinstance(temp_password, str)
+    assert len(temp_password) >= 8
+
+
+def test_admin_reset_accepts_eight_character_explicit_password() -> None:
+    client, factory = _new_admin_client()
+    client.post("/api/auth/admin/users", json={"user_id": "forgetful", "password": "old-pw-12"})
+
+    resp = client.post(
+        "/api/auth/admin/users/forgetful/password/reset",
+        json={"new_password": "12345678"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["temp_password"] == "12345678"
+    with factory() as db:
+        assert verify_password("12345678", db.get(UserPassword, "forgetful").password_hash)
