@@ -208,6 +208,8 @@ export function ExportPage() {
         currentStep="export"
         progress={wizard.progress}
         loading={wizard.loading}
+        loadError={wizard.error}
+        onRetryLoad={wizard.reload}
         primaryAction={
           wizard.progress.nextStep?.key === "export"
             ? { label: "本页：导出 Markdown", disabled: exporting, onClick: doExport }

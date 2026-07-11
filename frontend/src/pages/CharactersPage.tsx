@@ -478,6 +478,9 @@ export function CharactersPage() {
         currentStep="characters"
         progress={wizard.progress}
         loading={wizard.loading}
+        loadError={wizard.error}
+        onRetryLoad={wizard.reload}
+        retryBlockedReason={dirty ? "请先保存或放弃未保存修改再重试" : undefined}
         primaryAction={
           wizard.progress.nextStep?.key === "characters" ? { label: "本页：新增角色", onClick: openNew } : undefined
         }

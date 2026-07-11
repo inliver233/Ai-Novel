@@ -59,6 +59,9 @@ export function ProjectWizardShell(props: { projectId: string; children: React.R
           currentStep={effectiveBarConfig!.currentStep}
           progress={wizard.progress}
           loading={wizard.loading}
+          loadError={wizard.error}
+          onRetryLoad={wizard.reload}
+          retryBlockedReason={effectiveBarConfig!.dirty ? "请先保存或放弃未保存修改再重试" : undefined}
           dirty={effectiveBarConfig!.dirty}
           saving={effectiveBarConfig!.saving}
           onSave={effectiveBarConfig!.onSave}

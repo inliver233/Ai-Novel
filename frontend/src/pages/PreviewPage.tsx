@@ -29,7 +29,13 @@ export function PreviewPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const { bumpLocal, loading: wizardLoading, progress: wizardProgress } = useWizardProgress(projectId);
+  const {
+    bumpLocal,
+    error: wizardError,
+    loading: wizardLoading,
+    progress: wizardProgress,
+    reload: reloadWizard,
+  } = useWizardProgress(projectId);
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [mobileListOpen, setMobileListOpen] = useState(false);
@@ -188,7 +194,11 @@ export function PreviewPage() {
           <button className="btn btn-secondary lg:hidden" onClick={() => setMobileListOpen(true)} type="button">
             <List size={16} /> 章节列表
           </button>
-          <button className="btn btn-secondary hidden lg:inline-flex" onClick={() => setCollapsed((v) => !v)} type="button">
+          <button
+            className="btn btn-secondary hidden lg:inline-flex"
+            onClick={() => setCollapsed((v) => !v)}
+            type="button"
+          >
             <List size={16} /> {collapsed ? "显示列表" : "隐藏列表"}
           </button>
         </div>
@@ -249,12 +259,7 @@ export function PreviewPage() {
         ) : null}
 
         <section className="min-w-0 flex-1">
-          <div
-            className={clsx(
-              "panel",
-              isMobile && "border-0 bg-canvas shadow-none",
-            )}
-          >
+          <div className={clsx("panel", isMobile && "border-0 bg-canvas shadow-none")}>
             {activeChapterSummary ? (
               <>
                 <div className="border-b border-border px-6 py-8 text-center sm:px-12 sm:py-10">
@@ -329,7 +334,14 @@ export function PreviewPage() {
         <div className="min-h-0 flex-1">{list}</div>
       </Drawer>
 
-      <WizardNextBar projectId={projectId} currentStep="preview" progress={wizardProgress} loading={wizardLoading} />
+      <WizardNextBar
+        projectId={projectId}
+        currentStep="preview"
+        progress={wizardProgress}
+        loading={wizardLoading}
+        loadError={wizardError}
+        onRetryLoad={reloadWizard}
+      />
     </PaperContent>
   );
 }

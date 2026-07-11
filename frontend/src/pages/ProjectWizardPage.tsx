@@ -7,6 +7,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { GhostwriterIndicator } from "../components/atelier/GhostwriterIndicator";
+import { QueryErrorCard } from "../components/atelier/QueryErrorCard";
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { ProgressBar } from "../components/ui/ProgressBar";
 import { useConfirm } from "../components/ui/confirm";
@@ -53,40 +54,46 @@ export function ProjectWizardPage() {
 
   const [version, setVersion] = useState(0);
   const [autoRunning, setAutoRunning] = useState(false);
-  const chapterListQuery = useChapterMetaList(projectId);
+  const chapterListQuery = useChapterMetaList(projectId, { toastOnError: false });
 
-  const wizardQuery = useProjectData<WizardLoaded>(
-    projectId,
-    async (id) => {
-      const [settingsRes, charsRes, outlineRes, presetRes, profilesRes] = await Promise.all([
-        apiJson<{ settings: ProjectSettings }>(`/api/projects/${id}/settings`),
-        apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`),
-        apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
-        apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
-        apiJson<{ profiles: LLMProfile[] }>(`/api/llm_profiles`),
-      ]);
-      return {
-        settings: settingsRes.data.settings,
-        characters: charsRes.data.characters,
-        outline: outlineRes.data.outline,
-        llmPreset: presetRes.data.llm_preset,
-        profiles: profilesRes.data.profiles,
-      };
-    },
-    { toastOnError: true },
-  );
+  const wizardQuery = useProjectData<WizardLoaded>(projectId, async (id) => {
+    const [settingsRes, charsRes, outlineRes, presetRes, profilesRes] = await Promise.all([
+      apiJson<{ settings: ProjectSettings }>(`/api/projects/${id}/settings`),
+      apiJson<{ characters: Character[] }>(`/api/projects/${id}/characters`),
+      apiJson<{ outline: Outline }>(`/api/projects/${id}/outline`),
+      apiJson<{ llm_preset: LLMPreset }>(`/api/projects/${id}/llm_preset`),
+      apiJson<{ profiles: LLMProfile[] }>(`/api/llm_profiles`),
+    ]);
+    return {
+      settings: settingsRes.data.settings,
+      characters: charsRes.data.characters,
+      outline: outlineRes.data.outline,
+      llmPreset: presetRes.data.llm_preset,
+      profiles: profilesRes.data.profiles,
+    };
+  });
 
   const refreshWizardData = wizardQuery.refresh;
+  const resetWizardError = wizardQuery.resetError;
   const refreshChapters = chapterListQuery.refresh;
   const reload = useCallback(async () => {
-    await Promise.all([refreshWizardData(), refreshChapters()]);
-  }, [refreshChapters, refreshWizardData]);
+    resetWizardError();
+    await Promise.allSettled([refreshWizardData(), refreshChapters()]);
+  }, [refreshChapters, refreshWizardData, resetWizardError]);
   const settings = wizardQuery.data?.settings ?? null;
   const characters = wizardQuery.data?.characters ?? EMPTY_CHARACTERS;
   const outline = wizardQuery.data?.outline ?? null;
   const chapters = (chapterListQuery.chapters as ChapterListItem[]) ?? EMPTY_CHAPTERS;
   const llmPreset = wizardQuery.data?.llmPreset ?? null;
   const profiles = wizardQuery.data?.profiles ?? EMPTY_PROFILES;
+  const initialLoading =
+    (wizardQuery.data === null && wizardQuery.loading) ||
+    (wizardQuery.data !== null && !chapterListQuery.hasData && chapterListQuery.loading);
+  const blockingLoadError =
+    (wizardQuery.data === null ? wizardQuery.error : null) ??
+    (!chapterListQuery.hasData ? chapterListQuery.error : null);
+  const wizardRefreshError = wizardQuery.data !== null ? wizardQuery.error : null;
+  const chapterListRefreshError = chapterListQuery.hasData ? chapterListQuery.error : null;
 
   const progress = useMemo(() => {
     void version;
@@ -230,18 +237,32 @@ export function ProjectWizardPage() {
       </div>
     );
   }
-  if (wizardQuery.loading) {
+  if (initialLoading) {
     return (
       <div className="panel p-6">
         <div className="text-sm text-subtext">正在加载向导数据...</div>
       </div>
     );
   }
+  if (blockingLoadError) {
+    return <QueryErrorCard error={blockingLoadError} onRetry={() => void reload()} />;
+  }
 
   const nextStep = progress.nextStep;
 
   return (
     <div className="grid gap-6 pb-[calc(6rem+env(safe-area-inset-bottom))]">
+      {wizardRefreshError ? (
+        <QueryErrorCard error={wizardRefreshError} onRetry={() => void reload()} variant="warning" />
+      ) : null}
+      {chapterListRefreshError ? (
+        <QueryErrorCard
+          error={chapterListRefreshError}
+          onRetry={() => void reload()}
+          title="最近一次章节进度刷新失败"
+          variant="warning"
+        />
+      ) : null}
       <section className="panel p-6">
         <div className="flex flex-wrap items-start justify-between gap-2 sm:gap-4">
           <div className="grid gap-2">
@@ -435,6 +456,8 @@ export function ProjectWizardPage() {
         projectId={projectId}
         currentStep={nextStep?.key ?? "export"}
         progress={progress}
+        loadError={wizardRefreshError ?? chapterListRefreshError}
+        onRetryLoad={reload}
         primaryAction={
           nextStep
             ? {

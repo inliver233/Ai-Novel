@@ -4,6 +4,8 @@ import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { ProgressBar } from "../ui/ProgressBar";
+import { formatApiErrorFields, getApiErrorRequestId } from "../../lib/apiErrorPresentation";
+import type { ApiError } from "../../services/apiClient";
 import { getCurrentUserId } from "../../services/currentUser";
 import { wizardBarCollapsedStorageKey } from "../../services/uiState";
 import type { WizardProgress, WizardStepKey } from "../../services/wizard";
@@ -19,6 +21,9 @@ export function WizardNextBar(props: {
   currentStep: WizardStepKey;
   progress: WizardProgress;
   loading?: boolean;
+  loadError?: ApiError | null;
+  onRetryLoad?: () => Promise<void> | void;
+  retryBlockedReason?: string;
   dirty?: boolean;
   saving?: boolean;
   onSave?: () => Promise<boolean>;
@@ -38,6 +43,9 @@ export function WizardNextBar(props: {
     currentStep,
     progress,
     loading = false,
+    loadError = null,
+    onRetryLoad,
+    retryBlockedReason,
     dirty = false,
     saving = false,
     onSave,
@@ -77,6 +85,7 @@ export function WizardNextBar(props: {
   const wizardHref = projectId ? `/projects/${projectId}/wizard` : null;
   const done = !progress.nextStep;
   const showBackToOverview = Boolean(progress.exportedAt && progress.nextStep);
+  const requestId = loadError ? getApiErrorRequestId(loadError) : undefined;
 
   const primary = useMemo((): WizardPrimaryAction => {
     if (primaryAction) return primaryAction;
@@ -162,19 +171,34 @@ export function WizardNextBar(props: {
             {collapsed ? (
               <button
                 className="btn btn-primary h-9 ml-2"
-                disabled={Boolean(primary.disabled) || loading || busy}
+                disabled={Boolean(primary.disabled) || loading || Boolean(loadError) || busy}
                 onClick={() => void run(primary.onClick)}
                 type="button"
-                title={loading ? "加载中..." : primary.label}
+                title={loading ? "加载中..." : loadError ? "向导进度加载失败" : primary.label}
               >
                 <span className="inline-flex max-w-[240px] items-center gap-2 truncate">
-                  {loading ? "加载中..." : primary.label}
+                  {loading ? "加载中..." : loadError ? "向导加载失败" : primary.label}
                   <ArrowRight size={16} />
                 </span>
               </button>
             ) : null}
 
             <div className="mt-2 rounded-atelier border border-border bg-surface/90 p-4 shadow-sm backdrop-blur">
+              {loadError ? (
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-atelier border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-subtext">
+                  <span>
+                    向导进度刷新失败：{formatApiErrorFields(loadError)}
+                    {requestId ? ` · request_id: ${requestId}` : ""}
+                  </span>
+                  {retryBlockedReason ? (
+                    <span className="text-warning">{retryBlockedReason}</span>
+                  ) : onRetryLoad ? (
+                    <button className="btn btn-secondary btn-sm" onClick={() => void onRetryLoad()} type="button">
+                      重试
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-subtext">
@@ -205,7 +229,7 @@ export function WizardNextBar(props: {
                           )}
                           title={s.description}
                           type="button"
-                          disabled={loading || busy}
+                          disabled={loading || Boolean(loadError) || busy}
                           onClick={() => (isCurrent ? null : goto(s.href))}
                         >
                           <Icon
@@ -230,7 +254,7 @@ export function WizardNextBar(props: {
                 <div className="flex shrink-0 flex-wrap gap-2">
                   <button
                     className="btn btn-secondary"
-                    disabled={!wizardHref || loading || busy}
+                    disabled={!wizardHref || loading || Boolean(loadError) || busy}
                     onClick={() => goto(wizardHref)}
                     type="button"
                   >
@@ -240,7 +264,7 @@ export function WizardNextBar(props: {
                   {showBackToOverview ? (
                     <button
                       className="btn btn-secondary"
-                      disabled={loading || busy}
+                      disabled={loading || Boolean(loadError) || busy}
                       onClick={() => goto("/")}
                       type="button"
                     >
@@ -250,7 +274,7 @@ export function WizardNextBar(props: {
 
                   <button
                     className="btn btn-primary"
-                    disabled={Boolean(primary.disabled) || loading || busy}
+                    disabled={Boolean(primary.disabled) || loading || Boolean(loadError) || busy}
                     onClick={() => void run(primary.onClick)}
                     type="button"
                   >
