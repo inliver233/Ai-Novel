@@ -13,7 +13,7 @@ from app.db import migrations
 
 PREVIOUS_REVISION = "b2d4e6f8a0c1"
 RECONCILIATION_REVISION = "c7e2a4f6b8d0"
-HEAD_REVISION = "d8f3b5a7c9e1"
+HEAD_REVISION = "f3a1c7e9b2d4"
 _NOW = "2026-07-11 00:00:00+00:00"
 _USER_ID = "u" * 36
 
@@ -81,6 +81,12 @@ def _seed_previous_revision(engine: sa.Engine) -> None:
             (_NOW, _NOW),
         )
         connection.exec_driver_sql("UPDATE projects SET active_outline_id = 'outline-1' WHERE id = 'project-1'")
+        connection.exec_driver_sql(
+            """
+            INSERT INTO llm_presets (project_id, provider, model)
+            VALUES ('project-1', 'openai', 'gpt-4o-mini')
+            """
+        )
         connection.exec_driver_sql("INSERT INTO project_settings (project_id) VALUES ('project-1')")
         connection.exec_driver_sql(
             """

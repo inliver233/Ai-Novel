@@ -1,4 +1,4 @@
-from app.models.batch_generation_task import BatchGenerationTask, BatchGenerationTaskItem
+from app.models.batch_generation_task import BatchGenerationQuotaGuard, BatchGenerationTask, BatchGenerationTaskItem
 from app.models.chapter import Chapter
 from app.models.detailed_outline import DetailedOutline
 from app.models.character import Character
@@ -31,6 +31,7 @@ from app.models.writing_style import WritingStyle
 __all__ = [
     "BatchGenerationTask",
     "BatchGenerationTaskItem",
+    "BatchGenerationQuotaGuard",
     "Chapter",
     "DetailedOutline",
     "Character",

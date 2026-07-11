@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Header, Request
 from sqlalchemy import select
 
 from app.api.deps import DbDep, UserIdDep, require_chapter_editor, require_project_editor, require_project_viewer
@@ -24,57 +25,16 @@ from app.services.batch_generation_service import (
     requeue_batch_project_task,
     sync_batch_generation_checkpoint,
 )
+from app.services.batch_generation_quota import (
+    enter_batch_generation_quota_admission,
+    lock_and_enforce_batch_generation_quotas,
+)
+from app.services.llm_task_preset_resolver import resolve_task_runtime_provider
 from app.services.outline_store import ensure_active_outline
 from app.services.project_task_event_service import append_project_task_event
 from app.services.task_queue import get_task_queue
 
 router = APIRouter()
-
-
-def _batch_runtime_provider(task: BatchGenerationTask) -> str | None:
-    raw = {}
-    if task.params_json:
-        try:
-            parsed = json.loads(task.params_json)
-            if isinstance(parsed, dict):
-                raw = parsed
-        except Exception:
-            raw = {}
-    value = str(raw.get("runtime_provider") or "").strip()
-    return value or None
-
-
-def _enforce_batch_generation_quotas(
-    *,
-    db: DbDep,
-    project_id: str,
-    user_id: str,
-    provider: str | None,
-    ignore_task_id: str | None = None,
-) -> None:
-    active_rows = (
-        db.execute(
-            select(BatchGenerationTask).where(BatchGenerationTask.status.in_(["queued", "running", "paused"]))
-        )
-        .scalars()
-        .all()
-    )
-    if ignore_task_id:
-        active_rows = [row for row in active_rows if str(row.id) != str(ignore_task_id)]
-
-    project_active = sum(1 for row in active_rows if str(row.project_id) == str(project_id))
-    if project_active >= int(settings.batch_generation_project_active_limit or 1):
-        raise AppError.conflict(message="当前项目已有进行中的批量生成任务", details={"quota": "project", "project_id": project_id})
-
-    user_active = sum(1 for row in active_rows if str(row.actor_user_id or "") == str(user_id))
-    if user_active >= int(settings.batch_generation_user_active_limit or 3):
-        raise AppError.conflict(message="当前用户已有过多进行中的批量生成任务", details={"quota": "user", "user_id": user_id})
-
-    provider_norm = str(provider or "").strip().lower()
-    if provider_norm:
-        provider_active = sum(1 for row in active_rows if str(_batch_runtime_provider(row) or "").strip().lower() == provider_norm)
-        if provider_active >= int(settings.batch_generation_provider_active_limit or 3):
-            raise AppError.conflict(message="当前模型提供方已有过多进行中的批量生成任务", details={"quota": "provider", "provider": provider_norm})
 
 
 def _load_batch_items(db: DbDep, *, task_id: str) -> list[BatchGenerationTaskItem]:
@@ -134,34 +94,17 @@ def create_batch_generation_task(
     user_id: UserIdDep,
     project_id: str,
     body: BatchGenerationCreateRequest,
+    _x_llm_provider: Annotated[str | None, Header(alias="X-LLM-Provider", max_length=64)] = None,
 ) -> dict:
     request_id = request.state.request_id
     project = require_project_editor(db, project_id=project_id, user_id=user_id)
-    provider = str(request.headers.get("X-LLM-Provider") or "").strip() or None
+    provider = resolve_task_runtime_provider(db, project_id=project_id, task_key="chapter_generate")
 
     if int(body.count) > int(settings.batch_generation_max_count or 200):
         raise AppError.validation(
             message=f"批量生成数量不能超过 {int(settings.batch_generation_max_count or 200)}",
             details={"max_count": int(settings.batch_generation_max_count or 200)},
         )
-
-    _enforce_batch_generation_quotas(db=db, project_id=project_id, user_id=user_id, provider=provider)
-
-    existing = (
-        db.execute(
-            select(BatchGenerationTask)
-            .where(
-                BatchGenerationTask.project_id == project_id,
-                BatchGenerationTask.status.in_(["queued", "running", "paused"]),
-            )
-            .order_by(BatchGenerationTask.created_at.desc())
-            .limit(1)
-        )
-        .scalars()
-        .first()
-    )
-    if existing is not None:
-        raise AppError.conflict(message="已有进行中的批量生成任务，请先取消或等待完成", details={"task_id": existing.id})
 
     if body.after_chapter_id:
         after = require_chapter_editor(db, chapter_id=body.after_chapter_id, user_id=user_id)
@@ -235,12 +178,50 @@ def create_batch_generation_task(
                     details={"missing_numbers": missing_numbers},
                 )
 
+    selected_refs = [(str(ch.id), int(ch.number)) for ch in selected]
+    enter_batch_generation_quota_admission(db)
+    require_project_editor(db, project_id=project_id, user_id=user_id)
+    provider = resolve_task_runtime_provider(db, project_id=project_id, task_key="chapter_generate")
+    selected_ids = [chapter_id for chapter_id, _number in selected_refs]
+    selected = (
+        db.execute(
+            select(Chapter)
+            .where(
+                Chapter.id.in_(selected_ids),
+                Chapter.project_id == project_id,
+                Chapter.outline_id == outline_id,
+            )
+            .order_by(Chapter.number.asc())
+            .with_for_update()
+        )
+        .scalars()
+        .all()
+    )
+    if [(str(ch.id), int(ch.number)) for ch in selected] != selected_refs:
+        raise AppError.conflict(
+            message="批量生成目标章节在创建过程中发生变化，请重试",
+            details={"reason": "chapter_selection_changed"},
+        )
+    if not body.include_existing and any(not _is_empty(ch) for ch in selected):
+        raise AppError.conflict(
+            message="批量生成目标章节已有新内容，请重试",
+            details={"reason": "chapter_content_changed"},
+        )
+
+    lock_and_enforce_batch_generation_quotas(
+        db,
+        project_id=project_id,
+        user_id=user_id,
+        provider=provider,
+    )
+
     task_id = new_id()
     task = BatchGenerationTask(
         id=task_id,
         project_id=project_id,
         outline_id=outline_id,
         actor_user_id=user_id,
+        runtime_provider=provider,
         status="queued",
         total_count=len(selected),
         completed_count=0,
@@ -248,7 +229,7 @@ def create_batch_generation_task(
         skipped_count=0,
         cancel_requested=False,
         pause_requested=False,
-        params_json=json.dumps({**body.model_dump(), "runtime_provider": provider}, ensure_ascii=False),
+        params_json=json.dumps(body.model_dump(), ensure_ascii=False),
         checkpoint_json=None,
         error_json=None,
     )
@@ -441,6 +422,14 @@ def resume_batch_generation_task(
     if task.status != "paused":
         return ok_payload(request_id=request_id, data={"task": BatchGenerationTaskOut.model_validate(task).model_dump(), "resumed": False})
 
+    enter_batch_generation_quota_admission(db)
+    task = db.get(BatchGenerationTask, task_id)
+    if task is None:
+        raise AppError.not_found()
+    require_project_editor(db, project_id=task.project_id, user_id=user_id)
+    if task.status != "paused":
+        return ok_payload(request_id=request_id, data={"task": BatchGenerationTaskOut.model_validate(task).model_dump(), "resumed": False})
+
     failed_items = (
         db.execute(
             select(BatchGenerationTaskItem.chapter_number)
@@ -456,11 +445,11 @@ def resume_batch_generation_task(
             details={"failed_chapter_numbers": [int(value) for value in failed_items]},
         )
 
-    _enforce_batch_generation_quotas(
-        db=db,
+    lock_and_enforce_batch_generation_quotas(
+        db,
         project_id=str(task.project_id),
         user_id=str(task.actor_user_id or user_id),
-        provider=_batch_runtime_provider(task),
+        provider=str(task.runtime_provider or ""),
         ignore_task_id=task_id,
     )
 
@@ -502,6 +491,14 @@ def retry_failed_batch_generation_task(
     if task.status != "paused":
         return ok_payload(request_id=request_id, data={"task": BatchGenerationTaskOut.model_validate(task).model_dump(), "retried": False})
 
+    enter_batch_generation_quota_admission(db)
+    task = db.get(BatchGenerationTask, task_id)
+    if task is None:
+        raise AppError.not_found()
+    require_project_editor(db, project_id=task.project_id, user_id=user_id)
+    if task.status != "paused":
+        return ok_payload(request_id=request_id, data={"task": BatchGenerationTaskOut.model_validate(task).model_dump(), "retried": False})
+
     failed_items = (
         db.execute(
             select(BatchGenerationTaskItem)
@@ -514,11 +511,11 @@ def retry_failed_batch_generation_task(
     if not failed_items:
         return ok_payload(request_id=request_id, data={"task": BatchGenerationTaskOut.model_validate(task).model_dump(), "retried": False})
 
-    _enforce_batch_generation_quotas(
-        db=db,
+    lock_and_enforce_batch_generation_quotas(
+        db,
         project_id=str(task.project_id),
         user_id=str(task.actor_user_id or user_id),
-        provider=_batch_runtime_provider(task),
+        provider=str(task.runtime_provider or ""),
         ignore_task_id=task_id,
     )
 
@@ -580,6 +577,14 @@ def skip_failed_batch_generation_task(
     if task.status != "paused":
         return ok_payload(request_id=request_id, data={"task": BatchGenerationTaskOut.model_validate(task).model_dump(), "skipped": False})
 
+    enter_batch_generation_quota_admission(db)
+    task = db.get(BatchGenerationTask, task_id)
+    if task is None:
+        raise AppError.not_found()
+    require_project_editor(db, project_id=task.project_id, user_id=user_id)
+    if task.status != "paused":
+        return ok_payload(request_id=request_id, data={"task": BatchGenerationTaskOut.model_validate(task).model_dump(), "skipped": False})
+
     failed_items = (
         db.execute(
             select(BatchGenerationTaskItem)
@@ -591,6 +596,25 @@ def skip_failed_batch_generation_task(
     )
     if not failed_items:
         return ok_payload(request_id=request_id, data={"task": BatchGenerationTaskOut.model_validate(task).model_dump(), "skipped": False})
+
+    pending_count = (
+        db.execute(
+            select(BatchGenerationTaskItem.id).where(
+                BatchGenerationTaskItem.task_id == task_id,
+                BatchGenerationTaskItem.status == "queued",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if pending_count:
+        lock_and_enforce_batch_generation_quotas(
+            db,
+            project_id=str(task.project_id),
+            user_id=str(task.actor_user_id or user_id),
+            provider=str(task.runtime_provider or ""),
+            ignore_task_id=task_id,
+        )
 
     skipped_numbers: list[int] = []
     for item in failed_items:
@@ -614,21 +638,7 @@ def skip_failed_batch_generation_task(
     task.error_json = None
     recalculate_batch_generation_counts(db, batch_task=task)
 
-    pending_count = (
-        db.execute(
-            select(BatchGenerationTaskItem.id).where(BatchGenerationTaskItem.task_id == task_id, BatchGenerationTaskItem.status == "queued")
-        )
-        .scalars()
-        .all()
-    )
     if pending_count:
-        _enforce_batch_generation_quotas(
-            db=db,
-            project_id=str(task.project_id),
-            user_id=str(task.actor_user_id or user_id),
-            provider=_batch_runtime_provider(task),
-            ignore_task_id=task_id,
-        )
         task.status = "queued"
         requeue_batch_project_task(
             db,

@@ -50,6 +50,7 @@ class BatchGenerationTaskOut(ORMModel):
     outline_id: str
     actor_user_id: str | None = None
     project_task_id: str | None = None
+    runtime_provider: str | None = None
     status: BatchGenerationTaskStatus
     total_count: int
     completed_count: int

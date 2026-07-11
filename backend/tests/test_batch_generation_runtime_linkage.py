@@ -17,15 +17,18 @@ from app.core.errors import AppError
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app_error_handler, validation_error_handler
-from app.models.batch_generation_task import BatchGenerationTask, BatchGenerationTaskItem
+from app.models.batch_generation_task import BatchGenerationQuotaGuard, BatchGenerationTask, BatchGenerationTaskItem
 from app.models.chapter import Chapter
 from app.models.generation_run import GenerationRun
 from app.models.llm_profile import LLMProfile
+from app.models.llm_preset import LLMPreset
+from app.models.llm_task_preset import LLMTaskPreset
 from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_task import ProjectTask
 from app.models.project_task_event import ProjectTaskEvent
 from app.models.user import User
+from app.services import batch_generation_service
 
 
 def _make_test_app(SessionLocal: sessionmaker) -> FastAPI:
@@ -70,6 +73,8 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             tables=[
                 User.__table__,
                 LLMProfile.__table__,
+                LLMPreset.__table__,
+                LLMTaskPreset.__table__,
                 GenerationRun.__table__,
                 Project.__table__,
                 Outline.__table__,
@@ -77,6 +82,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
                 ProjectTask.__table__,
                 ProjectTaskEvent.__table__,
                 BatchGenerationTask.__table__,
+                BatchGenerationQuotaGuard.__table__,
             ],
         )
         BatchGenerationTaskItem.__table__.create(bind=engine)
@@ -86,9 +92,29 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
 
         with self.SessionLocal() as db:
             db.add(User(id="u_owner", display_name="owner"))
-            project = Project(id="p1", owner_user_id="u_owner", active_outline_id="o1", name="Project 1", genre=None, logline=None)
+            project = Project(
+                id="p1",
+                owner_user_id="u_owner",
+                active_outline_id="o1",
+                llm_profile_id="llm-profile-1",
+                name="Project 1",
+                genre=None,
+                logline=None,
+            )
             db.add(project)
+            db.add(
+                LLMProfile(
+                    id="llm-profile-1",
+                    owner_user_id="u_owner",
+                    name="Default",
+                    provider="openai",
+                    model="gpt-4o-mini",
+                    api_key_ciphertext="test-ciphertext",
+                    api_key_masked="***",
+                )
+            )
             db.add(Outline(id="o1", project_id="p1", title="Outline", content_md="", structure_json=None))
+            db.add(LLMPreset(project_id="p1", provider="openai", model="gpt-4o-mini"))
             db.add(Chapter(id="c1", project_id="p1", outline_id="o1", number=1, title="第一章", plan="", content_md=None, summary=None))
             db.commit()
 
@@ -120,6 +146,7 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
             assert batch_task is not None
             self.assertTrue(str(batch_task.project_task_id or "").strip())
             self.assertTrue(str(batch_task.checkpoint_json or "").strip())
+            self.assertEqual(batch_task.runtime_provider, "openai")
 
             runtime_task = db.get(ProjectTask, batch_task.project_task_id)
             self.assertIsNotNone(runtime_task)
@@ -399,3 +426,113 @@ class TestBatchGenerationRuntimeLinkage(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         task = ((resp.json().get("data") or {}).get("task") or {})
         self.assertEqual(task.get("total_count"), 21)
+
+    def test_create_uses_resolved_preset_provider_instead_of_request_header(self) -> None:
+        client = TestClient(self.app)
+        with self.SessionLocal() as db:
+            db.add(
+                LLMTaskPreset(
+                    project_id="p1",
+                    task_key="chapter_generate",
+                    provider="google",
+                    model="gemini-2.0-flash",
+                )
+            )
+            db.commit()
+
+        class _NoopQueue:
+            def enqueue_batch_generation_task(self, task_id: str) -> str:
+                return task_id
+
+        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+            resp = client.post(
+                "/api/projects/p1/batch_generation_tasks",
+                headers={"X-Test-User": "u_owner", "X-LLM-Provider": "anthropic"},
+                json={"count": 1, "include_existing": True},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        task = (resp.json().get("data") or {}).get("task") or {}
+        self.assertEqual(task.get("runtime_provider"), "gemini")
+        with self.SessionLocal() as db:
+            stored = db.get(BatchGenerationTask, task.get("id"))
+            self.assertIsNotNone(stored)
+            assert stored is not None
+            self.assertEqual(stored.runtime_provider, "gemini")
+            self.assertNotIn("runtime_provider", json.loads(stored.params_json or "{}"))
+
+    def test_create_rejects_oversized_provider_header(self) -> None:
+        client = TestClient(self.app)
+        resp = client.post(
+            "/api/projects/p1/batch_generation_tasks",
+            headers={"X-Test-User": "u_owner", "X-LLM-Provider": "x" * 65},
+            json={"count": 1, "include_existing": True},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_project_quota_respects_configured_limit_greater_than_one(self) -> None:
+        client = TestClient(self.app)
+
+        class _NoopQueue:
+            def enqueue_batch_generation_task(self, task_id: str) -> str:
+                return task_id
+
+        with (
+            patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()),
+            patch.object(batch_generation_routes.settings, "batch_generation_project_active_limit", 2),
+        ):
+            first = client.post(
+                "/api/projects/p1/batch_generation_tasks",
+                headers={"X-Test-User": "u_owner"},
+                json={"count": 1, "include_existing": True},
+            )
+            second = client.post(
+                "/api/projects/p1/batch_generation_tasks",
+                headers={"X-Test-User": "u_owner"},
+                json={"count": 1, "include_existing": True},
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+
+    def test_worker_fails_closed_when_preset_provider_changes_after_create(self) -> None:
+        client = TestClient(self.app)
+
+        class _NoopQueue:
+            def enqueue_batch_generation_task(self, task_id: str) -> str:
+                return task_id
+
+        with patch("app.api.routes.batch_generation.get_task_queue", return_value=_NoopQueue()):
+            created = client.post(
+                "/api/projects/p1/batch_generation_tasks",
+                headers={"X-Test-User": "u_owner"},
+                json={"count": 1, "include_existing": True},
+            )
+        task_id = ((created.json().get("data") or {}).get("task") or {}).get("id")
+        self.assertTrue(str(task_id or "").strip())
+
+        with self.SessionLocal() as db:
+            preset = db.get(LLMPreset, "p1")
+            self.assertIsNotNone(preset)
+            assert preset is not None
+            preset.provider = "anthropic"
+            preset.model = "claude-3-5-sonnet-latest"
+            db.commit()
+
+        with (
+            patch.object(batch_generation_service, "SessionLocal", self.SessionLocal),
+            patch("app.services.llm_task_preset_resolver.resolve_api_key_for_profile", return_value="sk-test"),
+            patch.object(batch_generation_service, "run_chapter_generate_llm_step") as llm_step,
+        ):
+            batch_generation_service.run_batch_generation_task(task_id=str(task_id))
+
+        llm_step.assert_not_called()
+        with self.SessionLocal() as db:
+            task = db.get(BatchGenerationTask, task_id)
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.runtime_provider, "openai")
+            self.assertEqual(task.status, "paused")
+            self.assertTrue(bool(task.pause_requested))
+            error = json.loads(task.error_json or "{}")
+            self.assertEqual(error.get("code"), "BATCH_GENERATION_PROVIDER_DRIFT")

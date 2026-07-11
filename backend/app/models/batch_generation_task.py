@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, false
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, false, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -21,6 +21,7 @@ class BatchGenerationTask(Base):
     project_task_id: Mapped[str | None] = mapped_column(
         ForeignKey("project_tasks.id", ondelete="SET NULL"), nullable=True
     )
+    runtime_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", server_default="queued")
     total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     completed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
@@ -33,6 +34,19 @@ class BatchGenerationTask(Base):
     error_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class BatchGenerationQuotaGuard(Base):
+    __tablename__ = "batch_generation_quota_guards"
+
+    scope_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class BatchGenerationTaskItem(Base):
@@ -61,4 +75,7 @@ class BatchGenerationTaskItem(Base):
 Index("ix_batch_generation_tasks_project_id", BatchGenerationTask.project_id)
 Index("ix_batch_generation_tasks_project_task_id", BatchGenerationTask.project_task_id, unique=True)
 Index("ix_batch_generation_tasks_status", BatchGenerationTask.status)
+Index("ix_batch_generation_tasks_project_status", BatchGenerationTask.project_id, BatchGenerationTask.status)
+Index("ix_batch_generation_tasks_actor_status", BatchGenerationTask.actor_user_id, BatchGenerationTask.status)
+Index("ix_batch_generation_tasks_provider_status", BatchGenerationTask.runtime_provider, BatchGenerationTask.status)
 Index("ix_batch_generation_task_items_task_id", BatchGenerationTaskItem.task_id)

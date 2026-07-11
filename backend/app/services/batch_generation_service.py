@@ -89,6 +89,7 @@ def _prepare_project_context(
     outline_id: str,
     actor_user_id: str,
     params: BatchGenerateParams,
+    expected_runtime_provider: str,
 ) -> tuple[Project, PreparedLlmCall, str, str, str, str, str, str, dict[str, object]]:
     with SessionLocal() as db:
         project = db.get(Project, project_id)
@@ -106,6 +107,17 @@ def _prepare_project_context(
             raise AppError(code="LLM_CONFIG_ERROR", message="请先在 Prompts 页保存 LLM 配置", status_code=400)
 
         llm_call = resolved_task.llm_call
+        expected_provider = str(expected_runtime_provider or "").strip()
+        if not expected_provider or llm_call.provider != expected_provider:
+            raise AppError(
+                code="BATCH_GENERATION_PROVIDER_DRIFT",
+                message="批量生成任务的模型提供方配置已变化，请确认配置后重试",
+                status_code=409,
+                details={
+                    "expected_provider": expected_provider or None,
+                    "resolved_provider": llm_call.provider,
+                },
+            )
         resolved_api_key = resolved_task.api_key
 
         settings_row = db.get(ProjectSettings, project_id)
@@ -233,6 +245,7 @@ def run_batch_generation_task(*, task_id: str) -> None:
             outline_id=task.outline_id,
             actor_user_id=actor_user_id,
             params=params,
+            expected_runtime_provider=str(task.runtime_provider or ""),
         )
         run_params_extra_json = {"style_resolution": style_resolution}
     except AppError as exc:

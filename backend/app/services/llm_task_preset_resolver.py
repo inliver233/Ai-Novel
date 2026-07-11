@@ -96,6 +96,29 @@ def resolve_task_preset(
     return db.get(LLMPreset, project_id), "project_default"
 
 
+def resolve_task_runtime_provider(
+    db: Session,
+    *,
+    project_id: str,
+    task_key: str,
+) -> str:
+    """Resolve the canonical provider from the same preset used at runtime."""
+
+    row, _source = resolve_task_preset(db, project_id=project_id, task_key=task_key)
+    if row is None:
+        raise AppError(code="LLM_CONFIG_ERROR", message="请先在 Prompts 页保存 LLM 配置", status_code=400)
+    provider, _model = normalize_provider_model(str(row.provider or ""), str(row.model or ""))
+    provider = str(provider or "").strip().lower()
+    if not provider or len(provider) > 64:
+        raise AppError(
+            code="LLM_CONFIG_ERROR",
+            message="LLM provider 配置不合法",
+            status_code=400,
+            details={"task_key": str(task_key or "").strip()},
+        )
+    return provider
+
+
 def resolve_task_llm_config(
     db: Session,
     *,
