@@ -1,10 +1,11 @@
-import { formatApiErrorFields, toastApiError } from "../lib/apiErrorPresentation";
+import { toastApiError } from "../lib/apiErrorPresentation";
 import { toApiError } from "../services/apiError";
 import { motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
+import { QueryErrorCard } from "../components/atelier/QueryErrorCard";
 import { Drawer } from "../components/ui/Drawer";
 import { useConfirm } from "../components/ui/confirm";
 import { useToast } from "../components/ui/toast";
@@ -13,7 +14,6 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { useProjectData } from "../hooks/useProjectData";
 import { useQueuedSave } from "../hooks/useQueuedSave";
 import { useWizardProgress } from "../hooks/useWizardProgress";
-import { copyText } from "../lib/copyText";
 import { duration, transition } from "../lib/motion";
 import { apiJson } from "../services/apiClient";
 import { markWizardProjectChanged } from "../services/wizard";
@@ -49,6 +49,8 @@ export function CharactersPage() {
     return res.data.characters;
   });
   const loadError = charactersQuery.error;
+  const blockingLoadError = charactersQuery.data === null ? loadError : null;
+  const refreshLoadError = charactersQuery.data !== null ? loadError : null;
   const characters = useMemo(() => charactersQuery.data ?? [], [charactersQuery.data]);
   const loading = charactersQuery.loading;
 
@@ -280,31 +282,20 @@ export function CharactersPage() {
         </div>
       ) : null}
 
-      {!loading && charactersQuery.data === null && loadError ? (
-        <div className="error-card">
-          <div className="state-title">加载失败</div>
-          <div className="state-desc">{formatApiErrorFields(loadError)}</div>
-          {loadError.requestId && loadError.requestId !== "unknown" ? (
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-subtext">
-              <span>request_id: {loadError.requestId}</span>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => void copyText(loadError.requestId!, { title: "复制 request_id" })}
-                type="button"
-              >
-                复制 request_id
-              </button>
-            </div>
-          ) : null}
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button className="btn btn-primary" onClick={() => void load()} type="button">
-              重试
-            </button>
-          </div>
-        </div>
+      {!loading && blockingLoadError ? (
+        <QueryErrorCard error={blockingLoadError} onRetry={() => void load()} title="角色列表加载失败" />
       ) : null}
 
-      {!loading && !loadError && characters.length === 0 ? (
+      {refreshLoadError ? (
+        <QueryErrorCard
+          error={refreshLoadError}
+          onRetry={() => void load()}
+          title="角色列表刷新失败"
+          variant="warning"
+        />
+      ) : null}
+
+      {!loading && charactersQuery.data !== null && characters.length === 0 ? (
         <div className="panel p-6">
           <div className="font-content text-xl text-ink">暂无角色</div>
           <div className="mt-2 text-sm text-subtext">
@@ -316,7 +307,7 @@ export function CharactersPage() {
         </div>
       ) : null}
 
-      {!loading && !loadError && characters.length > 0 && filteredCharacters.length === 0 ? (
+      {!loading && charactersQuery.data !== null && characters.length > 0 && filteredCharacters.length === 0 ? (
         <div className="panel p-6">
           <div className="font-content text-xl text-ink">没有匹配的角色</div>
           <div className="mt-2 text-sm text-subtext">尝试修改搜索关键词，或清空搜索后再查看全部角色。</div>
