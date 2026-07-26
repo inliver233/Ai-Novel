@@ -74,7 +74,23 @@ def _prefer_pgvector() -> bool:
     if backend == "chroma":
         return False
     if backend == "pgvector":
-        return _pgvector_ready()
+        # 显式选择 pgvector 时禁止静默回落 Chroma（backend-data#4 fail-closed 语义）。
+        if not _pgvector_ready():
+            log_event(
+                logger,
+                "warning",
+                event="VECTOR_RAG",
+                action="backend_select",
+                backend="pgvector",
+                ready=False,
+            )
+            raise AppError(
+                code="PGVECTOR_BACKEND_UNAVAILABLE",
+                message="pgvector 后端不可用：请确认数据库为 PostgreSQL、已安装 vector 扩展并完成迁移，或将 VECTOR_BACKEND 改为 auto/chroma",
+                status_code=503,
+                details={"configured_backend": "pgvector"},
+            )
+        return True
     return _pgvector_ready()
 
 

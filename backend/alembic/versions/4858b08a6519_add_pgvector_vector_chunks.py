@@ -24,25 +24,22 @@ def _is_postgres() -> bool:
 
 def _pgvector_extension_available() -> bool:
     bind = op.get_bind()
-    try:
-        return bool(bind.execute(text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")).scalar())
-    except Exception:
-        return False
+    return bool(bind.execute(text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")).scalar())
 
 
 def upgrade() -> None:
     if not _is_postgres():
         return
 
-    # NOTE: This migration is Postgres-only. SQLite environments keep using Chroma (fail-soft).
-    # For non-superuser managed Postgres, pgvector might not be installed/allowed. In that case we skip this migration
-    # and the app will fall back to Chroma.
+    # This migration is Postgres-only; SQLite environments keep using Chroma.
+    # On PostgreSQL the pgvector extension is a hard requirement: a fresh database
+    # must not silently complete the chain without vector_chunks (backend-data#4).
     if not _pgvector_extension_available():
-        return
-    try:
-        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    except Exception:
-        return
+        raise RuntimeError(
+            "pgvector extension is unavailable; install pgvector on the PostgreSQL server before upgrading"
+        )
+
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     op.execute(
         """

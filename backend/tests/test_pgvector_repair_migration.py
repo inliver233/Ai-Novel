@@ -7,11 +7,14 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
-_MIGRATION_FILE = (
-    Path(__file__).resolve().parents[1]
-    / "alembic"
-    / "versions"
-    / "5da9e95bd9a3_repair_pgvector_vector_chunks.py"
+_VERSIONS_DIR = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+_MIGRATION_FILE = _VERSIONS_DIR / "5da9e95bd9a3_repair_pgvector_vector_chunks.py"
+# backend-data#4: 原迁移与修复迁移必须同为 fail-closed（全新库不得软跳过 pgvector）。
+_ORIGINAL_MIGRATION_FILE = _VERSIONS_DIR / "4858b08a6519_add_pgvector_vector_chunks.py"
+_MIGRATION_FILES = pytest.mark.parametrize(
+    "migration_file",
+    [_MIGRATION_FILE, _ORIGINAL_MIGRATION_FILE],
+    ids=["repair", "original"],
 )
 
 
@@ -53,8 +56,8 @@ class _FakeOp:
             raise PermissionError("extension install denied")
 
 
-def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("_pgvector_repair_migration", _MIGRATION_FILE)
+def _load_migration(migration_file: Path = _MIGRATION_FILE) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(f"_pgvector_migration_{migration_file.stem}", migration_file)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -67,8 +70,9 @@ def _run_upgrade(
     extension_available: bool,
     fail_query: bool = False,
     fail_create_extension: bool = False,
+    migration_file: Path = _MIGRATION_FILE,
 ) -> _FakeOp:
-    module = _load_migration()
+    module = _load_migration(migration_file)
     fake_op = _FakeOp(
         _FakeBind(dialect=dialect, extension_available=extension_available, fail_query=fail_query),
         fail_create_extension=fail_create_extension,
@@ -80,8 +84,9 @@ def _run_upgrade(
     return fake_op
 
 
-def test_repair_migration_creates_extension_table_and_all_indexes() -> None:
-    fake_op = _run_upgrade(dialect="postgresql", extension_available=True)
+@_MIGRATION_FILES
+def test_migration_creates_extension_table_and_all_indexes(migration_file: Path) -> None:
+    fake_op = _run_upgrade(dialect="postgresql", extension_available=True, migration_file=migration_file)
 
     assert fake_op.statements[0] == "CREATE EXTENSION IF NOT EXISTS vector"
     assert "CREATE TABLE IF NOT EXISTS vector_chunks" in fake_op.statements[1]
@@ -97,29 +102,39 @@ def test_repair_migration_creates_extension_table_and_all_indexes() -> None:
         assert f"CREATE INDEX IF NOT EXISTS {index_name}" in ddl
 
 
-def test_repair_migration_skips_non_postgres_databases() -> None:
-    fake_op = _run_upgrade(dialect="sqlite", extension_available=True)
+@_MIGRATION_FILES
+def test_migration_skips_non_postgres_databases(migration_file: Path) -> None:
+    fake_op = _run_upgrade(dialect="sqlite", extension_available=True, migration_file=migration_file)
 
     assert fake_op.bind.queries == []
     assert fake_op.statements == []
 
 
-def test_repair_migration_rejects_postgres_without_pgvector_package() -> None:
+@_MIGRATION_FILES
+def test_migration_rejects_postgres_without_pgvector_package(migration_file: Path) -> None:
     with pytest.raises(RuntimeError, match="pgvector extension is unavailable"):
-        _run_upgrade(dialect="postgresql", extension_available=False)
+        _run_upgrade(dialect="postgresql", extension_available=False, migration_file=migration_file)
 
 
-def test_repair_migration_propagates_extension_catalog_errors() -> None:
+@_MIGRATION_FILES
+def test_migration_propagates_extension_catalog_errors(migration_file: Path) -> None:
     with pytest.raises(ConnectionError, match="extension catalog unavailable"):
-        _run_upgrade(dialect="postgresql", extension_available=False, fail_query=True)
+        _run_upgrade(
+            dialect="postgresql",
+            extension_available=False,
+            fail_query=True,
+            migration_file=migration_file,
+        )
 
 
-def test_repair_migration_propagates_extension_install_denial() -> None:
+@_MIGRATION_FILES
+def test_migration_propagates_extension_install_denial(migration_file: Path) -> None:
     with pytest.raises(PermissionError, match="extension install denied"):
         _run_upgrade(
             dialect="postgresql",
             extension_available=True,
             fail_create_extension=True,
+            migration_file=migration_file,
         )
 
 
