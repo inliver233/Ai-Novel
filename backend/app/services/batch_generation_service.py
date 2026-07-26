@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from app.core.config import settings
 from app.core.errors import AppError
-from app.core.logging import log_event
+from app.core.logging import exception_log_fields, log_event
 from app.db.session import SessionLocal
 from app.db.utils import utc_now
 from app.models.batch_generation_task import BatchGenerationTask, BatchGenerationTaskItem
@@ -62,6 +65,61 @@ from app.services.prompt_presets import render_preset_for_task
 from app.services.prompt_store import format_characters
 
 logger = logging.getLogger("ainovel")
+
+
+@dataclass(slots=True)
+class BatchHeartbeatHandle:
+    stop_event: threading.Event
+    thread: threading.Thread
+
+
+def touch_batch_generation_heartbeat(*, task_id: str) -> bool:
+    """Renew the stale-running lease; returns False once the task left running."""
+    db = SessionLocal()
+    try:
+        now = utc_now()
+        res = db.execute(
+            update(BatchGenerationTask)
+            .where(BatchGenerationTask.id == task_id, BatchGenerationTask.status == "running")
+            .values(heartbeat_at=now, updated_at=now)
+        )
+        db.commit()
+        return bool(getattr(res, "rowcount", 0))
+    finally:
+        db.close()
+
+
+def start_batch_generation_heartbeat(*, task_id: str) -> BatchHeartbeatHandle:
+    stop_event = threading.Event()
+    interval = int(getattr(settings, "project_task_heartbeat_interval_seconds", 5) or 5)
+    interval = 1 if interval <= 0 else interval
+
+    def _run() -> None:
+        while not stop_event.wait(interval):
+            try:
+                if not touch_batch_generation_heartbeat(task_id=task_id):
+                    return
+            except Exception as exc:
+                # 心跳失败仅留痕不中断 worker：watchdog cutoff 容忍偶发缺跳。
+                log_event(
+                    logger,
+                    "warning",
+                    event="BATCH_GENERATION_HEARTBEAT_ERROR",
+                    task_id=task_id,
+                    error_type=type(exc).__name__,
+                    **exception_log_fields(exc),
+                )
+
+    thread = threading.Thread(target=_run, name=f"ainovel-batch-heartbeat-{task_id}", daemon=True)
+    thread.start()
+    return BatchHeartbeatHandle(stop_event=stop_event, thread=thread)
+
+
+def stop_batch_generation_heartbeat(handle: BatchHeartbeatHandle | None) -> None:
+    if handle is None:
+        return
+    handle.stop_event.set()
+    handle.thread.join(timeout=1.0)
 
 
 def _prepare_project_context(
@@ -194,6 +252,32 @@ def run_batch_generation_task(*, task_id: str) -> None:
             db.rollback()
             raise
 
+    # 认领成功后启动租约心跳；崩溃时心跳停摆，由 watchdog 回收 stale-running。
+    heartbeat = start_batch_generation_heartbeat(task_id=task_id)
+    try:
+        _run_claimed_batch_generation(
+            task_id=task_id,
+            params=params,
+            actor_user_id=actor_user_id,
+            project_id=project_id,
+            outline_id=outline_id,
+            runtime_provider=runtime_provider,
+            rows=rows,
+        )
+    finally:
+        stop_batch_generation_heartbeat(heartbeat)
+
+
+def _run_claimed_batch_generation(
+    *,
+    task_id: str,
+    params: BatchGenerateParams,
+    actor_user_id: str,
+    project_id: str,
+    outline_id: str,
+    runtime_provider: str,
+    rows: list,
+) -> None:
     try:
         (
             project,

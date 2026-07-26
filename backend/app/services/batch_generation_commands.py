@@ -7,6 +7,7 @@ from typing import Final
 from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.errors import AppError
 from app.db.utils import new_id, utc_now
 from app.models.batch_generation_task import BatchGenerationTask, BatchGenerationTaskItem
@@ -119,8 +120,10 @@ def lock_batch_generation_task_for_worker(
 def claim_batch_generation_task_for_worker(db: Session, *, task_id: str) -> bool:
     """Claim a queued delivery inside the caller's initialization transaction.
 
-    Running tasks are deliberately never reclaimed here. Crash recovery needs a
-    separately designed stale-running lease and is outside this claim contract.
+    Running tasks are deliberately never reclaimed here. Crash recovery is
+    handled by the stale-running lease: the claim stamps ``heartbeat_at``, the
+    worker renews it, and ``recover_stale_running_batch_generation_tasks``
+    (invoked by the project-task watchdog) pauses tasks whose lease expired.
     """
 
     _begin_batch_task_mutation(db)
@@ -133,7 +136,7 @@ def claim_batch_generation_task_for_worker(db: Session, *, task_id: str) -> bool
             BatchGenerationTask.cancel_requested.is_(False),
             BatchGenerationTask.pause_requested.is_(False),
         )
-        .values(status="running", updated_at=now)
+        .values(status="running", heartbeat_at=now, updated_at=now)
     )
     return bool(getattr(result, "rowcount", 0))
 
@@ -230,6 +233,84 @@ def apply_batch_generation_worker_control(
         )
         return True
     return False
+
+
+def recover_stale_running_batch_generation_tasks(
+    db: Session,
+    *,
+    now: object | None = None,
+    timeout_seconds: int | None = None,
+) -> int:
+    """Pause running batch tasks whose heartbeat lease expired (worker crash).
+
+    Lock + in-lock recheck excludes races with a live worker: a live worker
+    keeps a fresh heartbeat and its own writes take the same row lock. Running
+    items are failed so a later resume never double-runs them; the task lands
+    in paused so the user keeps resume/retry_failed/skip_failed/cancel.
+    """
+
+    from datetime import timedelta
+
+    from app.db.datetime_compat import coerce_utc_datetime
+
+    timeout = int(timeout_seconds or getattr(settings, "project_task_stale_running_timeout_seconds", 120) or 120)
+    now_dt = coerce_utc_datetime(now) if now is not None else coerce_utc_datetime(utc_now())
+    assert now_dt is not None
+    cutoff = now_dt - timedelta(seconds=timeout)
+
+    candidate_ids = [
+        str(row)
+        for row in db.execute(
+            select(BatchGenerationTask.id).where(BatchGenerationTask.status == "running")
+        ).scalars()
+    ]
+    db.rollback()
+
+    recovered = 0
+    for task_id in candidate_ids:
+        task = lock_batch_generation_task_for_worker(db, task_id=task_id)
+        if task is None:
+            db.rollback()
+            continue
+        reference = coerce_utc_datetime(task.heartbeat_at or task.updated_at or task.created_at)
+        if task.status != "running" or reference is None or reference > cutoff:
+            db.rollback()
+            continue
+
+        error = {
+            "code": "BATCH_GENERATION_HEARTBEAT_TIMEOUT",
+            "message": "批量任务心跳超时，已由 watchdog 暂停等待人工恢复",
+            "details": {
+                "timeout_seconds": timeout,
+                "last_heartbeat_at": reference.isoformat().replace("+00:00", "Z"),
+            },
+        }
+        running_items = (
+            db.execute(
+                select(BatchGenerationTaskItem).where(
+                    BatchGenerationTaskItem.task_id == task_id,
+                    BatchGenerationTaskItem.status == "running",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        item_finished_at = utc_now()
+        for item in running_items:
+            item.status = "failed"
+            item.error_message = "批量任务心跳超时 (BATCH_GENERATION_HEARTBEAT_TIMEOUT)"
+            item.last_error_json = json.dumps(error, ensure_ascii=False)
+            item.finished_at = item.finished_at or item_finished_at
+        pause_batch_generation(
+            db,
+            batch_task=task,
+            reason="heartbeat_timeout",
+            source="batch_generation_watchdog",
+            error=error,
+        )
+        db.commit()
+        recovered += 1
+    return recovered
 
 
 def _command_noop(db: Session, *, task: BatchGenerationTask) -> BatchGenerationCommandResult:

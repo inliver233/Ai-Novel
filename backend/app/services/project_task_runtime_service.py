@@ -117,6 +117,7 @@ def reconcile_project_tasks_once(*, reason: str, now=None) -> dict[str, int]:
         "requeued_orphans": 0,
         "skipped_queue_unknown": 0,
         "enqueue_failures": 0,
+        "stale_batch_generation": 0,
     }
 
     db = SessionLocal()
@@ -213,6 +214,26 @@ def reconcile_project_tasks_once(*, reason: str, now=None) -> dict[str, int]:
             summary["requeued_orphans"] += 1
     finally:
         db.close()
+
+    # 批任务 stale-running 租约回收（backend-api#6）。恢复失败不阻断 ProjectTask 巡检。
+    try:
+        # 函数级延迟导入避免 batch_generation_helpers -> 本模块 -> commands 的环。
+        from app.services.batch_generation_commands import recover_stale_running_batch_generation_tasks
+
+        batch_db = SessionLocal()
+        try:
+            summary["stale_batch_generation"] = recover_stale_running_batch_generation_tasks(batch_db, now=now_dt)
+        finally:
+            batch_db.close()
+    except Exception as exc:
+        log_event(
+            logger,
+            "warning",
+            event="BATCH_GENERATION_RECONCILE_ERROR",
+            reason=reason,
+            error_type=type(exc).__name__,
+            **exception_log_fields(exc),
+        )
 
     if any(summary.values()):
         log_event(logger, "info", event="PROJECT_TASK_RECONCILE", reason=reason, **summary)
