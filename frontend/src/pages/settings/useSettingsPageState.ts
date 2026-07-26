@@ -13,7 +13,7 @@ import { useProjectData } from "../../hooks/useProjectData";
 import { useQueuedSave } from "../../hooks/useQueuedSave";
 import { useSaveHotkey } from "../../hooks/useSaveHotkey";
 import { useWizardProgress } from "../../hooks/useWizardProgress";
-import { apiJson } from "../../services/apiClient";
+import { apiJson, type ApiError } from "../../services/apiClient";
 import { markWizardProjectChanged } from "../../services/wizard";
 import type { Project, ProjectSettings } from "../../types";
 import {
@@ -37,6 +37,7 @@ type SettingsPageBlockingLoadError = {
 type SettingsPageState = {
   loading: boolean;
   blockingLoadError: SettingsPageBlockingLoadError | null;
+  refreshLoadError: ApiError | null;
   reloadAll: () => Promise<void>;
   dirty: boolean;
   outletActive: boolean;
@@ -72,9 +73,29 @@ export function useSettingsPageState(): SettingsPageState {
     return { project: pRes.data.project, settings: sRes.data.settings };
   });
 
+  const dirty = useMemo(() => {
+    if (!baselineProject || !baselineSettings) return false;
+    return (
+      projectForm.name !== baselineProject.name ||
+      projectForm.genre !== (baselineProject.genre ?? "") ||
+      projectForm.logline !== (baselineProject.logline ?? "") ||
+      settingsForm.world_setting !== baselineSettings.world_setting ||
+      settingsForm.style_guide !== baselineSettings.style_guide ||
+      settingsForm.constraints !== baselineSettings.constraints
+    );
+  }, [baselineProject, baselineSettings, projectForm, settingsForm]);
+
+  const dirtyRef = useRef(false);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
   useEffect(() => {
     if (!settingsQuery.data) return;
     const { project, settings } = settingsQuery.data;
+    // 刷新成功也不得覆盖未保存表单（fail-closed：dirty 时保留用户编辑）；
+    // 切换到另一项目（project.id 变化）时必须重新映射，不受 dirty 保护。
+    if (dirtyRef.current && baselineProjectRef.current?.id === project.id) return;
     const mapped = mapLoadedSettingsToForms(settingsQuery.data);
     baselineProjectRef.current = project;
     baselineSettingsRef.current = settings;
@@ -181,18 +202,6 @@ export function useSettingsPageState(): SettingsPageState {
     },
     [loadMemberships, projectId, toast],
   );
-
-  const dirty = useMemo(() => {
-    if (!baselineProject || !baselineSettings) return false;
-    return (
-      projectForm.name !== baselineProject.name ||
-      projectForm.genre !== (baselineProject.genre ?? "") ||
-      projectForm.logline !== (baselineProject.logline ?? "") ||
-      settingsForm.world_setting !== baselineSettings.world_setting ||
-      settingsForm.style_guide !== baselineSettings.style_guide ||
-      settingsForm.constraints !== baselineSettings.constraints
-    );
-  }, [baselineProject, baselineSettings, projectForm, settingsForm]);
 
   useEffect(() => {
     return () => {
@@ -328,7 +337,10 @@ export function useSettingsPageState(): SettingsPageState {
     navigate(`/projects/${projectId}/characters`);
   }, [dirty, navigate, projectId, save, saving]);
 
-  const loading = settingsQuery.loading;
+  // data 到达与 baseline 映射之间存在一帧空档：此时 coreSectionsProps 仍为 null，
+  // 必须继续视为 loading，否则表单会以空 props 渲染崩溃。
+  const ready = baselineProject !== null && baselineSettings !== null;
+  const loading = settingsQuery.data === null ? settingsQuery.loading : !ready;
 
   return {
     loading,
@@ -342,6 +354,7 @@ export function useSettingsPageState(): SettingsPageState {
             }
           : { message: "项目加载失败", code: "UNKNOWN_ERROR" }
         : null,
+    refreshLoadError: settingsQuery.data !== null ? settingsQuery.error : null,
     reloadAll: async () => {
       await settingsQuery.refresh();
     },

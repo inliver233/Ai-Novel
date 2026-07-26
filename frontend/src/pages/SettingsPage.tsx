@@ -1,3 +1,4 @@
+import { QueryErrorCard } from "../components/atelier/QueryErrorCard";
 import { WizardNextBar } from "../components/atelier/WizardNextBar";
 import { UnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { copyText } from "../lib/copyText";
@@ -104,6 +105,14 @@ export function SettingsPage() {
   return (
     <div className="grid gap-6 pb-24">
       {state.dirty && state.outletActive ? <UnsavedChangesGuard when={state.dirty} /> : null}
+      {state.refreshLoadError ? (
+        <QueryErrorCard
+          error={state.refreshLoadError}
+          onRetry={() => void state.reloadAll()}
+          retryBlockedReason={state.dirty ? "请先保存或放弃未保存修改再重试" : undefined}
+          variant="warning"
+        />
+      ) : null}
       <SettingsCoreSections {...state.coreSectionsProps} />
       <div className="text-xs text-subtext">快捷键：Ctrl/Cmd + S 保存</div>
       <WizardNextBar {...state.wizardBarProps} />
