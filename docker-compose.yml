@@ -10,7 +10,7 @@ x-backend-environment: &backend-environment
   APP_ENV: ${APP_ENV:-prod}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   WAIT_FOR_DB: "1"
-  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://${POSTGRES_USER:-ainovel}:${POSTGRES_PASSWORD:-ainovel}@postgres:5432/${POSTGRES_DB:-ainovel}}
+  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://${POSTGRES_USER:-ainovel}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}@postgres:5432/${POSTGRES_DB:-ainovel}}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
   TASK_QUEUE_BACKEND: rq
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -63,7 +63,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ainovel}
       POSTGRES_USER: ${POSTGRES_USER:-ainovel}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ainovel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

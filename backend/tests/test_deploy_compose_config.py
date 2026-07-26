@@ -53,6 +53,18 @@ def test_default_deploy_provides_at_least_one_vector_backend() -> None:
     )
 
 
+# M55/deploy#4: 缺 .env 时不得静默回退到 ainovel 弱口令起库
+def test_postgres_password_requires_explicit_value() -> None:
+    text = _COMPOSE_FILE.read_text(encoding="utf-8")
+    assert "POSTGRES_PASSWORD:-" not in text, "POSTGRES_PASSWORD 不得有弱默认回退"
+
+    compose = yaml.safe_load(text)
+    password = compose["services"]["postgres"]["environment"]["POSTGRES_PASSWORD"]
+    database_url = compose["x-backend-environment"]["DATABASE_URL"]
+    assert password.startswith("${POSTGRES_PASSWORD:?")
+    assert "${POSTGRES_PASSWORD:?" in database_url
+
+
 def _env_values(path: Path) -> dict[str, str]:
     return {
         line.partition("=")[0].strip(): line.partition("=")[2].strip()
