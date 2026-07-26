@@ -73,6 +73,13 @@ def _env_values(path: Path) -> dict[str, str]:
     }
 
 
+# M59/deploy#8: 模板不得预填可直接上生产的弱凭据
+def test_backend_env_example_has_no_prefilled_weak_credentials() -> None:
+    values = _env_values(_BACKEND_DIR / ".env.example")
+    assert values.get("AUTH_ADMIN_PASSWORD", "") == "", "模板 admin 密码必须留空"
+    assert values.get("AUTH_DEV_FALLBACK_USER_ID", "") == "", "dev fallback 不得预填（防误上生产）"
+
+
 def test_auth_rate_limit_deploy_proxy_contract_is_explicit_and_consistent() -> None:
     compose = yaml.safe_load(_COMPOSE_FILE.read_text(encoding="utf-8"))
     environment = compose["x-backend-environment"]

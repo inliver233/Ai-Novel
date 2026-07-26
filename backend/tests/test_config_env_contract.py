@@ -38,6 +38,12 @@ class TestConfigEnvContract(unittest.TestCase):
             Settings(**self._valid_prod_kwargs(auth_admin_password="ChangeMe123!"))
         self.assertIn("AUTH_ADMIN_PASSWORD", str(ctx.exception))
 
+    def test_prod_rejects_env_example_template_admin_password(self) -> None:
+        # deploy#8/M59: 历史模板密码 admin-pass 长度 >=8，必须靠黑名单拦截。
+        with self.assertRaises(ValueError) as ctx:
+            Settings(**self._valid_prod_kwargs(auth_admin_password="admin-pass"))
+        self.assertIn("AUTH_ADMIN_PASSWORD", str(ctx.exception))
+
     def test_prod_rejects_wildcard_cors_origin(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             Settings(**self._valid_prod_kwargs(cors_origins="*"))

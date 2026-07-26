@@ -92,6 +92,7 @@ WEAK_PROD_ADMIN_PASSWORDS = {
     "password",
     "admin123",
     "admin",
+    "admin-pass",
     "12345678",
 }
 
