@@ -73,6 +73,48 @@ def _env_values(path: Path) -> dict[str, str]:
     }
 
 
+# M56/deploy#5: nginx add_header 继承陷阱——location 内一旦出现 add_header，
+# server 层安全头全部失效，必须在该 location 内显式补齐。
+_REQUIRED_SECURITY_HEADERS = (
+    "X-Content-Type-Options",
+    "X-Frame-Options",
+    "Referrer-Policy",
+    "Permissions-Policy",
+)
+
+
+def _nginx_location_blocks(text: str) -> dict[str, str]:
+    blocks: dict[str, str] = {}
+    for match in re.finditer(r"location\s+([^{]+)\{", text):
+        depth = 1
+        start = match.end()
+        pos = start
+        while depth and pos < len(text):
+            if text[pos] == "{":
+                depth += 1
+            elif text[pos] == "}":
+                depth -= 1
+            pos += 1
+        blocks[match.group(1).strip()] = text[start : pos - 1]
+    return blocks
+
+
+def test_nginx_locations_with_add_header_keep_security_headers() -> None:
+    text = _NGINX_CONFIG.read_text(encoding="utf-8")
+    for header in _REQUIRED_SECURITY_HEADERS:
+        assert f'add_header {header} "' in text, f"server 层缺少安全头 {header}"
+
+    blocks = _nginx_location_blocks(text)
+    assert blocks, "未解析到任何 location 块"
+    for location, body in blocks.items():
+        if "add_header" not in body:
+            continue  # 无 add_header 的 location 正常继承 server 层安全头
+        for header in _REQUIRED_SECURITY_HEADERS:
+            assert f"add_header {header} " in body, (
+                f"location {location} 含 add_header 但缺安全头 {header}（nginx 继承陷阱）"
+            )
+
+
 # M59/deploy#8: 模板不得预填可直接上生产的弱凭据
 def test_backend_env_example_has_no_prefilled_weak_credentials() -> None:
     values = _env_values(_BACKEND_DIR / ".env.example")
