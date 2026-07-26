@@ -80,6 +80,47 @@ class TestAuthSessionCookie(unittest.TestCase):
         value = encode_session_cookie(user_id="u1", expires_at=utc_now() + timedelta(minutes=5))
         self.assertIsNone(decode_session_cookie("v1." + value.split(".", 1)[1]))
 
+    def test_decode_rejects_legacy_v2_cookie(self) -> None:
+        value = encode_session_cookie(user_id="u1", expires_at=utc_now() + timedelta(minutes=5))
+        self.assertIsNone(decode_session_cookie("v2." + value.split(".", 1)[1]))
+
+    def test_legacy_v2_cookie_signed_with_raw_fernet_key_is_rejected(self) -> None:
+        # backend-core#8：旧派生直接用 Fernet 密钥原文做 HMAC。域分离后该签名必须失效。
+        import base64
+        import hashlib
+        import hmac
+        import json
+        from datetime import timezone
+
+        now = utc_now()
+        exp_ts = int((now + timedelta(minutes=5)).astimezone(timezone.utc).timestamp())
+        payload = json.dumps(
+            {"uid": "u1", "exp": exp_ts, "iat": int(now.timestamp() * 1_000_000), "sv": 0},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        raw_key = base64.urlsafe_b64decode(settings.secret_encryption_key.encode("ascii"))
+        sig = hmac.new(raw_key, payload, hashlib.sha256).digest()
+
+        def b64url(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+        legacy = f"v2.{b64url(payload)}.{b64url(sig)}"
+        self.assertIsNone(decode_session_cookie(legacy, now=now))
+
+    def test_rotating_master_key_invalidates_existing_sessions(self) -> None:
+        from cryptography.fernet import Fernet
+
+        now = utc_now()
+        key_a = Fernet.generate_key().decode("ascii")
+        key_b = Fernet.generate_key().decode("ascii")
+        with patch.object(settings, "auth_session_signing_key", None):
+            with patch.object(settings, "secret_encryption_key", key_a):
+                value = encode_session_cookie(user_id="u1", expires_at=now + timedelta(minutes=5))
+                self.assertIsNotNone(decode_session_cookie(value, now=now))
+            with patch.object(settings, "secret_encryption_key", key_b):
+                self.assertIsNone(decode_session_cookie(value, now=now))
+
 
 class TestAuthEndpoints(unittest.TestCase):
     def setUp(self) -> None:

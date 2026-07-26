@@ -71,6 +71,20 @@ def test_legacy_auth_module_is_only_a_compatibility_facade() -> None:
     assert len(source.splitlines()) < 40
 
 
+def test_rate_limit_does_not_import_private_auth_session_symbols() -> None:
+    # backend-api#4：限流模块必须走公开的密钥派生 API，不得引用 auth_session 私有符号。
+    source_file = _BACKEND_ROOT / "app" / "services" / "authentication" / "rate_limit.py"
+    tree = ast.parse(source_file.read_text(encoding="utf-8"))
+    private_imports = [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "app.core.auth_session"
+        for alias in node.names
+        if alias.name.startswith("_")
+    ]
+    assert private_imports == []
+
+
 def test_auth_modules_import_fresh_in_any_order() -> None:
     modules = [
         "app.api.routes.auth_session",

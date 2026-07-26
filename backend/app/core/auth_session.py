@@ -4,17 +4,17 @@ import base64
 import hashlib
 import hmac
 import json
-import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Response
 
 from app.core.config import settings
+from app.core.key_derivation import derive_auth_session_key
 from app.db.utils import utc_now
 
-_SESSION_COOKIE_VERSION = "v2"
-_DEV_SIGNING_KEY: bytes | None = None
+# v3：签名密钥改为 HKDF 域分离派生（backend-core#8），旧 v2 cookie 一次性失效。
+_SESSION_COOKIE_VERSION = "v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,24 +37,8 @@ def _b64url_decode(data: str) -> bytes | None:
         return None
 
 
-def _get_signing_key() -> bytes:
-    if settings.auth_session_signing_key:
-        return settings.auth_session_signing_key.encode("utf-8")
-
-    if settings.secret_encryption_key:
-        try:
-            return base64.urlsafe_b64decode(settings.secret_encryption_key.encode("ascii"))
-        except Exception:
-            return settings.secret_encryption_key.encode("utf-8")
-
-    global _DEV_SIGNING_KEY
-    if _DEV_SIGNING_KEY is None:
-        _DEV_SIGNING_KEY = secrets.token_bytes(32)
-    return _DEV_SIGNING_KEY
-
-
 def _sign(payload: bytes) -> str:
-    sig = hmac.new(_get_signing_key(), payload, hashlib.sha256).digest()
+    sig = hmac.new(derive_auth_session_key(), payload, hashlib.sha256).digest()
     return _b64url_encode(sig)
 
 

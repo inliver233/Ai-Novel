@@ -72,8 +72,9 @@ from app.core.config import settings
 # 【会话解码】基于 HMAC-SHA256 签名的 Cookie 会话机制
 #   定义位置：app/core/auth_session.py
 #   decode_session_cookie() 负责从 Cookie 值中解码出 AuthSession(user_id, expires_at)
-#   签名密钥来源优先级：auth_session_signing_key > secret_encryption_key > 随机生成(仅dev)
-#   Cookie 格式：v1.<base64url_payload>.<base64url_signature>
+#   签名密钥经 app/core/key_derivation.py HKDF 域分离派生（主密钥优先级：
+#   auth_session_signing_key > secret_encryption_key > 随机生成(仅dev)）
+#   Cookie 格式：v3.<base64url_payload>.<base64url_signature>
 from app.core.auth_session import clear_session_cookies, decode_session_cookie
 
 # 【统一错误体系】全局业务异常类和标准化错误响应格式

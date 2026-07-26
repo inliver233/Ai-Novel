@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import math
 import threading
 import time
@@ -10,10 +8,10 @@ from typing import Literal
 
 from fastapi import Request
 
-from app.core.auth_session import _get_signing_key
 from app.core.client_ip import client_ip
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.key_derivation import hash_rate_limit_identity
 
 Action = Literal["login", "register"]
 
@@ -73,7 +71,7 @@ def _policy(action: Action) -> _Policy:
 
 
 def _key(action: Action, bucket: str, identity: str) -> str:
-    digest = hmac.new(_get_signing_key(), identity.encode("utf-8"), hashlib.sha256).hexdigest()
+    digest = hash_rate_limit_identity(identity)
     return f"ainovel:auth:{{rate}}:{action}:{bucket}:{digest}"
 
 
