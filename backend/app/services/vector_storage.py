@@ -32,8 +32,10 @@ from app.services.vector_types import VectorChunk, VectorSource, _ALL_SOURCES
 
 logger = logging.getLogger("ainovel")
 _PGVECTOR_TABLE = "vector_chunks"
-_PGVECTOR_READY_CACHE: tuple[bool, float] | None = None
+# (ready, probed_at, ttl_seconds)：探活异常只做短负缓存，避免瞬时故障被钉死为持续降级。
+_PGVECTOR_READY_CACHE: tuple[bool, float, float] | None = None
 _PGVECTOR_READY_CACHE_TTL_SECONDS = 30.0
+_PGVECTOR_READY_PROBE_FAILURE_TTL_SECONDS = 5.0
 
 
 def _is_postgres() -> bool:
@@ -44,14 +46,15 @@ def _pgvector_ready() -> bool:
     global _PGVECTOR_READY_CACHE
     now = time.time()
     cached = _PGVECTOR_READY_CACHE
-    if cached is not None and (now - cached[1]) < _PGVECTOR_READY_CACHE_TTL_SECONDS:
+    if cached is not None and (now - cached[1]) < cached[2]:
         return bool(cached[0])
 
     if not _is_postgres():
-        _PGVECTOR_READY_CACHE = (False, now)
+        _PGVECTOR_READY_CACHE = (False, now, _PGVECTOR_READY_CACHE_TTL_SECONDS)
         return False
 
     ready = False
+    ttl = _PGVECTOR_READY_CACHE_TTL_SECONDS
     try:
         with engine.connect() as conn:
             ext_installed = bool(conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")).scalar())
@@ -62,10 +65,20 @@ def _pgvector_ready() -> bool:
                     conn.execute(text("SELECT to_regclass('public.vector_chunks') IS NOT NULL")).scalar()
                 )
                 ready = bool(table_exists)
-    except Exception:
+    except Exception as exc:
         ready = False
+        ttl = _PGVECTOR_READY_PROBE_FAILURE_TTL_SECONDS
+        log_event(
+            logger,
+            "warning",
+            event="VECTOR_RAG",
+            action="pgvector_ready_probe",
+            backend="pgvector",
+            ready=False,
+            **exception_log_fields(exc),
+        )
 
-    _PGVECTOR_READY_CACHE = (bool(ready), now)
+    _PGVECTOR_READY_CACHE = (bool(ready), now, ttl)
     return bool(ready)
 
 
