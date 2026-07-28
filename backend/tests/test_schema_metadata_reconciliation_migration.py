@@ -13,7 +13,7 @@ from app.db import migrations
 
 PREVIOUS_REVISION = "b2d4e6f8a0c1"
 RECONCILIATION_REVISION = "c7e2a4f6b8d0"
-HEAD_REVISION = "e8b3c5d7f9a1"
+HEAD_REVISION = "b4d8f2a6c1e3"
 _NOW = "2026-07-11 00:00:00+00:00"
 _USER_ID = "u" * 36
 

@@ -61,7 +61,7 @@ from scripts import migrate_sqlite_to_postgres as sqlite_pg_migrator
 
 
 PRE_CLEANUP_REVISION = "9f3a7c2d1e4b"
-HEAD_REVISION = "e8b3c5d7f9a1"
+HEAD_REVISION = "b4d8f2a6c1e3"
 EXPECTED_DATABASE = "ainovel_schema_ci"
 DESTRUCTIVE_SENTINEL = "I_UNDERSTAND_THIS_DROPS_PUBLIC_SCHEMA"
 RETIRED_TABLES = {
