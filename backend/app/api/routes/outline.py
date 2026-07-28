@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.api.deps import DbDep, UserIdDep, require_project_editor, require_project_viewer
 from app.core.errors import ok_payload
+from app.db.utils import utc_now
 from app.models.outline import Outline
 from app.models.project_settings import ProjectSettings
 from app.schemas.outline import OutlineOut, OutlineUpdate
@@ -27,6 +28,24 @@ from app.services.vector_index_state import mark_vector_index_dirty
 from app.utils.sse_response import create_sse_response
 
 router = APIRouter()
+
+
+def _default_outline(project_id: str) -> Outline:
+    """Transient default payload for outline-less projects — never persisted.
+
+    id="" 表示"尚未落库"；首次 PUT /outline（或建章）经 ensure_active_outline
+    物化同样内容（backend-api#5：GET 必须零副作用）。
+    """
+    now = utc_now()
+    return Outline(
+        id="",
+        project_id=project_id,
+        title="默认大纲",
+        content_md="",
+        structure_json=None,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 def _outline_out(row: Outline) -> dict[str, object]:
@@ -63,7 +82,7 @@ def get_outline(request: Request, db: DbDep, user_id: UserIdDep, project_id: str
             .first()
         )
     if row is None:
-        row = ensure_active_outline(db, project=project)
+        row = _default_outline(project_id)
     return ok_payload(request_id=request_id, data={"outline": _outline_out(row)})
 
 

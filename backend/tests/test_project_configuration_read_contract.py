@@ -19,6 +19,7 @@ from starlette.testclient import TestClient
 from app.api.routes import export as export_routes
 from app.api.routes import llm_preset as llm_preset_routes
 from app.api.routes import llm_task_presets as llm_task_preset_routes
+from app.api.routes import outline as outline_routes
 from app.api.routes import prompt_studio as prompt_studio_routes
 from app.api.routes import prompts as prompts_routes
 from app.api.routes import writing_styles as writing_style_routes
@@ -60,6 +61,7 @@ def _make_app(session_factory: sessionmaker) -> FastAPI:
         llm_task_preset_routes.router,
         writing_style_routes.router,
         export_routes.router,
+        outline_routes.router,
     ):
         app.include_router(router, prefix="/api")
 
@@ -125,6 +127,7 @@ def test_project_configuration_gets_are_viewer_reads_without_database_changes(co
         "/api/projects/p1/llm_task_presets",
         "/api/projects/p1/writing_style_default",
         "/api/projects/p1/export/bundle",
+        "/api/projects/p1/outline",
     ]
 
     for endpoint in endpoints:
@@ -148,6 +151,7 @@ def test_project_configuration_reads_fail_closed_for_outsiders(config_app) -> No
         "/api/projects/p1/llm_task_presets",
         "/api/projects/p1/writing_style_default",
         "/api/projects/p1/export/bundle",
+        "/api/projects/p1/outline",
     ]
 
     for endpoint in endpoints:
@@ -398,6 +402,7 @@ def test_get_handlers_do_not_call_mutating_ensurers_or_session_writes() -> None:
         Path(llm_task_preset_routes.__file__),
         Path(writing_style_routes.__file__),
         Path(export_routes.__file__),
+        Path(outline_routes.__file__),
     ]
     forbidden_calls: list[str] = []
     for route_path in route_paths:

@@ -75,6 +75,27 @@ def test_get_active_outline_returns_structure(env):
     assert "updated_at" in outline
 
 
+def test_get_outline_without_any_row_is_read_only_transient_default(env):
+    """GET 无大纲时返回瞬态默认载荷（id=""），绝不落库（backend-api#5）。"""
+    with env["factory"]() as db:
+        project = db.get(Project, PROJECT_ID)
+        project.active_outline_id = None
+        outline = db.get(Outline, OUTLINE_ID)
+        db.delete(outline)
+        db.commit()
+
+    resp = env["client"].get(f"/api/projects/{PROJECT_ID}/outline")
+    assert resp.status_code == 200
+    outline_payload = resp.json()["data"]["outline"]
+    assert outline_payload["id"] == ""
+    assert outline_payload["content_md"] == ""
+
+    with env["factory"]() as db:
+        assert db.query(Outline).count() == 0
+        project = db.get(Project, PROJECT_ID)
+        assert project.active_outline_id is None
+
+
 # ---------- PUT /projects/{project_id}/outline（活跃大纲编辑） ----------
 
 
