@@ -424,18 +424,35 @@ def retry_project_task(*, db: Session, task: ProjectTask) -> ProjectTask:
 
 def cancel_project_task(*, db: Session, task: ProjectTask) -> ProjectTask:
     """
-    Cancel a queued ProjectTask.
+    Cancel a queued ProjectTask, or flag a running one for cooperative cancel.
 
     Contract:
-    - Only queued tasks are cancelable (idempotent no-op otherwise).
-    - Worker must skip execution when task.status == "canceled".
+    - queued: canceled immediately; worker skips canceled tasks.
+    - running: sets cancel_requested only — the worker honors it at its next
+      poll boundary (before dispatch / before stale requeue). Completed work
+      is never retro-canceled.
+    - terminal states: idempotent no-op.
     """
 
     status_norm = str(getattr(task, "status", "") or "").strip().lower()
+    if status_norm == "running":
+        if not bool(task.cancel_requested):
+            task.cancel_requested = True
+            task.updated_at = utc_now()
+            append_project_task_event(
+                db,
+                task=task,
+                event_type="cancel_requested",
+                source="manual_cancel",
+                payload={"reason": "manual_cancel_requested"},
+            )
+            db.commit()
+        return task
     if status_norm != "queued":
         return task
 
     task.status = "canceled"
+    task.cancel_requested = True
     task.started_at = None
     task.heartbeat_at = None
     task.finished_at = utc_now()
@@ -447,6 +464,19 @@ def cancel_project_task(*, db: Session, task: ProjectTask) -> ProjectTask:
     )
     db.commit()
     return task
+
+
+def _finish_project_task_canceled(db: Session, *, task: ProjectTask, reason: str) -> None:
+    """Converge a cancel_requested task at a worker poll boundary."""
+    now = utc_now()
+    task.status = "canceled"
+    task.heartbeat_at = None
+    task.finished_at = now
+    task.updated_at = now
+    task.result_json = _compact_json_dumps({"canceled": True, "reason": reason})
+    task.error_json = None
+    append_project_task_event(db, task=task, event_type="canceled", source="worker", payload={"reason": reason})
+    db.commit()
 
 
 def run_project_task(*, task_id: str) -> str:
@@ -496,6 +526,12 @@ def run_project_task(*, task_id: str) -> str:
             db, task=task, event_type="running", source="worker", payload={"reason": "worker_start"}
         )
         db.commit()
+
+        # 协作式取消边界 1：派发前消费 cancel_requested（backend-generation#9）。
+        if bool(task.cancel_requested):
+            _finish_project_task_canceled(db, task=task, reason="cancel_requested_before_dispatch")
+            return task_id
+
         heartbeat_handle = start_project_task_heartbeat(task_id=task_id)
 
         kind = str(task.kind)
@@ -657,6 +693,12 @@ def run_project_task(*, task_id: str) -> str:
             raise ValueError(f"Unsupported ProjectTask.kind: {kind!r}")
 
         if kind == "vector_rebuild" and bool(result.get("stale")):
+            # 协作式取消边界 2：stale 重排队前消费 cancel_requested，
+            # 否则被取消的任务会无限重入队列。
+            db.expire(task)
+            if bool(task.cancel_requested):
+                _finish_project_task_canceled(db, task=task, reason="cancel_requested_before_requeue")
+                return task_id
             params = _compact_json_loads(task.params_json) if task.params_json else None
             params_dict = dict(params) if isinstance(params, dict) else {}
             params_dict.update(

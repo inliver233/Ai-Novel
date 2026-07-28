@@ -83,9 +83,6 @@ def generate_chapter_stream_events(
     body: ChapterGenerateRequest,
     user_id: str,
 ):
-    yield sse_start(message="开始生成...", progress=0)
-    yield sse_progress(message="准备生成...", progress=0)
-
     plan_out: dict[str, object] | None = None
     plan_warnings: list[str] = []
     plan_parse_error: dict[str, object] | None = None
@@ -98,6 +95,9 @@ def generate_chapter_stream_events(
     generation_started = False
 
     try:
+        yield sse_start(message="开始生成...", progress=0)
+        yield sse_progress(message="准备生成...", progress=0)
+
         if body.plan_first:
             plan_out, plan_warnings, plan_parse_error = yield from stream_blocking_call_with_heartbeat(
                 runner=lambda: run_plan_first_step(
@@ -441,6 +441,16 @@ def generate_chapter_stream_events(
         yield sse_result(data)
         yield sse_done()
     except GeneratorExit:
+        # 客户端断开必须留结构化痕迹（backend-generation#9）；已启动的阻塞
+        # LLM 步骤无法协作中断，由任务边界与 watchdog 收敛。
+        log_event(
+            logger,
+            "warning",
+            event="SSE_CLIENT_DISCONNECTED",
+            request_id=request_id,
+            chapter_id=chapter_id,
+            generation_started=generation_started,
+        )
         return
     except AppError as exc:
         if generation_started and not stream_run_written:
