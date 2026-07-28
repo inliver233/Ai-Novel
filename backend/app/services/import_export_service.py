@@ -21,6 +21,7 @@ from app.models.project import Project
 from app.models.project_membership import ProjectMembership
 from app.models.project_source_document import ProjectSourceDocument, ProjectSourceDocumentChunk
 from app.models.project_settings import ProjectSettings
+from app.services.project_settings_service import get_or_create_project_settings
 from app.models.prompt_block import PromptBlock
 from app.models.prompt_preset import PromptPreset
 from app.models.story_memory import StoryMemory
@@ -609,7 +610,7 @@ def _import_project_bundle_impl(
 
     settings_in = bundle.get("settings")
     settings_obj = settings_in if isinstance(settings_in, dict) else {}
-    settings_row = ProjectSettings(project_id=new_project_id)
+    settings_row = get_or_create_project_settings(db, project_id=new_project_id)
     settings_row.world_setting = str(settings_obj.get("world_setting") or "") or None
     settings_row.style_guide = str(settings_obj.get("style_guide") or "") or None
     settings_row.constraints = str(settings_obj.get("constraints") or "") or None
@@ -655,7 +656,6 @@ def _import_project_bundle_impl(
     settings_row.auto_update_fractal_enabled = bool(settings_obj.get("auto_update_fractal_enabled", True))
     settings_row.auto_update_tables_enabled = bool(settings_obj.get("auto_update_tables_enabled", True))
 
-    db.add(settings_row)
     report["created"]["project_settings"] = 1
 
     llm_in = bundle.get("llm_preset")

@@ -15,6 +15,7 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.project_settings import ProjectSettings
 from app.services.embedding_service import embed_texts, resolve_embedding_config
 from app.services.memory_query_service import normalize_query_text, parse_query_preprocessing_config
+from app.services.project_settings_service import get_or_create_project_settings
 from app.services.vector_embedding_overrides import vector_embedding_overrides
 from app.services.vector_rerank_overrides import vector_rerank_overrides
 from app.services.vector_kb_service import create_kb as create_vector_kb
@@ -41,15 +42,6 @@ from app.services.vector_rag_service import (
 )
 
 router = APIRouter()
-
-
-def _ensure_settings_row(db, *, project_id: str) -> ProjectSettings:
-    row = db.get(ProjectSettings, project_id)
-    if row is None:
-        row = ProjectSettings(project_id=project_id)
-        db.add(row)
-        db.flush()
-    return row
 
 
 def _index_state(row: ProjectSettings | None) -> dict[str, object]:
@@ -332,7 +324,7 @@ def rebuild_vector_index(
         kb_ids_unique = [kb_id] if kb_id else ["default"]
 
     require_project_editor(db, project_id=project_id, user_id=user_id)
-    settings_row = _ensure_settings_row(db, project_id=project_id)
+    settings_row = get_or_create_project_settings(db, project_id=project_id)
     db.commit()
     build_revision = int(settings_row.vector_dirty_revision)
     embedding = vector_embedding_overrides(settings_row)

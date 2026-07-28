@@ -10,6 +10,7 @@ from app.core.errors import AppError, ok_payload
 from app.core.secrets import SecretCryptoError, decrypt_secret, encrypt_secret, mask_api_key
 from app.models.project_settings import ProjectSettings
 from app.schemas.settings import ProjectSettingsOut, ProjectSettingsUpdate, QueryPreprocessingConfig
+from app.services.project_settings_service import get_or_create_project_settings
 from app.services.embedding_service import embedding_enabled_reason, resolve_embedding_config
 from app.services.embedding_contract import validate_embedding_expected_dimension
 from app.services.vector_embedding_overrides import embedding_config_fingerprint
@@ -334,10 +335,7 @@ def get_settings(request: Request, db: DbDep, user_id: UserIdDep, project_id: st
 def put_settings(request: Request, db: DbDep, user_id: UserIdDep, project_id: str, body: ProjectSettingsUpdate) -> dict:
     request_id = request.state.request_id
     require_project_editor(db, project_id=project_id, user_id=user_id)
-    row = db.get(ProjectSettings, project_id)
-    if row is None:
-        row = ProjectSettings(project_id=project_id, world_setting="", style_guide="", constraints="")
-        db.add(row)
+    row = get_or_create_project_settings(db, project_id=project_id)
     embedding_before = embedding_config_fingerprint(row)
 
     if body.world_setting is not None:
