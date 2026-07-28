@@ -181,6 +181,8 @@ def generate_chapter_skeleton_stream_events(
         yield sse_progress(message="调用模型...", progress=10)
         generation_started = True
 
+        # 阻塞流式 LLM 前结束读事务，释放连接（expire_on_commit=False）。
+        db.commit()
         stream_iter, state = call_llm_stream_messages(
             provider=llm_call.provider,
             base_url=llm_call.base_url,

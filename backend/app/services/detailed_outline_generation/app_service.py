@@ -273,6 +273,8 @@ def generate_detailed_outline_for_volume(
         llm_config = with_param_overrides(llm_config, {"max_tokens": 16000})
 
     # 3 -- call LLM
+    # 阻塞 LLM 前结束读事务，释放连接（expire_on_commit=False，已载入行仍可用）。
+    db.commit()
     llm_result = call_llm_and_record(
         logger=logger,
         request_id=request_id,
