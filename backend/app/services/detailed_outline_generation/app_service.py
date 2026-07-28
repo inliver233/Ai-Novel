@@ -15,6 +15,7 @@ from app.models.chapter import Chapter
 from app.models.detailed_outline import DetailedOutline
 from app.models.outline import Outline
 from app.models.project import Project
+from app.services.chapter_numbering import compute_chapter_offset, extract_positive_chapter_numbers
 from app.services.detailed_outline_generation.models import DetailedOutlineResult, VolumeInfo
 from app.services.detailed_outline_generation.prepare_service import prepare_detailed_outline_render_values
 from app.services.generation_service import PreparedLlmCall, call_llm_and_record, with_param_overrides
@@ -594,23 +595,6 @@ def generate_all_detailed_outlines(
 # create_chapters_from_detailed_outline
 # ---------------------------------------------------------------------------
 
-def _extract_positive_chapter_numbers(chapters: Any) -> list[int]:
-    if not isinstance(chapters, list):
-        return []
-
-    numbers: list[int] = []
-    for item in chapters:
-        if not isinstance(item, dict):
-            continue
-        try:
-            number = int(item.get("number", 0))
-        except (TypeError, ValueError):
-            continue
-        if number > 0:
-            numbers.append(number)
-    return numbers
-
-
 def _format_chapter_numbers(numbers: set[int]) -> str:
     ordered = sorted(numbers)
     if not ordered:
@@ -635,32 +619,6 @@ def _is_contiguous_number_set(numbers: set[int]) -> bool:
     start = min(numbers)
     end = max(numbers)
     return len(numbers) == (end - start + 1)
-
-
-def _compute_chapter_offset(db: Session, detail: DetailedOutline) -> int:
-    """计算当前卷的章节编号偏移量。
-
-    基于同一 outline 中 volume_number 更小的所有卷的 structure_json，
-    累加每卷有效章节编号的最大值，避免稀疏编号时发生冲突。
-    """
-    earlier_volumes = db.execute(
-        select(DetailedOutline)
-        .where(DetailedOutline.outline_id == detail.outline_id)
-        .where(DetailedOutline.volume_number < detail.volume_number)
-        .order_by(DetailedOutline.volume_number)
-    ).scalars().all()
-
-    offset = 0
-    for vol in earlier_volumes:
-        if not vol.structure_json:
-            continue
-        try:
-            structure = json.loads(vol.structure_json)
-            chapters = structure.get("chapters") if isinstance(structure, dict) else None
-            offset += len(_extract_positive_chapter_numbers(chapters))
-        except Exception:
-            pass
-    return offset
 
 
 def create_chapters_from_detailed_outline(
@@ -693,8 +651,8 @@ def create_chapters_from_detailed_outline(
             message="structure_json contains no chapters",
         )
 
-    offset = _compute_chapter_offset(db, detail)
-    raw_numbers = _extract_positive_chapter_numbers(chapters_raw)
+    offset = compute_chapter_offset(db, detail)
+    raw_numbers = extract_positive_chapter_numbers(chapters_raw)
     target_numbers = {offset + (i + 1) for i in range(len(raw_numbers))}
     target_numbers_text = _format_chapter_numbers(target_numbers)
 

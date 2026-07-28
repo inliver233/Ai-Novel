@@ -407,6 +407,81 @@ class TestMultiVolumeChapterNumbering(unittest.TestCase):
             # offset=6, local [1,2,3] -> global [7,8,9]
             self.assertEqual([item["number"] for item in created], [7, 8, 9])
 
+    def _seed_two_volumes(self, db, *, volume_1_structure: str | None) -> None:
+        db.add_all(
+            [
+                DetailedOutline(
+                    id="do-1",
+                    project_id="p1",
+                    outline_id="o1",
+                    volume_number=1,
+                    volume_title="卷一",
+                    structure_json=volume_1_structure,
+                    status="planned",
+                ),
+                DetailedOutline(
+                    id="do-2",
+                    project_id="p1",
+                    outline_id="o1",
+                    volume_number=2,
+                    volume_title="卷二",
+                    structure_json=json.dumps(
+                        {
+                            "chapters": [
+                                {"number": 1, "title": "卷二-1"},
+                                {"number": 2, "title": "卷二-2"},
+                            ]
+                        },
+                        ensure_ascii=False,
+                    ),
+                    status="planned",
+                ),
+            ]
+        )
+        db.commit()
+
+    def test_out_of_order_generation_blocked_when_earlier_volume_has_no_structure(self) -> None:
+        """backend-generation#5：前置卷 structure=None 时禁止静默 offset=0 乱序建章。"""
+        with self.SessionLocal() as db:
+            self._seed_two_volumes(db, volume_1_structure=None)
+
+            with self.assertRaises(AppError) as ctx:
+                create_chapters_from_detailed_outline("do-2", db)
+            self.assertEqual(ctx.exception.code, "EARLIER_VOLUME_NO_CHAPTERS")
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(ctx.exception.details.get("earlier_volume_numbers"), [1])
+
+            db.rollback()
+            stored = db.execute(select(Chapter)).scalars().all()
+            self.assertEqual(stored, [])
+
+    def test_out_of_order_generation_blocked_when_earlier_volume_structure_unparseable(self) -> None:
+        with self.SessionLocal() as db:
+            self._seed_two_volumes(db, volume_1_structure="{not-json")
+
+            with self.assertRaises(AppError) as ctx:
+                create_chapters_from_detailed_outline("do-2", db)
+            self.assertEqual(ctx.exception.code, "EARLIER_VOLUME_NO_CHAPTERS")
+            self.assertEqual(ctx.exception.details.get("earlier_volume_numbers"), [1])
+
+            db.rollback()
+            self.assertEqual(db.execute(select(Chapter)).scalars().all(), [])
+
+    def test_shared_offset_helper_counts_valid_earlier_volumes(self) -> None:
+        from app.services.chapter_numbering import compute_chapter_offset
+
+        with self.SessionLocal() as db:
+            self._seed_two_volumes(
+                db,
+                volume_1_structure=json.dumps(
+                    {"chapters": [{"number": 1, "title": "a"}, {"number": 2, "title": "b"}]},
+                    ensure_ascii=False,
+                ),
+            )
+            volume_2 = db.get(DetailedOutline, "do-2")
+            assert volume_2 is not None
+            self.assertEqual(compute_chapter_offset(db, volume_2), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

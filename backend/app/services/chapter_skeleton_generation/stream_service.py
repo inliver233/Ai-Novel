@@ -18,6 +18,7 @@ from app.models.chapter import Chapter
 from app.models.detailed_outline import DetailedOutline
 from app.models.outline import Outline
 from app.models.project import Project
+from app.services.chapter_numbering import compute_chapter_offset, extract_positive_chapter_numbers
 from app.services.chapter_skeleton_generation.models import ChapterSkeletonResult
 from app.services.chapter_skeleton_generation.parse_service import parse_chapter_skeleton_output
 from app.services.chapter_skeleton_generation.prepare_service import prepare_chapter_skeleton_render_values
@@ -99,44 +100,6 @@ class _SafeFormatDict(dict[str, object]):
         return ""
 
 
-def _extract_positive_chapter_numbers(chapters: Any) -> list[int]:
-    if not isinstance(chapters, list):
-        return []
-
-    numbers: list[int] = []
-    for item in chapters:
-        if not isinstance(item, dict):
-            continue
-        try:
-            number = int(item.get("number", 0))
-        except (TypeError, ValueError):
-            continue
-        if number > 0:
-            numbers.append(number)
-    return numbers
-
-
-def _compute_chapter_offset(db: Session, detailed_outline: DetailedOutline) -> int:
-    earlier_volumes = db.execute(
-        select(DetailedOutline)
-        .where(DetailedOutline.outline_id == detailed_outline.outline_id)
-        .where(DetailedOutline.volume_number < detailed_outline.volume_number)
-        .order_by(DetailedOutline.volume_number)
-    ).scalars().all()
-
-    offset = 0
-    for volume in earlier_volumes:
-        if not volume.structure_json:
-            continue
-        try:
-            structure = json.loads(volume.structure_json)
-            chapters = structure.get("chapters") if isinstance(structure, dict) else None
-            offset += len(_extract_positive_chapter_numbers(chapters))
-        except Exception:
-            pass
-    return offset
-
-
 def generate_chapter_skeleton_stream_events(
     *,
     request_id: str,
@@ -212,6 +175,9 @@ def generate_chapter_skeleton_stream_events(
         elif current_max_tokens is None:
             llm_call = with_param_overrides(llm_call, {"max_tokens": 16000})
 
+        # 编号偏移在 LLM 调用前 fail-fast：前置卷缺章直接 409，不烧 token。
+        chapter_offset = compute_chapter_offset(db, detailed_outline)
+
         yield sse_progress(message="调用模型...", progress=10)
         generation_started = True
 
@@ -286,14 +252,13 @@ def generate_chapter_skeleton_stream_events(
             except Exception:
                 pass
 
-        chapter_offset = _compute_chapter_offset(db, detailed_outline)
-        previous_raw = _extract_positive_chapter_numbers(existing_structure.get("chapters"))
+        previous_raw = extract_positive_chapter_numbers(existing_structure.get("chapters"))
         previous_chapter_numbers = {chapter_offset + (i + 1) for i in range(len(previous_raw))}
         existing_structure["chapters"] = chapters
         detailed_outline.structure_json = json.dumps(existing_structure, ensure_ascii=False)
         # 不覆写 content_md — 保留原始细纲内容
 
-        new_raw = _extract_positive_chapter_numbers(chapters)
+        new_raw = extract_positive_chapter_numbers(chapters)
         new_chapter_numbers = {chapter_offset + (i + 1) for i in range(len(new_raw))}
         created_chapters = _create_chapter_records(
             db,
