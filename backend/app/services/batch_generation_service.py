@@ -18,6 +18,7 @@ from app.models.character import Character
 from app.models.outline import Outline
 from app.models.project import Project
 from app.models.project_settings import ProjectSettings
+from app.models.project_task import ProjectTask
 from app.services.batch_generation_helpers import (
     BATCH_GENERATION_PROJECT_TASK_KIND,
     BatchGenerateParams,
@@ -74,7 +75,11 @@ class BatchHeartbeatHandle:
 
 
 def touch_batch_generation_heartbeat(*, task_id: str) -> bool:
-    """Renew the stale-running lease; returns False once the task left running."""
+    """Renew the stale-running lease; returns False once the task left running.
+
+    同一事务顺带续约链接的 orchestrator ProjectTask（backend-generation#10：
+    否则长 LLM 调用期间 ProjectTask watchdog 会误判 failed）。
+    """
     db = SessionLocal()
     try:
         now = utc_now()
@@ -83,8 +88,19 @@ def touch_batch_generation_heartbeat(*, task_id: str) -> bool:
             .where(BatchGenerationTask.id == task_id, BatchGenerationTask.status == "running")
             .values(heartbeat_at=now, updated_at=now)
         )
+        renewed = bool(getattr(res, "rowcount", 0))
+        if renewed:
+            project_task_id = db.execute(
+                select(BatchGenerationTask.project_task_id).where(BatchGenerationTask.id == task_id)
+            ).scalar_one_or_none()
+            if project_task_id:
+                db.execute(
+                    update(ProjectTask)
+                    .where(ProjectTask.id == str(project_task_id), ProjectTask.status == "running")
+                    .values(heartbeat_at=now, updated_at=now)
+                )
         db.commit()
-        return bool(getattr(res, "rowcount", 0))
+        return renewed
     finally:
         db.close()
 
